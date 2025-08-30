@@ -1,0 +1,22 @@
+{
+  "name": "tweet-genie",
+  "version": "1.0.0",
+  "description": "Twitter posting, scheduling, and analytics app for Autoverse platform",
+  "main": "server/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "server:dev": "cd server && nodemon index.js",
+    "client:dev": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "start": "cd server && npm start",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
+    "db:migrate": "cd server && npm run db:migrate"
+  },
+  "keywords": ["twitter", "social-media", "automation", "analytics"],
+  "author": "Autoverse Team",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

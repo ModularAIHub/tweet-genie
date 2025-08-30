@@ -1,0 +1,165 @@
+import React, { useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import {
+  LayoutDashboard,
+  Edit3,
+  Calendar,
+  BarChart3,
+  Settings,
+  Twitter,
+  LogOut,
+  Menu,
+  X,
+  ChevronDown,
+  CreditCard,
+} from 'lucide-react';
+
+const Layout = ({ children }) => {
+  const { user, logout } = useAuth();
+  const location = useLocation();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+
+  const navigation = [
+    { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+    { name: 'Compose', href: '/compose', icon: Edit3 },
+    { name: 'Scheduling', href: '/scheduling', icon: Calendar },
+    { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+    { name: 'Settings', href: '/settings', icon: Settings },
+  ];
+
+  const isActive = (href) => location.pathname === href;
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Mobile sidebar backdrop */}
+      {isSidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-gray-600 bg-opacity-75 lg:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <div
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+          isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        } lg:static lg:inset-0`}
+      >
+        <div className="flex items-center justify-between h-16 px-6 border-b border-gray-200">
+          <div className="flex items-center space-x-2">
+            <Twitter className="h-8 w-8 text-twitter-500" />
+            <span className="text-xl font-bold gradient-text">Tweet Genie</span>
+          </div>
+          <button
+            onClick={() => setIsSidebarOpen(false)}
+            className="lg:hidden p-2 rounded-md text-gray-400 hover:text-gray-600"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <nav className="mt-6 px-4">
+          <ul className="space-y-2">
+            {navigation.map((item) => {
+              const Icon = item.icon;
+              return (
+                <li key={item.name}>
+                  <Link
+                    to={item.href}
+                    className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                      isActive(item.href)
+                        ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-700'
+                        : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                    }`}
+                    onClick={() => setIsSidebarOpen(false)}
+                  >
+                    <Icon className="mr-3 h-5 w-5" />
+                    {item.name}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+
+        {/* Credits display */}
+        <div className="absolute bottom-4 left-4 right-4">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-gray-700">Credits</span>
+              <CreditCard className="h-4 w-4 text-gray-500" />
+            </div>
+            <div className="text-2xl font-bold text-gray-900">--</div>
+            <p className="text-xs text-gray-500">Available credits</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div className="lg:pl-64">
+        {/* Top header */}
+        <header className="bg-white shadow-sm border-b border-gray-200">
+          <div className="flex items-center justify-between h-16 px-4 sm:px-6 lg:px-8">
+            <button
+              onClick={() => setIsSidebarOpen(true)}
+              className="lg:hidden p-2 rounded-md text-gray-400 hover:text-gray-600"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+
+            <div className="flex items-center space-x-4">
+              <div className="relative">
+                <button
+                  onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                  className="flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  <div className="h-8 w-8 bg-primary-600 rounded-full flex items-center justify-center">
+                    <span className="text-white text-sm font-medium">
+                      {user?.email?.charAt(0).toUpperCase() || 'U'}
+                    </span>
+                  </div>
+                  <span className="hidden sm:block">{user?.email || 'User'}</span>
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+
+                {isUserMenuOpen && (
+                  <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                    <Link
+                      to="/settings"
+                      className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                      onClick={() => setIsUserMenuOpen(false)}
+                    >
+                      <Settings className="inline h-4 w-4 mr-2" />
+                      Settings
+                    </Link>
+                    <button
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        logout();
+                      }}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      <LogOut className="inline h-4 w-4 mr-2" />
+                      Logout
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Page content */}
+        <main className="p-4 sm:p-6 lg:p-8">
+          <div className="page-transition">
+            {children}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+};
+
+export default Layout;
