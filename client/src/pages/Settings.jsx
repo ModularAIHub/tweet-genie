@@ -52,19 +52,44 @@ const Settings = () => {
   const handleTwitterConnect = async () => {
     try {
       const response = await twitter.getAuthUrl();
-      const { auth_url } = response.data;
+      const { auth_url, oauth_token_secret } = response.data;
       
-      // Open Twitter auth in new window
-      window.open(auth_url, 'twitter-auth', 'width=600,height=600');
+      // Store oauth_token_secret in sessionStorage for the callback
+      sessionStorage.setItem('oauth_token_secret', oauth_token_secret);
       
-      // Listen for auth completion
-      const checkAuth = setInterval(() => {
-        // This would be handled by the callback page
-        // For now, just refresh after a delay
-        setTimeout(() => {
-          clearInterval(checkAuth);
-          fetchData();
-        }, 3000);
+      // Open Twitter auth in new popup window
+      const popup = window.open(
+        auth_url, 
+        'twitter-auth', 
+        'width=600,height=600,scrollbars=yes,resizable=yes'
+      );
+      
+      // Listen for messages from the popup
+      const handleMessage = (event) => {
+        // Ensure message is from our popup
+        if (event.source !== popup) return;
+        
+        if (event.data.type === 'TWITTER_AUTH_SUCCESS') {
+          window.removeEventListener('message', handleMessage);
+          toast.success('Twitter account connected successfully!');
+          fetchData(); // Refresh data
+          popup.close();
+        } else if (event.data.type === 'TWITTER_AUTH_ERROR') {
+          window.removeEventListener('message', handleMessage);
+          toast.error(event.data.error || 'Failed to connect Twitter account');
+          popup.close();
+        }
+      };
+      
+      window.addEventListener('message', handleMessage);
+      
+      // Handle popup being closed manually
+      const checkClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkClosed);
+          window.removeEventListener('message', handleMessage);
+          sessionStorage.removeItem('oauth_token_secret');
+        }
       }, 1000);
       
     } catch (error) {

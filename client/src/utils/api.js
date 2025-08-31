@@ -17,10 +17,14 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Token expired or invalid - redirect to platform for re-auth
-      const currentUrl = encodeURIComponent(window.location.href);
-      const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
-      window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
+      // Only redirect if we're not already on a callback or login-related page
+      const currentPath = window.location.pathname;
+      if (!currentPath.includes('/auth/callback') && !currentPath.includes('/login')) {
+        console.log('401 error - redirecting to platform for re-authentication');
+        const currentUrl = encodeURIComponent(window.location.href);
+        const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
+        window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
+      }
     }
     return Promise.reject(error);
   }

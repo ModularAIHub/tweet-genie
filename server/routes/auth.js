@@ -6,26 +6,45 @@ const router = express.Router();
 // Handle auth callback from platform - sets httpOnly cookie (GET method for redirects)
 router.get('/callback', async (req, res) => {
   try {
-    const { token, redirect } = req.query;
+    console.log('Auth callback called with query params:', req.query);
+    const { token, refreshToken, redirect } = req.query;
     
     if (!token) {
+      console.log('No token provided, redirecting to platform login');
       // If no token, redirect to platform login
       const platformUrl = process.env.PLATFORM_URL || 'http://localhost:3000';
       return res.redirect(`${platformUrl}/login`);
     }
 
-    // Set httpOnly cookie
-    res.cookie('authToken', token, {
+    console.log('Setting auth cookies...');
+    // Set httpOnly cookies that match Platform's cookie names
+    res.cookie('accessToken', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
     });
+
+    // Set refresh token if available
+    if (refreshToken) {
+      console.log('Setting refresh token cookie...');
+      res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
+      });
+    } else {
+      console.log('No refresh token provided in callback');
+    }
 
     // Redirect to original URL or dashboard
     const finalRedirectUrl = redirect || '/dashboard';
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:5174';
-    res.redirect(`${clientUrl}${finalRedirectUrl}`);
+    const redirectTo = `${clientUrl}${finalRedirectUrl}`;
+    
+    console.log('Redirecting to:', redirectTo);
+    res.redirect(redirectTo);
   } catch (error) {
     console.error('Auth callback error:', error);
     const platformUrl = process.env.PLATFORM_URL || 'http://localhost:3000';
@@ -36,19 +55,31 @@ router.get('/callback', async (req, res) => {
 // Handle auth callback from platform - sets httpOnly cookie (POST method for API)
 router.post('/callback', async (req, res) => {
   try {
-    const { token, redirectUrl } = req.body;
+    const { token, refreshToken, redirectUrl } = req.body;
     
     if (!token) {
       return res.status(400).json({ error: 'Token required' });
     }
 
-    // Set httpOnly cookie
-    res.cookie('authToken', token, {
+    // Set httpOnly cookies that match Platform's cookie names
+    res.cookie('accessToken', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
     });
+
+    // Set refresh token if available
+    if (refreshToken) {
+      res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
+      });
+    }
+
+    // Note: Both tokens are now properly set for automatic refresh
 
     // Redirect to original URL or dashboard
     const finalRedirectUrl = redirectUrl || '/dashboard';
@@ -60,6 +91,14 @@ router.post('/callback', async (req, res) => {
     console.error('Auth callback error:', error);
     res.status(500).json({ error: 'Authentication callback failed' });
   }
+});
+
+// Validate authentication and attempt refresh if needed
+router.get('/validate', authenticateToken, (req, res) => {
+  res.json({
+    success: true,
+    user: req.user
+  });
 });
 
 // Logout route - clears cookie

@@ -20,7 +20,12 @@ class AIService {
 
       return response.data.providers;
     } catch (error) {
-      console.error('Error fetching hub providers:', error);
+      // If Platform doesn't have providers endpoint yet, return empty object silently
+      if (error.response?.status === 404) {
+        console.log('Hub providers endpoint not available, using fallback');
+        return {};
+      }
+      console.error('Error fetching hub providers:', error.message);
       return {};
     }
   }

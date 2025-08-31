@@ -22,27 +22,41 @@ export const AuthProvider = ({ children }) => {
     checkAuthStatus();
   }, []);
 
-  // Check if we have a token in the URL (from platform redirect)
+  // Set up periodic auth checks to handle token refresh
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    // Check auth status every 10 minutes to ensure tokens are fresh
+    const interval = setInterval(() => {
+      console.log('Periodic auth check...');
+      checkAuthStatus();
+    }, 10 * 60 * 1000); // 10 minutes
+
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
+  // Check if we have tokens in the URL (from platform redirect)
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const token = urlParams.get('token');
+    const refreshToken = urlParams.get('refreshToken');
     const redirectUrl = urlParams.get('redirect');
     
     if (token) {
-      handleAuthCallback(token, redirectUrl);
+      handleAuthCallback(token, refreshToken, redirectUrl);
     }
   }, []);
 
-  const handleAuthCallback = async (token, redirectUrl) => {
+  const handleAuthCallback = async (token, refreshToken, redirectUrl) => {
     try {
-      // Send token to backend to set httpOnly cookie
+      // Send tokens to backend to set httpOnly cookies
       const response = await fetch('/api/auth/callback', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
-        body: JSON.stringify({ token, redirectUrl }),
+        body: JSON.stringify({ token, refreshToken, redirectUrl }),
       });
 
       if (response.ok) {
@@ -64,26 +78,43 @@ export const AuthProvider = ({ children }) => {
 
   const checkAuthStatus = async () => {
     try {
+      console.log('Checking auth status...');
       // Since we're using httpOnly cookies, just try to validate
       const response = await auth.validate();
+      console.log('Auth validation response:', response.data);
       
       if (response.data.success) {
         setUser(response.data.user);
         setIsAuthenticated(true);
+        console.log('User authenticated:', response.data.user);
       } else {
         setIsAuthenticated(false);
         setUser(null);
+        console.log('User not authenticated - invalid response');
       }
     } catch (error) {
       console.error('Auth check failed:', error);
-      setIsAuthenticated(false);
-      setUser(null);
+      console.error('Error status:', error.response?.status);
+      console.error('Error data:', error.response?.data);
       
-      // If it's a 401 and we're on a protected page, redirect to login
-      if (error.response?.status === 401 && window.location.pathname !== '/') {
-        redirectToLogin();
+      // If it's a 401, the backend middleware should have already attempted
+      // token refresh. If we still get 401, it means refresh failed.
+      if (error.response?.status === 401) {
+        console.log('401 error - authentication failed, redirecting to login');
+        setIsAuthenticated(false);
+        setUser(null);
+        
+        // Only redirect if we're on a protected page
+        if (window.location.pathname !== '/') {
+          redirectToLogin();
+        }
+      } else {
+        // For other errors (network, etc), don't immediately redirect
+        // The user might still be authenticated
+        console.log('Non-401 error during auth check, keeping current state');
       }
     } finally {
+      console.log('Auth check completed');
       setIsLoading(false);
     }
   };
