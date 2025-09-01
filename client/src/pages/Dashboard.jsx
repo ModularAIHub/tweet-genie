@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Twitter,
   Edit3,
   Calendar,
   BarChart3,
@@ -12,7 +11,7 @@ import {
   Heart,
   Repeat2,
 } from 'lucide-react';
-import { analytics, tweets, credits, twitter } from '../utils/api';
+import { analytics, tweets, credits } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
 
@@ -21,7 +20,6 @@ const Dashboard = () => {
   const [analytics, setAnalytics] = useState(null);
   const [recentTweets, setRecentTweets] = useState([]);
   const [creditBalance, setCreditBalance] = useState(null);
-  const [twitterAccounts, setTwitterAccounts] = useState([]);
 
   useEffect(() => {
     fetchDashboardData();
@@ -31,11 +29,10 @@ const Dashboard = () => {
     try {
       setLoading(true);
       
-      const [analyticsRes, tweetsRes, creditsRes, accountsRes] = await Promise.allSettled([
+      const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
         analytics.getOverview({ days: 30 }),
         tweets.list({ limit: 5 }),
         credits.getBalance(),
-        twitter.getAccounts(),
       ]);
 
       if (analyticsRes.status === 'fulfilled') {
@@ -48,10 +45,6 @@ const Dashboard = () => {
 
       if (creditsRes.status === 'fulfilled') {
         setCreditBalance(creditsRes.value.data);
-      }
-
-      if (accountsRes.status === 'fulfilled') {
-        setTwitterAccounts(accountsRes.value.data.accounts || []);
       }
 
     } catch (error) {
@@ -145,32 +138,6 @@ const Dashboard = () => {
           <Plus className="h-5 w-5 mr-2" />
           New Tweet
         </Link>
-      </div>
-
-      {/* Twitter Account Status */}
-      <div className="card">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <Twitter className="h-8 w-8 text-twitter-500" />
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Twitter Account</h3>
-              <p className="text-sm text-gray-600">
-                {twitterAccounts.length > 0 
-                  ? `Connected as @${twitterAccounts[0].username}`
-                  : 'No Twitter account connected'
-                }
-              </p>
-            </div>
-          </div>
-          {twitterAccounts.length === 0 && (
-            <Link
-              to="/settings"
-              className="btn btn-primary btn-sm"
-            >
-              Connect Account
-            </Link>
-          )}
-        </div>
       </div>
 
       {/* Stats Grid */}

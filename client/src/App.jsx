@@ -10,7 +10,6 @@ import TweetComposer from './pages/TweetComposer';
 import Scheduling from './pages/Scheduling';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
-import TwitterCallback from './pages/TwitterCallback';
 import AuthCallback from './pages/AuthCallback';
 
 function App() {
@@ -20,9 +19,6 @@ function App() {
         <Routes>
           {/* Auth callback from platform */}
           <Route path="/auth/callback" element={<AuthCallback />} />
-          
-          {/* Twitter OAuth callback */}
-          <Route path="/twitter-callback" element={<TwitterCallback />} />
           
           {/* Protected routes */}
           <Route 

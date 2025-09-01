@@ -7,7 +7,6 @@ import {
   Calendar,
   BarChart3,
   Settings,
-  Twitter,
   LogOut,
   Menu,
   X,
@@ -49,7 +48,7 @@ const Layout = ({ children }) => {
       >
         <div className="flex items-center justify-between h-16 px-6 border-b border-gray-200">
           <div className="flex items-center space-x-2">
-            <Twitter className="h-8 w-8 text-twitter-500" />
+            <Edit3 className="h-8 w-8 text-blue-500" />
             <span className="text-xl font-bold gradient-text">Tweet Genie</span>
           </div>
           <button

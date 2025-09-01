@@ -71,8 +71,7 @@ api.interceptors.response.use(
         // Only redirect if we're not already on a callback or login-related page
         const currentPath = window.location.pathname;
         if (!currentPath.includes('/auth/callback') && 
-            !currentPath.includes('/login') && 
-            !currentPath.includes('/twitter-callback')) {
+            !currentPath.includes('/login')) {
           console.log('Redirecting to platform for re-authentication');
           const currentUrl = encodeURIComponent(window.location.href);
           const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
@@ -93,14 +92,6 @@ export const auth = {
   validate: () => api.get('/api/auth/validate'),
   refresh: () => api.post('/api/auth/refresh'),
   logout: () => api.post('/api/auth/logout'),
-};
-
-// Twitter endpoints
-export const twitter = {
-  getAuthUrl: () => api.get('/api/twitter/auth-url'),
-  connect: (authData) => api.post('/api/twitter/connect', authData),
-  getAccounts: () => api.get('/api/twitter/accounts'),
-  disconnect: (accountId) => api.delete(`/api/twitter/disconnect/${accountId}`),
 };
 
 // Tweet endpoints

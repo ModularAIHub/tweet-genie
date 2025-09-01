@@ -4,9 +4,9 @@ import { pool } from '../config/database.js';
 
 export const authenticateToken = async (req, res, next) => {
   try {
-    console.log('Auth middleware called for:', req.method, req.path);
-    console.log('Headers accept:', req.headers.accept);
-    console.log('Cookies:', Object.keys(req.cookies || {}));
+    console.log('🔐 Auth middleware called for:', req.method, req.path);
+    console.log('🍪 All cookies:', req.cookies);
+    console.log('🔑 Authorization header:', req.headers.authorization);
     
     // First try to get token from httpOnly cookie (Platform uses 'accessToken')
     let token = req.cookies?.accessToken;
@@ -17,15 +17,17 @@ export const authenticateToken = async (req, res, next) => {
       token = authHeader && authHeader.split(' ')[1];
     }
 
-    console.log('Token found:', !!token);
-    console.log('Token length:', token ? token.length : 0);
+    console.log('✅ Token found:', !!token);
+    if (token) {
+      console.log('🎫 Token preview:', token.substring(0, 20) + '...');
+    }
 
     if (!token) {
       // For web requests, redirect to platform for login
       if (req.headers.accept && req.headers.accept.includes('text/html')) {
         const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
         const platformLoginUrl = `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`;
-        console.log('No token - redirecting to platform login:', platformLoginUrl);
+        console.log('❌ No token - redirecting to platform login:', platformLoginUrl);
         return res.redirect(platformLoginUrl);
       }
       // For API requests, return 401

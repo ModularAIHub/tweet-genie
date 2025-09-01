@@ -123,7 +123,7 @@ const Analytics = () => {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Analytics</h1>
           <p className="mt-2 text-gray-600">
-            Track your Twitter performance and engagement
+            Track your social media performance and engagement
           </p>
         </div>
         <div className="flex items-center space-x-4">
