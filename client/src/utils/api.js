@@ -12,20 +12,78 @@ const api = axios.create({
   withCredentials: true, // Important for cookies
 });
 
-// Response interceptor to handle errors
+// Flag to prevent multiple refresh attempts
+let isRefreshing = false;
+let failedQueue = [];
+
+const processQueue = (error, token = null) => {
+  failedQueue.forEach(prom => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(token);
+    }
+  });
+  
+  failedQueue = [];
+};
+
+// Response interceptor to handle errors and automatic token refresh
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Only redirect if we're not already on a callback or login-related page
-      const currentPath = window.location.pathname;
-      if (!currentPath.includes('/auth/callback') && !currentPath.includes('/login')) {
-        console.log('401 error - redirecting to platform for re-authentication');
-        const currentUrl = encodeURIComponent(window.location.href);
-        const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
-        window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
+  async (error) => {
+    const originalRequest = error.config;
+
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      if (isRefreshing) {
+        // If refresh is already in progress, queue this request
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        }).then(() => {
+          return api(originalRequest);
+        }).catch(err => {
+          return Promise.reject(err);
+        });
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      try {
+        console.log('Token expired, attempting automatic refresh...');
+        
+        // Call the dedicated refresh endpoint
+        const refreshResponse = await axios.post(`${API_BASE_URL}/api/auth/refresh`, {}, {
+          withCredentials: true
+        });
+
+        console.log('Token refreshed successfully');
+        isRefreshing = false;
+        processQueue(null);
+
+        // Retry the original request
+        return api(originalRequest);
+      } catch (refreshError) {
+        console.log('Token refresh failed:', refreshError.message);
+        isRefreshing = false;
+        processQueue(refreshError, null);
+
+        // Only redirect if we're not already on a callback or login-related page
+        const currentPath = window.location.pathname;
+        if (!currentPath.includes('/auth/callback') && 
+            !currentPath.includes('/login') && 
+            !currentPath.includes('/twitter-callback')) {
+          console.log('Redirecting to platform for re-authentication');
+          const currentUrl = encodeURIComponent(window.location.href);
+          const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
+          window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
+        }
+
+        return Promise.reject(refreshError);
       }
     }
+
+    // For other errors, just reject
     return Promise.reject(error);
   }
 );
@@ -33,6 +91,8 @@ api.interceptors.response.use(
 // Auth endpoints
 export const auth = {
   validate: () => api.get('/api/auth/validate'),
+  refresh: () => api.post('/api/auth/refresh'),
+  logout: () => api.post('/api/auth/logout'),
 };
 
 // Twitter endpoints

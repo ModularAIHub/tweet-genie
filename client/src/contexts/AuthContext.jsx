@@ -26,14 +26,37 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    // Check auth status every 10 minutes to ensure tokens are fresh
+    // Check auth status every 12 minutes to ensure tokens are fresh
+    // (tokens expire at 15 minutes, so this gives buffer for refresh)
     const interval = setInterval(() => {
-      console.log('Periodic auth check...');
-      checkAuthStatus();
-    }, 10 * 60 * 1000); // 10 minutes
+      console.log('Periodic auth check and refresh...');
+      refreshTokenIfNeeded();
+    }, 12 * 60 * 1000); // 12 minutes
 
     return () => clearInterval(interval);
   }, [isAuthenticated]);
+
+  // Proactive token refresh function
+  const refreshTokenIfNeeded = async () => {
+    try {
+      console.log('Attempting proactive token refresh...');
+      const response = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (response.ok) {
+        console.log('Token refreshed proactively');
+        // Validate the new token
+        await checkAuthStatus();
+      } else {
+        console.log('Proactive refresh failed, will let interceptor handle it');
+      }
+    } catch (error) {
+      console.error('Proactive token refresh error:', error);
+      // Don't handle error here, let the axios interceptor handle it
+    }
+  };
 
   // Check if we have tokens in the URL (from platform redirect)
   useEffect(() => {

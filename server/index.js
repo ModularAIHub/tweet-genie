@@ -41,6 +41,23 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', service: 'Tweet Genie' });
 });
 
+// Twitter OAuth callback (simplified URL)
+app.get('/callback', async (req, res) => {
+  try {
+    const { oauth_token, oauth_verifier } = req.query;
+    
+    if (!oauth_token || !oauth_verifier) {
+      return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=twitter_auth_failed`);
+    }
+
+    // Redirect to client with tokens
+    res.redirect(`${process.env.CLIENT_URL}/twitter-callback?oauth_token=${oauth_token}&oauth_verifier=${oauth_verifier}`);
+  } catch (error) {
+    console.error('Twitter callback error:', error);
+    res.redirect(`${process.env.CLIENT_URL}/dashboard?error=twitter_auth_failed`);
+  }
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/twitter', authenticateToken, twitterRoutes);

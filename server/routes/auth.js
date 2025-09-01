@@ -1,4 +1,5 @@
 import express from 'express';
+import axios from 'axios';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -101,26 +102,80 @@ router.get('/validate', authenticateToken, (req, res) => {
   });
 });
 
-// Logout route - clears cookie
-router.post('/logout', (req, res) => {
-  res.clearCookie('authToken');
-  res.json({ success: true });
+// Refresh token endpoint for client-side token refresh
+router.post('/refresh', async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refreshToken;
+    
+    if (!refreshToken) {
+      return res.status(401).json({ error: 'Refresh token required' });
+    }
+
+    console.log('Attempting to refresh token via Platform...');
+    
+    // Forward refresh request to Platform
+    const refreshResponse = await axios.post(
+      `${process.env.PLATFORM_URL || 'http://localhost:3000'}/api/auth/refresh`,
+      {},
+      {
+        headers: {
+          'Cookie': `refreshToken=${refreshToken}`
+        },
+        withCredentials: true
+      }
+    );
+
+    // Extract new tokens from Platform response
+    const setCookieHeader = refreshResponse.headers['set-cookie'];
+    if (setCookieHeader) {
+      const accessTokenCookie = setCookieHeader.find(cookie => 
+        cookie.startsWith('accessToken=')
+      );
+      const refreshTokenCookie = setCookieHeader.find(cookie => 
+        cookie.startsWith('refreshToken=')
+      );
+
+      if (accessTokenCookie) {
+        const newAccessToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
+        
+        // Set new access token cookie
+        res.cookie('accessToken', newAccessToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          maxAge: 15 * 60 * 1000 // 15 minutes
+        });
+
+        // Update refresh token if provided
+        if (refreshTokenCookie) {
+          const newRefreshToken = refreshTokenCookie.split('refreshToken=')[1].split(';')[0];
+          res.cookie('refreshToken', newRefreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+          });
+        }
+
+        console.log('Token refreshed successfully');
+        res.json({ success: true, message: 'Token refreshed' });
+      } else {
+        throw new Error('No access token in Platform response');
+      }
+    } else {
+      throw new Error('No cookies in Platform response');
+    }
+  } catch (error) {
+    console.error('Token refresh error:', error.message);
+    res.status(401).json({ error: 'Token refresh failed' });
+  }
 });
 
-// This route will be used to validate tokens from the main hub
-router.get('/validate', authenticateToken, async (req, res) => {
-  try {
-    res.json({
-      success: true,
-      user: {
-        id: req.user.id,
-        email: req.user.email
-      }
-    });
-  } catch (error) {
-    console.error('Auth validation error:', error);
-    res.status(500).json({ error: 'Authentication validation failed' });
-  }
+// Logout route - clears cookie
+router.post('/logout', (req, res) => {
+  res.clearCookie('accessToken');
+  res.clearCookie('refreshToken');
+  res.json({ success: true });
 });
 
 export default router;

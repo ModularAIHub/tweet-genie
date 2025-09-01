@@ -122,15 +122,23 @@ router.delete('/disconnect/:accountId', async (req, res) => {
 // Get Twitter OAuth URL (for initial connection)
 router.get('/auth-url', async (req, res) => {
   try {
+    console.log('Twitter API Key:', process.env.TWITTER_API_KEY ? 'Present' : 'Missing');
+    console.log('Twitter API Secret:', process.env.TWITTER_API_SECRET ? 'Present' : 'Missing');
+    
     const client = new TwitterApi({
       appKey: process.env.TWITTER_API_KEY,
       appSecret: process.env.TWITTER_API_SECRET,
     });
 
+    console.log('Generating auth link...');
+    
+    // Use the server callback URL instead of client URL
     const authLink = await client.generateAuthLink(
-      `${process.env.CLIENT_URL}/twitter-callback`,
+      `http://localhost:3002/callback`,
       { linkMode: 'authorize' }
     );
+
+    console.log('Auth link generated successfully');
 
     res.json({
       auth_url: authLink.url,
@@ -143,4 +151,38 @@ router.get('/auth-url', async (req, res) => {
   }
 });
 
+// Handle Twitter OAuth callback
+router.get('/callback', async (req, res) => {
+  try {
+    const { oauth_token, oauth_verifier } = req.query;
+    
+    if (!oauth_token || !oauth_verifier) {
+      return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=twitter_auth_failed`);
+    }
+
+    // Redirect to client with tokens
+    res.redirect(`${process.env.CLIENT_URL}/twitter-callback?oauth_token=${oauth_token}&oauth_verifier=${oauth_verifier}`);
+  } catch (error) {
+    console.error('Twitter callback error:', error);
+    res.redirect(`${process.env.CLIENT_URL}/dashboard?error=twitter_auth_failed`);
+  }
+});
+
 export default router;
+
+// Handle Twitter OAuth callback
+router.get('/callback', async (req, res) => {
+  try {
+    const { oauth_token, oauth_verifier } = req.query;
+    
+    if (!oauth_token || !oauth_verifier) {
+      return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=twitter_auth_failed`);
+    }
+
+    // Redirect to client with tokens
+    res.redirect(`${process.env.CLIENT_URL}/twitter-callback?oauth_token=${oauth_token}&oauth_verifier=${oauth_verifier}`);
+  } catch (error) {
+    console.error('Twitter callback error:', error);
+    res.redirect(`${process.env.CLIENT_URL}/dashboard?error=twitter_auth_failed`);
+  }
+});
