@@ -94,6 +94,14 @@ export const auth = {
   logout: () => api.post('/api/auth/logout'),
 };
 
+// Twitter endpoints
+export const twitter = {
+  getStatus: () => api.get('/api/twitter/status'),
+  connect: () => api.get('/api/twitter/connect'),
+  disconnect: () => api.post('/api/twitter/disconnect'),
+  getProfile: () => api.get('/api/twitter/profile'),
+};
+
 // Tweet endpoints
 export const tweets = {
   create: (tweetData) => api.post('/api/tweets', tweetData),
