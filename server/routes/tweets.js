@@ -22,8 +22,35 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
     if (media && media.length > 0) creditCost += media.length; // Additional cost for media
     if (thread && thread.length > 0) creditCost += thread.length; // Additional cost for thread
 
+    // Get JWT token AFTER authentication middleware (which may have refreshed it)
+    // Check if middleware set a new token in response headers first
+    let userToken = null;
+    
+    // Try to extract token from Set-Cookie header if it was refreshed
+    const setCookieHeader = res.getHeaders()['set-cookie'];
+    if (setCookieHeader) {
+      const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+      const accessTokenCookie = cookies.find(cookie => 
+        typeof cookie === 'string' && cookie.startsWith('accessToken=')
+      );
+      if (accessTokenCookie) {
+        userToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
+        console.log('Using refreshed token from response header');
+      }
+    }
+    
+    // Fallback to request cookies or Authorization header
+    if (!userToken) {
+      userToken = req.cookies?.accessToken;
+      if (!userToken) {
+        const authHeader = req.headers['authorization'];
+        userToken = authHeader && authHeader.split(' ')[1];
+      }
+      console.log('Using token from request');
+    }
+
     // Check and deduct credits
-    const creditCheck = await creditService.checkAndDeductCredits(userId, 'tweet_post', creditCost);
+    const creditCheck = await creditService.checkAndDeductCredits(userId, 'tweet_post', creditCost, userToken);
     if (!creditCheck.success) {
       return res.status(402).json({ 
         error: 'Insufficient credits',
@@ -32,13 +59,8 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       });
     }
 
-    // Create Twitter client
-    const twitterClient = new TwitterApi({
-      appKey: process.env.TWITTER_API_KEY,
-      appSecret: process.env.TWITTER_API_SECRET,
-      accessToken: twitterAccount.access_token,
-      accessSecret: twitterAccount.access_token_secret,
-    });
+    // Create Twitter client with OAuth 2.0
+    const twitterClient = new TwitterApi(twitterAccount.access_token);
 
     let tweetResponse;
 
@@ -83,14 +105,13 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       // Store tweet in database
       const { rows } = await pool.query(
         `INSERT INTO tweets (
-          user_id, twitter_account_id, tweet_id, content, 
+          user_id, tweet_id, content, 
           media_urls, thread_tweets, credits_used, 
           impressions, likes, retweets, replies, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0, 'posted')
+        ) VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, 'posted')
         RETURNING *`,
         [
           userId,
-          twitterAccount.id,
           tweetResponse.data.id,
           content,
           JSON.stringify(media || []),
@@ -113,7 +134,12 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
     } catch (twitterError) {
       // Refund credits on Twitter API failure
-      await creditService.refundCredits(userId, 'tweet_post_failed', creditCost);
+      console.log('Attempting to refund credits due to Twitter API error...');
+      try {
+        await creditService.refundCredits(userId, 'tweet_post_failed', creditCost, userToken);
+      } catch (refundError) {
+        console.log('Refund failed (non-critical):', refundError.message);
+      }
       
       throw {
         code: 'TWITTER_API_ERROR',
@@ -124,7 +150,24 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
   } catch (error) {
     console.error('Post tweet error:', error);
-    if (error.code) throw error;
+    
+    // Handle specific error types
+    if (error.code === 'TWITTER_API_ERROR') {
+      return res.status(400).json({ 
+        error: error.message,
+        details: error.details
+      });
+    }
+    
+    if (error.code === 'INSUFFICIENT_CREDITS') {
+      return res.status(402).json({
+        error: 'Insufficient credits',
+        required: error.required,
+        available: error.available
+      });
+    }
+    
+    // Generic server error
     res.status(500).json({ error: 'Failed to post tweet' });
   }
 });
@@ -138,8 +181,35 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
     // Calculate credit cost for AI generation
     const creditCost = max_tweets * 2; // 2 credits per AI-generated tweet
 
+    // Get JWT token AFTER authentication middleware (which may have refreshed it)
+    // Check if middleware set a new token in response headers first
+    let userToken = null;
+    
+    // Try to extract token from Set-Cookie header if it was refreshed
+    const setCookieHeader = res.getHeaders()['set-cookie'];
+    if (setCookieHeader) {
+      const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+      const accessTokenCookie = cookies.find(cookie => 
+        typeof cookie === 'string' && cookie.startsWith('accessToken=')
+      );
+      if (accessTokenCookie) {
+        userToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
+        console.log('Using refreshed token from response header for AI generation');
+      }
+    }
+    
+    // Fallback to request cookies or Authorization header
+    if (!userToken) {
+      userToken = req.cookies?.accessToken;
+      if (!userToken) {
+        const authHeader = req.headers['authorization'];
+        userToken = authHeader && authHeader.split(' ')[1];
+      }
+      console.log('Using token from request for AI generation');
+    }
+
     // Check and deduct credits
-    const creditCheck = await creditService.checkAndDeductCredits(userId, 'ai_generation', creditCost);
+    const creditCheck = await creditService.checkAndDeductCredits(userId, 'ai_generation', creditCost, userToken);
     if (!creditCheck.success) {
       return res.status(402).json({ 
         error: 'Insufficient credits',
@@ -183,7 +253,12 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
 
     } catch (aiError) {
       // Refund credits on AI service failure
-      await creditService.refundCredits(userId, 'ai_generation_failed', creditCost);
+      console.log('Attempting to refund credits due to AI generation error...');
+      try {
+        await creditService.refundCredits(userId, 'ai_generation_failed', creditCost, userToken);
+      } catch (refundError) {
+        console.log('Refund failed (non-critical):', refundError.message);
+      }
       throw aiError;
     }
 
@@ -208,9 +283,9 @@ router.get('/', async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT t.*, ta.username, ta.display_name
+      `SELECT t.*, ta.twitter_username as username, ta.twitter_display_name as display_name
        FROM tweets t
-       JOIN twitter_accounts ta ON t.twitter_account_id = ta.id
+       JOIN twitter_auth ta ON t.user_id = ta.user_id
        ${whereClause}
        ORDER BY t.created_at DESC
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -257,13 +332,8 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
 
     const tweet = rows[0];
 
-    // Create Twitter client
-    const twitterClient = new TwitterApi({
-      appKey: process.env.TWITTER_API_KEY,
-      appSecret: process.env.TWITTER_API_SECRET,
-      accessToken: req.twitterAccount.access_token,
-      accessSecret: req.twitterAccount.access_token_secret,
-    });
+    // Create Twitter client with OAuth 2.0
+    const twitterClient = new TwitterApi(req.twitterAccount.access_token);
 
     try {
       // Delete from Twitter

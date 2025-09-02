@@ -127,7 +127,7 @@ The server will start on `http://localhost:3002`
 ## Database Schema
 
 ### Tables
-- `twitter_accounts` - Connected Twitter accounts
+- `twitter_auth` - Twitter OAuth authentication and profile data
 - `tweets` - Tweet records and analytics
 - `scheduled_tweets` - Scheduled tweet queue
 - `ai_generations` - AI content generation history

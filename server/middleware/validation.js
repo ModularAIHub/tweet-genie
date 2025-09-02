@@ -13,7 +13,7 @@ export const validateRequest = (schema) => {
   };
 };
 
-// Validation schemas
+// Tweet content validation
 export const tweetSchema = Joi.object({
   content: Joi.string().min(1).max(280).required(),
   media: Joi.array().items(Joi.string()).max(4).optional(),
@@ -26,6 +26,7 @@ export const tweetSchema = Joi.object({
   ).max(25).optional()
 });
 
+// AI generation validation
 export const aiGenerateSchema = Joi.object({
   prompt: Joi.string().min(10).max(1000).required(),
   provider: Joi.string().valid('openai', 'perplexity', 'google').required(),
@@ -35,16 +36,18 @@ export const aiGenerateSchema = Joi.object({
   max_tweets: Joi.number().min(1).max(10).default(1)
 });
 
+// Schedule validation
 export const scheduleSchema = Joi.object({
   tweet_id: Joi.string().uuid().required(),
   scheduled_for: Joi.date().greater('now').required(),
   timezone: Joi.string().optional()
 });
 
+// Analytics validation (simplified)
 export const analyticsQuerySchema = Joi.object({
   start_date: Joi.date().required(),
   end_date: Joi.date().greater(Joi.ref('start_date')).required(),
   metrics: Joi.array().items(
-    Joi.string().valid('impressions', 'engagements', 'retweets', 'likes', 'replies', 'clicks')
+    Joi.string().valid('impressions', 'likes', 'retweets', 'replies')
   ).optional()
 });
