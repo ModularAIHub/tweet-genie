@@ -30,12 +30,20 @@ const Settings = () => {
     try {
       setLoading(true);
       const [accountsRes, providersRes] = await Promise.allSettled([
-        twitter.getAccounts(),
+        twitter.getStatus(),
         providers.list(),
       ]);
 
       if (accountsRes.status === 'fulfilled') {
-        setTwitterAccounts(accountsRes.value.data.accounts || []);
+        // getStatus returns { account: ... } or { accounts: [...] }
+        const data = accountsRes.value.data;
+        if (Array.isArray(data.accounts)) {
+          setTwitterAccounts(data.accounts);
+        } else if (data.account) {
+          setTwitterAccounts([data.account]);
+        } else {
+          setTwitterAccounts([]);
+        }
       }
 
       if (providersRes.status === 'fulfilled') {
@@ -51,16 +59,16 @@ const Settings = () => {
 
   const handleTwitterConnect = async () => {
     try {
-      const response = await twitter.getAuthUrl();
-      const { auth_url, oauth_token_secret } = response.data;
-      
-      // Store oauth_token_secret in sessionStorage for the callback
-      sessionStorage.setItem('oauth_token_secret', oauth_token_secret);
-      
+      const response = await twitter.connect();
+      const { url, oauth_token, state, oauth_token_secret } = response.data;
+      // Store oauth_token_secret in sessionStorage for the callback (if needed)
+      if (oauth_token_secret) {
+        sessionStorage.setItem('oauth_token_secret', oauth_token_secret);
+      }
       // Open Twitter auth in new popup window
       const popup = window.open(
-        auth_url, 
-        'twitter-auth', 
+        url,
+        'twitter-auth',
         'width=600,height=600,scrollbars=yes,resizable=yes'
       );
       

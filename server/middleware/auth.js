@@ -62,7 +62,6 @@ export const authenticateToken = async (req, res, next) => {
               withCredentials: true
             }
           );
-          
           // Extract new access token from response cookies
           const setCookieHeader = refreshResponse.headers['set-cookie'];
           if (setCookieHeader) {
@@ -75,7 +74,6 @@ export const authenticateToken = async (req, res, next) => {
               // Verify the new token
               decoded = jwt.verify(newToken, process.env.JWT_SECRET);
               console.log('New token verified for user:', decoded.userId);
-              
               // Set the new token in response cookies for future requests
               res.cookie('accessToken', newToken, {
                 httpOnly: true,
@@ -83,6 +81,8 @@ export const authenticateToken = async (req, res, next) => {
                 sameSite: 'lax',
                 maxAge: 15 * 60 * 1000 // 15 minutes
               });
+              // Use the new token for subsequent platform requests
+              token = newToken;
             } else {
               throw new Error('No access token in refresh response');
             }
@@ -194,9 +194,9 @@ export const authenticateToken = async (req, res, next) => {
 
 export const validateTwitterConnection = async (req, res, next) => {
   try {
-    // Check if user has valid Twitter connection
+    // Check if user has valid Twitter connection in twitter_auth table
     const { rows } = await pool.query(
-      'SELECT * FROM twitter_accounts WHERE user_id = $1 AND is_active = true',
+      'SELECT * FROM twitter_auth WHERE user_id = $1',
       [req.user.id]
     );
 
@@ -204,7 +204,18 @@ export const validateTwitterConnection = async (req, res, next) => {
       return res.status(400).json({ error: 'Twitter account not connected' });
     }
 
-    req.twitterAccount = rows[0];
+    // Map the twitter_auth data to the expected format for tweet posting
+    const twitterAuthData = rows[0];
+    req.twitterAccount = {
+      id: twitterAuthData.id, // Use the UUID id from twitter_auth table
+      twitter_user_id: twitterAuthData.twitter_user_id, // Keep the Twitter ID for reference
+      username: twitterAuthData.twitter_username,
+      display_name: twitterAuthData.twitter_display_name,
+      access_token: twitterAuthData.access_token,
+      access_token_secret: twitterAuthData.access_token_secret,
+      refresh_token: twitterAuthData.refresh_token
+    };
+    
     next();
   } catch (error) {
     console.error('Twitter validation error:', error);

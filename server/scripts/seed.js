@@ -1,42 +1,12 @@
 import pool from '../config/database.js';
 
 async function seedDatabase() {
-  const client = await pool.connect();
+  console.log('Tweet Genie database seeding...');
+  console.log('No seed data required for Tweet Genie.');
+  console.log('User data is created dynamically through OAuth and usage.');
   
-  try {
-    console.log('Starting Tweet Genie database seeding...');
-
-    // Check if seeding is needed
-    const { rows: existingData } = await client.query(
-      'SELECT COUNT(*) FROM migration_history'
-    );
-
-    if (parseInt(existingData[0].count) === 0) {
-      console.log('No migrations found. Please run migrations first.');
-      return;
-    }
-
-    console.log('Database seeding completed!');
-
-  } catch (error) {
-    console.error('Seeding error:', error);
-    throw error;
-  } finally {
-    client.release();
-  }
+  return true;
 }
 
-// Run seeding if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  seedDatabase()
-    .then(() => {
-      console.log('Seeding finished');
-      process.exit(0);
-    })
-    .catch((error) => {
-      console.error('Seeding failed:', error);
-      process.exit(1);
-    });
-}
-
+// Export for potential future use
 export { seedDatabase };

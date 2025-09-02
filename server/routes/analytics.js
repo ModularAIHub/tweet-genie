@@ -55,87 +55,15 @@ router.get('/overview', async (req, res) => {
       [userId, startDate]
     );
 
-    // Get credit usage
-    const { rows: creditUsage } = await pool.query(
-      `SELECT 
-        SUM(credits_used) as total_credits_used,
-        COUNT(*) as total_operations
-       FROM tweets 
-       WHERE user_id = $1 AND created_at >= $2`,
-      [userId, startDate]
-    );
-
     res.json({
       overview: tweetMetrics[0],
       daily_metrics: dailyMetrics,
-      top_tweets: topTweets,
-      credit_usage: creditUsage[0]
+      top_tweets: topTweets
     });
 
   } catch (error) {
     console.error('Analytics overview error:', error);
     res.status(500).json({ error: 'Failed to fetch analytics overview' });
-  }
-});
-
-// Get detailed analytics
-router.post('/detailed', validateRequest(analyticsQuerySchema), async (req, res) => {
-  try {
-    const { start_date, end_date, metrics = ['impressions', 'likes', 'retweets', 'replies'] } = req.body;
-    const userId = req.user.id;
-
-    // Build dynamic query based on requested metrics
-    const metricColumns = metrics.map(metric => `SUM(${metric}) as total_${metric}`).join(', ');
-    const avgColumns = metrics.map(metric => `AVG(${metric}) as avg_${metric}`).join(', ');
-
-    const { rows: aggregatedMetrics } = await pool.query(
-      `SELECT 
-        COUNT(*) as total_tweets,
-        ${metricColumns},
-        ${avgColumns}
-       FROM tweets 
-       WHERE user_id = $1 AND created_at BETWEEN $2 AND $3 AND status = 'posted'`,
-      [userId, start_date, end_date]
-    );
-
-    // Get time series data
-    const { rows: timeSeriesData } = await pool.query(
-      `SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as tweets_count,
-        ${metricColumns}
-       FROM tweets 
-       WHERE user_id = $1 AND created_at BETWEEN $2 AND $3 AND status = 'posted'
-       GROUP BY DATE(created_at)
-       ORDER BY date ASC`,
-      [userId, start_date, end_date]
-    );
-
-    // Get engagement rate trends
-    const { rows: engagementTrends } = await pool.query(
-      `SELECT 
-        DATE(created_at) as date,
-        CASE 
-          WHEN SUM(impressions) > 0 
-          THEN ROUND((SUM(likes) + SUM(retweets) + SUM(replies)) * 100.0 / SUM(impressions), 2)
-          ELSE 0 
-        END as engagement_rate
-       FROM tweets 
-       WHERE user_id = $1 AND created_at BETWEEN $2 AND $3 AND status = 'posted'
-       GROUP BY DATE(created_at)
-       ORDER BY date ASC`,
-      [userId, start_date, end_date]
-    );
-
-    res.json({
-      aggregated_metrics: aggregatedMetrics[0],
-      time_series: timeSeriesData,
-      engagement_trends: engagementTrends
-    });
-
-  } catch (error) {
-    console.error('Detailed analytics error:', error);
-    res.status(500).json({ error: 'Failed to fetch detailed analytics' });
   }
 });
 
@@ -156,10 +84,10 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
     // Get recent tweets that need metric updates
     const { rows: tweetsToUpdate } = await pool.query(
       `SELECT id, tweet_id FROM tweets 
-       WHERE user_id = $1 AND twitter_account_id = $2 
-       AND status = 'posted' AND created_at >= NOW() - INTERVAL '7 days'
+       WHERE user_id = $1 AND status = 'posted' 
+       AND created_at >= NOW() - INTERVAL '7 days'
        ORDER BY created_at DESC LIMIT 20`,
-      [userId, twitterAccount.id]
+      [userId]
     );
 
     let updatedCount = 0;
@@ -209,48 +137,6 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
   } catch (error) {
     console.error('Sync analytics error:', error);
     res.status(500).json({ error: 'Failed to sync analytics data' });
-  }
-});
-
-// Get hashtag performance
-router.get('/hashtags', async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { days = 30 } = req.query;
-
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
-
-    // Extract hashtags from tweet content and calculate performance
-    const { rows: hashtagData } = await pool.query(
-      `SELECT 
-        hashtag,
-        COUNT(*) as usage_count,
-        AVG(impressions) as avg_impressions,
-        AVG(likes) as avg_likes,
-        AVG(retweets) as avg_retweets,
-        SUM(impressions + likes + retweets + replies) as total_engagement
-       FROM (
-         SELECT 
-           LOWER(TRIM(regexp_split_to_table(content, '#[\\w]+', 'g'))) as hashtag,
-           impressions, likes, retweets, replies
-         FROM tweets 
-         WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-         AND content ~ '#[\\w]+'
-       ) hashtag_tweets
-       WHERE hashtag != ''
-       GROUP BY hashtag
-       HAVING COUNT(*) >= 2
-       ORDER BY total_engagement DESC
-       LIMIT 20`,
-      [userId, startDate]
-    );
-
-    res.json({ hashtag_performance: hashtagData });
-
-  } catch (error) {
-    console.error('Hashtag analytics error:', error);
-    res.status(500).json({ error: 'Failed to fetch hashtag analytics' });
   }
 });
 

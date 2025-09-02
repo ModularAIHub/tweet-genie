@@ -29,7 +29,7 @@ const TweetComposer = () => {
 
   const fetchTwitterAccounts = async () => {
     try {
-      const response = await twitter.getAccounts();
+      const response = await twitter.getStatus();
       setTwitterAccounts(response.data.accounts || []);
     } catch (error) {
       console.error('Failed to fetch Twitter accounts:', error);

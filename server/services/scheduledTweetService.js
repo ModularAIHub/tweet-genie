@@ -8,12 +8,12 @@ class ScheduledTweetService {
     try {
       // Get tweets scheduled for now or earlier
       const { rows: scheduledTweets } = await pool.query(
-        `SELECT st.*, ta.access_token, ta.access_token_secret, ta.username
+        `SELECT st.*, ta.access_token, ta.twitter_username
          FROM scheduled_tweets st
-         JOIN twitter_accounts ta ON st.twitter_account_id = ta.id
-         WHERE st.status = 'scheduled' 
-         AND st.scheduled_time <= NOW()
-         ORDER BY st.scheduled_time ASC
+         JOIN twitter_auth ta ON st.user_id = ta.user_id
+         WHERE st.status = 'pending' 
+         AND st.scheduled_for <= NOW()
+         ORDER BY st.scheduled_for ASC
          LIMIT 10`
       );
 
@@ -38,13 +38,8 @@ class ScheduledTweetService {
         ['processing', scheduledTweet.id]
       );
 
-      // Create Twitter client
-      const twitterClient = new TwitterApi({
-        appKey: process.env.TWITTER_API_KEY,
-        appSecret: process.env.TWITTER_API_SECRET,
-        accessToken: scheduledTweet.access_token,
-        accessSecret: scheduledTweet.access_token_secret,
-      });
+      // Create Twitter client with OAuth 2.0
+      const twitterClient = new TwitterApi(scheduledTweet.access_token);
 
       // Handle media upload if present
       let mediaIds = [];

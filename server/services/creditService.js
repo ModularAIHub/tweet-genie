@@ -22,8 +22,20 @@ class CreditService {
     }
   }
 
-  async checkAndDeductCredits(userId, operation, amount) {
+  async checkAndDeductCredits(userId, operation, amount, userToken = null) {
     try {
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+
+      // Use JWT token if provided, otherwise fall back to API key
+      if (userToken) {
+        headers['Authorization'] = `Bearer ${userToken}`;
+      } else {
+        headers['X-API-Key'] = this.hubApiKey;
+        headers['X-Service'] = 'tweet-genie';
+      }
+
       const response = await axios.post(`${this.hubApiUrl}/api/credits/deduct`, {
         user_id: userId,
         operation,
@@ -33,10 +45,7 @@ class CreditService {
           timestamp: new Date().toISOString()
         }
       }, {
-        headers: {
-          'X-API-Key': this.hubApiKey,
-          'X-Service': 'tweet-genie'
-        }
+        headers
       });
 
       return {
@@ -59,8 +68,20 @@ class CreditService {
     }
   }
 
-  async refundCredits(userId, operation, amount) {
+  async refundCredits(userId, operation, amount, userToken = null) {
     try {
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+
+      // Use JWT token if provided, otherwise fall back to API key
+      if (userToken) {
+        headers['Authorization'] = `Bearer ${userToken}`;
+      } else {
+        headers['X-API-Key'] = this.hubApiKey;
+        headers['X-Service'] = 'tweet-genie';
+      }
+
       const response = await axios.post(`${this.hubApiUrl}/api/credits/refund`, {
         user_id: userId,
         operation,
@@ -71,10 +92,7 @@ class CreditService {
           timestamp: new Date().toISOString()
         }
       }, {
-        headers: {
-          'X-API-Key': this.hubApiKey,
-          'X-Service': 'tweet-genie'
-        }
+        headers
       });
 
       return {
@@ -83,9 +101,13 @@ class CreditService {
         refunded_amount: amount
       };
     } catch (error) {
-      console.error('Error refunding credits:', error);
+      console.error('Error refunding credits:', error.response?.status, error.response?.data?.error || error.message);
       // Don't throw error for refund failures, just log them
-      return { success: false, error: error.message };
+      return { 
+        success: false, 
+        error: error.response?.data?.error || error.message,
+        note: 'Refund failed but this is non-critical'
+      };
     }
   }
 
@@ -122,15 +144,15 @@ class CreditService {
 
   async calculateCost(operation, metadata = {}) {
     const costs = {
-      'tweet_post': 1,
-      'tweet_with_media': 2,
-      'ai_generation': 2,
-      'thread_post': 1,
-      'scheduling': 0,
-      'analytics_sync': 0
+      'tweet_post': 1.0,
+      'tweet_with_media': 1.5,
+      'ai_generation': 2.0,
+      'thread_post': 0.5, // per tweet in thread
+      'scheduling': 0.0, // free
+      'analytics_sync': 0.0 // free
     };
 
-    let baseCost = costs[operation] || 1;
+    let baseCost = costs[operation] || 1.0;
 
     // Adjust cost based on metadata
     if (operation === 'tweet_post' && metadata.media_count > 0) {
@@ -145,7 +167,8 @@ class CreditService {
       baseCost = baseCost * metadata.tweet_count;
     }
 
-    return baseCost;
+    // Round to 2 decimal places for consistency
+    return Math.round(baseCost * 100) / 100;
   }
 }
 
