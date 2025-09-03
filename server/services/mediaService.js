@@ -55,6 +55,9 @@ class MediaService {
             bufferSize: buffer.length,
             base64Length: base64Data.length
           });
+        } else if (typeof mediaFile === 'string') {
+          // Handle other string formats (this shouldn't happen with the frontend fix)
+          throw new Error(`Invalid media format: received string without data: prefix. Length: ${mediaFile.length}`);
         } else {
           // Handle file upload (existing logic)
           buffer = mediaFile.buffer;
@@ -64,6 +67,11 @@ class MediaService {
             mimetype,
             bufferSize: buffer?.length
           });
+        }
+
+        // Validate that we have a valid buffer
+        if (!buffer || !Buffer.isBuffer(buffer)) {
+          throw new Error('Invalid media data: buffer is required');
         }
 
         // Validate file

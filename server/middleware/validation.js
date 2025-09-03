@@ -15,16 +15,18 @@ export const validateRequest = (schema) => {
 
 // Tweet content validation
 export const tweetSchema = Joi.object({
-  content: Joi.string().min(1).max(280).required(),
+  content: Joi.string().min(1).max(280).when('thread', {
+    is: Joi.exist(),
+    then: Joi.optional(),
+    otherwise: Joi.required()
+  }),
   media: Joi.array().items(Joi.string()).max(4).optional(),
   scheduled_for: Joi.date().greater('now').optional(),
-  thread: Joi.array().items(
-    Joi.object({
-      content: Joi.string().min(1).max(280).required(),
-      media: Joi.array().items(Joi.string()).max(4).optional()
-    })
+  thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
+  threadMedia: Joi.array().items(
+    Joi.array().items(Joi.string()).max(4)
   ).max(25).optional()
-});
+}).or('content', 'thread');
 
 // AI generation validation
 export const aiGenerateSchema = Joi.object({
