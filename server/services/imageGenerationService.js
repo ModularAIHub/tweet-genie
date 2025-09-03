@@ -130,7 +130,9 @@ class ImageGenerationService {
 
       // Look for image data in the response parts
       for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData && part.inlineData.data) {
+        if (part.text) {
+          console.log('Gemini Flash response text:', part.text);
+        } else if (part.inlineData) {
           const imageData = part.inlineData.data;
           const imageBuffer = Buffer.from(imageData, 'base64');
           
@@ -141,14 +143,14 @@ class ImageGenerationService {
           // Save image to disk
           fs.writeFileSync(filepath, imageBuffer);
           
+          console.log(`Image saved as ${filename}`);
+          
           return {
             imageBuffer,
             filename,
             filepath,
             provider: 'Gemini 2.5 Flash'
           };
-        } else if (part.text) {
-          console.log('Gemini Flash response text:', part.text);
         }
       }
 

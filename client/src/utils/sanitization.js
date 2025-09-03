@@ -118,10 +118,10 @@ export const sanitizeUserInput = (input, options = {}) => {
   // 7. Handle whitespace based on preserveSpacing option
   if (preserveSpacing) {
     // For AI prompts and content where spacing matters, only remove excessive whitespace
-    sanitized = sanitized.replace(/   +/g, '  ').trim(); // Replace 3+ spaces with 2 spaces
+    sanitized = sanitized.replace(/\s{4,}/g, '   '); // Replace 4+ spaces with 3 spaces
   } else {
-    // For regular content, normalize all whitespace
-    sanitized = sanitized.replace(/\s+/g, ' ').trim();
+    // For regular content, only normalize excessive whitespace but preserve normal spaces
+    sanitized = sanitized.replace(/\s{3,}/g, '  '); // Replace 3+ spaces with 2 spaces
   }
 
   return sanitized;

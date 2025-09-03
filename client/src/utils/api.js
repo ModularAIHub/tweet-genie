@@ -125,6 +125,8 @@ export const analytics = {
   getDetailed: (data) => api.post('/api/analytics/detailed', data),
   sync: () => api.post('/api/analytics/sync'),
   getHashtags: (params) => api.get('/api/analytics/hashtags', { params }),
+  getEngagement: (params) => api.get('/api/analytics/engagement', { params }),
+  getAudience: (params) => api.get('/api/analytics/audience', { params }),
 };
 
 // Credits endpoints

@@ -52,31 +52,31 @@ export const useTweetComposer = () => {
   const [scheduledTweets, setScheduledTweets] = useState([]);
   const [isLoadingScheduled, setIsLoadingScheduled] = useState(false);
 
-  // Sanitized setters
+  // Sanitized setters with proper space preservation
   const setContent = (value) => {
-    const sanitized = sanitizeUserInput(value, { maxLength: 500 });
-    setContentState(sanitized);
+    // Only trim start/end and limit length, preserve all internal spaces
+    const cleaned = value.length > 500 ? value.substring(0, 500) : value;
+    setContentState(cleaned);
   };
 
   const setAiPrompt = (value) => {
-    // For AI prompts, preserve natural spacing for better language processing
-    const sanitized = sanitizeUserInput(value, { 
-      maxLength: 1000,
-      preserveSpacing: true
-    });
-    setAiPromptState(sanitized);
+    // Only trim start/end and limit length, preserve all internal spaces
+    const cleaned = value.length > 1000 ? value.substring(0, 1000) : value;
+    setAiPromptState(cleaned);
   };
 
   const setImagePrompt = (value) => {
-    const sanitized = sanitizeImagePrompt(value);
-    setImagePromptState(sanitized);
+    // Only trim start/end and limit length, preserve all internal spaces
+    const cleaned = value.length > 1000 ? value.substring(0, 1000) : value;
+    setImagePromptState(cleaned);
   };
 
   const setThreadTweets = (tweets) => {
-    const sanitizedTweets = tweets.map(tweet => 
-      tweet === '---' ? tweet : sanitizeUserInput(tweet, { maxLength: 300 })
+    // Only limit length, preserve all internal spaces
+    const cleanedTweets = tweets.map(tweet => 
+      tweet === '---' ? tweet : (tweet.length > 300 ? tweet.substring(0, 300) : tweet)
     );
-    setThreadTweetsState(sanitizedTweets);
+    setThreadTweetsState(cleanedTweets);
     
     // Ensure threadImages array matches threadTweets length
     setThreadImages(prev => {

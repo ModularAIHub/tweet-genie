@@ -141,6 +141,34 @@ const migrations = [
       -- Add index for OAuth 1.0a tokens
       CREATE INDEX IF NOT EXISTS idx_twitter_auth_oauth1_token ON twitter_auth(oauth1_access_token);
     `
+  },
+  {
+    version: 8,
+    name: 'enhance_tweets_for_external_analytics',
+    sql: `
+      -- Add fields to support external tweets (posted outside our platform)
+      ALTER TABLE tweets ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'platform';
+      ALTER TABLE tweets ADD COLUMN IF NOT EXISTS external_created_at TIMESTAMP;
+      ALTER TABLE tweets ADD COLUMN IF NOT EXISTS author_id VARCHAR(50);
+      ALTER TABLE tweets ADD COLUMN IF NOT EXISTS lang VARCHAR(10);
+      ALTER TABLE tweets ADD COLUMN IF NOT EXISTS quote_count INTEGER DEFAULT 0;
+      ALTER TABLE tweets ADD COLUMN IF NOT EXISTS bookmark_count INTEGER DEFAULT 0;
+      
+      -- Make content optional for external tweets (we might not have full content)
+      ALTER TABLE tweets ALTER COLUMN content DROP NOT NULL;
+      
+      -- Add indexes for new fields
+      CREATE INDEX IF NOT EXISTS idx_tweets_source ON tweets(source);
+      CREATE INDEX IF NOT EXISTS idx_tweets_external_created_at ON tweets(external_created_at);
+      CREATE INDEX IF NOT EXISTS idx_tweets_author_id ON tweets(author_id);
+      
+      -- Add constraint to ensure either platform or external data is present
+      ALTER TABLE tweets ADD CONSTRAINT check_tweet_data 
+        CHECK (
+          (source = 'platform' AND content IS NOT NULL) OR 
+          (source = 'external' AND tweet_id IS NOT NULL)
+        );
+    `
   }
 ];
 
