@@ -13,6 +13,8 @@ import schedulingRoutes from './routes/scheduling.js';
 import analyticsRoutes from './routes/analytics.js';
 import creditsRoutes from './routes/credits.js';
 import providersRoutes from './routes/providers.js';
+import aiRoutes from './routes/ai.js';
+import imageGenerationRoutes from './routes/imageGeneration.js';
 
 // Middleware imports
 import { authenticateToken } from './middleware/auth.js';
@@ -49,6 +51,9 @@ app.use('/api/scheduling', authenticateToken, schedulingRoutes);
 app.use('/api/analytics', authenticateToken, analyticsRoutes);
 app.use('/api/credits', authenticateToken, creditsRoutes);
 app.use('/api/providers', authenticateToken, providersRoutes);
+app.use('/api/ai', authenticateToken, aiRoutes);
+app.use('/api/image-generation', authenticateToken, imageGenerationRoutes);
+app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 
 // Error handling
 app.use(errorHandler);

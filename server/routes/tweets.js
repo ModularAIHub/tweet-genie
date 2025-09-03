@@ -17,10 +17,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
 
-    // Calculate credit cost
-    let creditCost = 1; // Base cost for posting
-    if (media && media.length > 0) creditCost += media.length; // Additional cost for media
-    if (thread && thread.length > 0) creditCost += thread.length; // Additional cost for thread
+    // Tweet posting is FREE - no credit calculation needed
 
     // Get JWT token AFTER authentication middleware (which may have refreshed it)
     // Check if middleware set a new token in response headers first
@@ -49,18 +46,43 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       console.log('Using token from request');
     }
 
-    // Check and deduct credits
-    const creditCheck = await creditService.checkAndDeductCredits(userId, 'tweet_post', creditCost, userToken);
-    if (!creditCheck.success) {
-      return res.status(402).json({ 
-        error: 'Insufficient credits',
-        required: creditCost,
-        available: creditCheck.available
-      });
-    }
+    // Tweet posting is now FREE - no credit deduction
+    console.log('Tweet posting is free - no credits deducted');
 
     // Create Twitter client with OAuth 2.0
+    console.log('Creating Twitter client with access token:', {
+      hasToken: !!twitterAccount.access_token,
+      tokenLength: twitterAccount.access_token?.length,
+      tokenPreview: twitterAccount.access_token?.substring(0, 20) + '...'
+    });
+    
     const twitterClient = new TwitterApi(twitterAccount.access_token);
+
+    // Test token permissions first
+    try {
+      console.log('Testing Twitter token permissions...');
+      const userTest = await twitterClient.v2.me();
+      console.log('✅ Token has read access:', !!userTest.data);
+      console.log('User data:', { id: userTest.data?.id, username: userTest.data?.username });
+      
+      // Simple test to see if we can make any API calls
+      console.log('Testing basic API access...');
+      
+    } catch (testError) {
+      console.error('❌ Token test failed:', {
+        message: testError.message,
+        code: testError.code,
+        status: testError.status,
+        data: testError.data
+      });
+      
+      // If basic API calls fail, the token is definitely invalid
+      throw {
+        code: 'TWITTER_TOKEN_INVALID',
+        message: 'Twitter token is invalid or expired. Please reconnect your account.',
+        details: testError.message
+      };
+    }
 
     let tweetResponse;
 
@@ -68,16 +90,45 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       // Handle media upload if present
       let mediaIds = [];
       if (media && media.length > 0) {
-        mediaIds = await mediaService.uploadMedia(media, twitterClient);
+        console.log('Media detected, attempting upload...');
+        
+        // Check if we have OAuth 1.0a tokens for media upload
+        if (!twitterAccount.oauth1_access_token || !twitterAccount.oauth1_access_token_secret) {
+          throw {
+            code: 'OAUTH1_REQUIRED',
+            message: 'Media uploads require OAuth 1.0a authentication. Please reconnect your Twitter account.',
+            details: 'Go to Settings > Twitter Account and reconnect to enable media uploads.'
+          };
+        }
+        
+        const oauth1Tokens = {
+          accessToken: twitterAccount.oauth1_access_token,
+          accessTokenSecret: twitterAccount.oauth1_access_token_secret
+        };
+        
+        mediaIds = await mediaService.uploadMedia(media, twitterClient, oauth1Tokens);
+        console.log('Media upload completed, IDs:', mediaIds);
       }
 
       // Post main tweet
+      console.log('Preparing tweet data...');
       const tweetData = {
         text: content,
         ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
       };
+      
+      console.log('Posting tweet to Twitter API...', {
+        hasText: !!tweetData.text,
+        textLength: tweetData.text?.length,
+        hasMedia: !!tweetData.media,
+        mediaIds: mediaIds
+      });
 
       tweetResponse = await twitterClient.v2.tweet(tweetData);
+      console.log('Tweet posted successfully:', {
+        tweetId: tweetResponse.data?.id,
+        text: tweetResponse.data?.text?.substring(0, 50) + '...'
+      });
 
       // Handle thread if present
       let threadTweets = [];
@@ -116,7 +167,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           content,
           JSON.stringify(media || []),
           JSON.stringify(threadTweets),
-          creditCost
+          0  // No credits used for posting
         ]
       );
 
@@ -127,34 +178,67 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           tweet_id: tweetResponse.data.id,
           content: content,
           url: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
-          credits_used: creditCost,
+          credits_used: 0,  // No credits charged for posting
           thread_count: threadTweets.length
         }
       });
 
     } catch (twitterError) {
-      // Refund credits on Twitter API failure
-      console.log('Attempting to refund credits due to Twitter API error...');
-      try {
-        await creditService.refundCredits(userId, 'tweet_post_failed', creditCost, userToken);
-      } catch (refundError) {
-        console.log('Refund failed (non-critical):', refundError.message);
-      }
+      // Note: No credit refund needed since posting is free
+      console.log('Twitter API error occurred - no credits to refund since posting is free');
       
-      throw {
-        code: 'TWITTER_API_ERROR',
-        message: 'Failed to post tweet',
-        details: twitterError.message
-      };
+      // Check if it's a rate limit error (429)
+      const isRateLimitError = twitterError.code === 429 || 
+                              twitterError.message?.includes('429') ||
+                              twitterError.toString().includes('429');
+      
+      // Check if it's a 403 (permissions) error
+      const is403Error = twitterError.code === 403 || 
+                        twitterError.message?.includes('403') ||
+                        twitterError.toString().includes('403');
+      
+      if (isRateLimitError) {
+        console.log('✅ Rate limit detected - Twitter API returned 429');
+        throw {
+          code: 'TWITTER_RATE_LIMIT',
+          message: 'Twitter rate limit reached. Please try again later.',
+          details: twitterError.message,
+          retryAfter: twitterError.rateLimit?.reset || 'unknown'
+        };
+      } else if (is403Error) {
+        console.log('🔐 Permissions error detected - Twitter API returned 403');
+        throw {
+          code: 'TWITTER_PERMISSIONS_ERROR',
+          message: 'Twitter permissions expired. Please reconnect your account.',
+          details: twitterError.message
+        };
+      } else {
+        console.log('❌ Other Twitter API error:', twitterError.message);
+        throw {
+          code: 'TWITTER_API_ERROR',
+          message: 'Failed to post tweet',
+          details: twitterError.message
+        };
+      }
     }
 
   } catch (error) {
     console.error('Post tweet error:', error);
     
     // Handle specific error types
+    if (error.code === 'TWITTER_PERMISSIONS_ERROR') {
+      return res.status(403).json({ 
+        error: error.message,
+        code: 'TWITTER_PERMISSIONS_ERROR',
+        details: error.details,
+        action: 'reconnect_twitter'
+      });
+    }
+    
     if (error.code === 'TWITTER_API_ERROR') {
       return res.status(400).json({ 
         error: error.message,
+        code: 'TWITTER_API_ERROR',
         details: error.details
       });
     }
@@ -178,8 +262,8 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
     const { prompt, provider, style, hashtags, mentions, max_tweets } = req.body;
     const userId = req.user.id;
 
-    // Calculate credit cost for AI generation
-    const creditCost = max_tweets * 2; // 2 credits per AI-generated tweet
+    // Calculate credit cost for AI text generation
+    const creditCost = 1.2; // 1.2 credits per AI text generation request
 
     // Get JWT token AFTER authentication middleware (which may have refreshed it)
     // Check if middleware set a new token in response headers first

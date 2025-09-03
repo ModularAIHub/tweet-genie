@@ -24,6 +24,19 @@ const Settings = () => {
 
   useEffect(() => {
     fetchData();
+    
+    // Check for OAuth 1.0a success parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('oauth1_connected') === 'true') {
+      toast.success('Media upload permissions enabled successfully!');
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    
+    if (urlParams.get('error') === 'oauth1_connection_failed') {
+      toast.error('Failed to enable media permissions. Please try again.');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
   }, []);
 
   const fetchData = async () => {
@@ -54,6 +67,35 @@ const Settings = () => {
       toast.error('Failed to load settings');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOAuth1Connect = async () => {
+    try {
+      const response = await twitter.connectOAuth1();
+      const { url } = response.data;
+      
+      // Open OAuth 1.0a auth in new popup window
+      const popup = window.open(
+        url,
+        'twitter-oauth1-auth',
+        'width=600,height=600,scrollbars=yes,resizable=yes'
+      );
+      
+      // Listen for popup completion
+      const checkClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkClosed);
+          // Check if OAuth 1.0a was successful by refreshing data
+          setTimeout(() => {
+            fetchData();
+          }, 1000);
+        }
+      }, 1000);
+      
+    } catch (error) {
+      console.error('OAuth 1.0a connect error:', error);
+      toast.error('Failed to initiate OAuth 1.0a connection');
     }
   };
 
@@ -106,14 +148,14 @@ const Settings = () => {
     }
   };
 
-  const handleTwitterDisconnect = async (accountId) => {
+  const handleTwitterDisconnect = async () => {
     if (!confirm('Are you sure you want to disconnect this Twitter account?')) {
       return;
     }
 
     try {
-      await twitter.disconnect(accountId);
-      toast.success('Twitter account disconnected');
+      await twitter.disconnect();
+      toast.success('Twitter account disconnected successfully!');
       fetchData();
     } catch (error) {
       console.error('Twitter disconnect error:', error);
@@ -208,38 +250,82 @@ const Settings = () => {
             {twitterAccounts.length > 0 ? (
               <div className="space-y-4">
                 {twitterAccounts.map((account) => (
-                  <div key={account.id} className="flex items-center justify-between p-4 bg-green-50 rounded-lg border border-green-200">
-                    <div className="flex items-center space-x-4">
-                      <img
-                        src={account.profile_image_url}
-                        alt="Profile"
-                        className="h-12 w-12 rounded-full"
-                      />
-                      <div>
-                        <h4 className="font-medium text-gray-900">
-                          {account.display_name}
-                        </h4>
-                        <p className="text-sm text-gray-600">
-                          @{account.username}
-                        </p>
-                        <p className="text-xs text-gray-500">
-                          {account.followers_count?.toLocaleString()} followers • 
-                          {account.following_count?.toLocaleString()} following
-                        </p>
+                  <div key={account.id} className="space-y-4">
+                    {/* OAuth 2.0 Connection Status */}
+                    <div className="flex items-center justify-between p-4 bg-green-50 rounded-lg border border-green-200">
+                      <div className="flex items-center space-x-4">
+                        <img
+                          src={account.profile_image_url}
+                          alt="Profile"
+                          className="h-12 w-12 rounded-full"
+                        />
+                        <div>
+                          <h4 className="font-medium text-gray-900">
+                            {account.display_name}
+                          </h4>
+                          <p className="text-sm text-gray-600">
+                            @{account.username}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {account.followers_count?.toLocaleString()} followers • 
+                            {account.following_count?.toLocaleString()} following
+                          </p>
+                          <p className="text-xs text-green-600 font-medium">
+                            ✓ OAuth 2.0 Connected (Text tweets)
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        <span className="flex items-center text-green-600 text-sm">
+                          <Check className="h-4 w-4 mr-1" />
+                          Connected
+                        </span>
+                        <button
+                          onClick={() => handleTwitterDisconnect()}
+                          className="btn btn-secondary btn-sm"
+                        >
+                          <Unlink className="h-4 w-4 mr-1" />
+                          Disconnect
+                        </button>
                       </div>
                     </div>
-                    <div className="flex items-center space-x-3">
-                      <span className="flex items-center text-green-600 text-sm">
-                        <Check className="h-4 w-4 mr-1" />
-                        Connected
-                      </span>
-                      <button
-                        onClick={() => handleTwitterDisconnect(account.id)}
-                        className="btn btn-secondary btn-sm"
-                      >
-                        <Unlink className="h-4 w-4 mr-1" />
-                        Disconnect
-                      </button>
+
+                    {/* OAuth 1.0a Status */}
+                    <div className={`p-4 rounded-lg border ${account.has_oauth1 ? 'bg-green-50 border-green-200' : 'bg-blue-50 border-blue-200'}`}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-medium text-gray-900 mb-1">
+                            Media Upload Permissions (OAuth 1.0a)
+                          </h4>
+                          <p className="text-sm text-gray-600 mb-2">
+                            Required for posting images, videos, and GIFs
+                          </p>
+                          {account.has_oauth1 ? (
+                            <p className="text-xs text-green-600 flex items-center">
+                              <Check className="h-3 w-3 mr-1" />
+                              📷 Media uploads enabled
+                            </p>
+                          ) : (
+                            <p className="text-xs text-blue-600">
+                              📷 Enable media uploads with additional Twitter authentication
+                            </p>
+                          )}
+                        </div>
+                        {account.has_oauth1 ? (
+                          <span className="flex items-center text-green-600 text-sm">
+                            <Check className="h-4 w-4 mr-1" />
+                            Enabled
+                          </span>
+                        ) : (
+                          <button
+                            onClick={handleOAuth1Connect}
+                            className="btn btn-primary btn-sm"
+                          >
+                            <LinkIcon className="h-4 w-4 mr-1" />
+                            Enable Media
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}

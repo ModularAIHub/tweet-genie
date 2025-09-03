@@ -98,6 +98,7 @@ export const auth = {
 export const twitter = {
   getStatus: () => api.get('/api/twitter/status'),
   connect: () => api.get('/api/twitter/connect'),
+  connectOAuth1: () => api.get('/api/twitter/connect-oauth1'),
   disconnect: () => api.post('/api/twitter/disconnect'),
   getProfile: () => api.get('/api/twitter/profile'),
 };
@@ -139,6 +140,25 @@ export const providers = {
   configure: (provider, data) => api.post(`/api/providers/${provider}`, data),
   remove: (provider) => api.delete(`/api/providers/${provider}`),
   test: (provider) => api.post(`/api/providers/${provider}/test`),
+};
+
+// AI Content Generation endpoints
+export const ai = {
+  generate: (prompt, style = 'casual') => api.post('/api/ai/generate', { prompt, style }),
+  generateOptions: (prompt, style = 'casual', count = 3) => 
+    api.post('/api/ai/generate-options', { prompt, style, count }),
+};
+
+// AI Image Generation endpoints
+export const imageGeneration = {
+  generate: (prompt, style = 'natural') => api.post('/imageGeneration', 
+    { prompt, style }, 
+    { 
+      timeout: 90000, // 90 seconds for image generation
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    }
+  ),
 };
 
 export default api;

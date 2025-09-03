@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { credits } from '../utils/api';
 import {
   LayoutDashboard,
   Edit3,
@@ -19,6 +20,8 @@ const Layout = ({ children }) => {
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [creditBalance, setCreditBalance] = useState(null);
+  const [loadingCredits, setLoadingCredits] = useState(true);
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -29,6 +32,42 @@ const Layout = ({ children }) => {
   ];
 
   const isActive = (href) => location.pathname === href;
+
+  // Fetch credit balance
+  useEffect(() => {
+    const fetchCredits = async () => {
+      try {
+        setLoadingCredits(true);
+        const response = await credits.getBalance();
+        setCreditBalance(response.data.balance);
+      } catch (error) {
+        console.error('Failed to fetch credit balance:', error);
+        setCreditBalance(0);
+      } finally {
+        setLoadingCredits(false);
+      }
+    };
+
+    if (user) {
+      fetchCredits();
+    }
+  }, [user]);
+
+  // Refresh credits periodically (every 30 seconds)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (user) {
+        try {
+          const response = await credits.getBalance();
+          setCreditBalance(response.data.balance);
+        } catch (error) {
+          console.error('Failed to refresh credit balance:', error);
+        }
+      }
+    }, 30000); // 30 seconds
+
+    return () => clearInterval(interval);
+  }, [user]);
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
@@ -90,7 +129,13 @@ const Layout = ({ children }) => {
               <span className="text-sm font-medium text-gray-700">Credits</span>
               <CreditCard className="h-4 w-4 text-gray-500" />
             </div>
-            <div className="text-2xl font-bold text-gray-900">--</div>
+            <div className="text-2xl font-bold text-gray-900">
+              {loadingCredits ? (
+                <div className="animate-pulse bg-gray-200 rounded h-8 w-12"></div>
+              ) : (
+                creditBalance !== null ? creditBalance.toFixed(1) : '--'
+              )}
+            </div>
             <p className="text-xs text-gray-500">Available credits</p>
           </div>
         </div>
