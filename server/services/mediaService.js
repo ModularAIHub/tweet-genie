@@ -2,11 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
+import OAuth from 'oauth-1.0a';
+import crypto from 'crypto';
+import FormData from 'form-data';
 
 class MediaService {
   constructor() {
     this.uploadPath = process.env.UPLOAD_PATH || './uploads';
-    this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '10485760'); // 10MB
+    this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '5242880'); // 5MB (5 * 1024 * 1024)
     this.allowedTypes = (process.env.ALLOWED_IMAGE_TYPES || 'image/jpeg,image/png,image/gif,image/webp').split(',');
     
     // Ensure upload directory exists
@@ -15,28 +18,82 @@ class MediaService {
     }
   }
 
-  async uploadMedia(mediaFiles, twitterClient) {
+  async uploadMedia(mediaFiles, twitterClient, oauth1Tokens = null) {
     const mediaIds = [];
+    
+    console.log('uploadMedia called with:', {
+      mediaFilesLength: mediaFiles?.length,
+      mediaFilesType: typeof mediaFiles,
+      isArray: Array.isArray(mediaFiles),
+      hasOAuth1Tokens: !!oauth1Tokens
+    });
+
+    if (!oauth1Tokens) {
+      throw new Error('OAuth 1.0a tokens required for media upload');
+    }
 
     for (const mediaFile of mediaFiles) {
       try {
+        let buffer, mimetype;
+        
+        console.log('Processing media file:', {
+          type: typeof mediaFile,
+          isString: typeof mediaFile === 'string',
+          startsWithData: typeof mediaFile === 'string' && mediaFile.startsWith('data:'),
+          length: typeof mediaFile === 'string' ? mediaFile.length : 'N/A'
+        });
+
+        // Handle base64 data from frontend
+        if (typeof mediaFile === 'string' && mediaFile.startsWith('data:')) {
+          const base64Data = mediaFile.split(',')[1];
+          const mimeMatch = mediaFile.match(/data:([^;]+);/);
+          mimetype = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+          buffer = Buffer.from(base64Data, 'base64');
+          
+          console.log('Base64 processing result:', {
+            mimetype,
+            bufferSize: buffer.length,
+            base64Length: base64Data.length
+          });
+        } else {
+          // Handle file upload (existing logic)
+          buffer = mediaFile.buffer;
+          mimetype = mediaFile.mimetype;
+          
+          console.log('File upload processing:', {
+            mimetype,
+            bufferSize: buffer?.length
+          });
+        }
+
         // Validate file
-        if (!this.validateFile(mediaFile)) {
-          throw new Error('Invalid file type or size');
+        if (!this.validateFileData(buffer, mimetype)) {
+          const sizeInMB = (buffer.length / (1024 * 1024)).toFixed(1);
+          if (buffer.length > this.maxFileSize) {
+            throw new Error(`Image too large: ${sizeInMB}MB. Maximum allowed: 5MB`);
+          } else {
+            throw new Error(`Invalid file type: ${mimetype}. Allowed types: ${this.allowedTypes.join(', ')}`);
+          }
         }
 
         // Process image if needed
-        const processedBuffer = await this.processImage(mediaFile.buffer, mediaFile.mimetype);
-
-        // Upload to Twitter
-        const mediaId = await twitterClient.v1.uploadMedia(processedBuffer, {
-          mimeType: mediaFile.mimetype
+        const processedBuffer = await this.processImage(buffer, mimetype);
+        
+        console.log('Image processed:', {
+          originalSize: buffer.length,
+          processedSize: processedBuffer.length,
+          mimetype
         });
 
+        // Upload to Twitter using OAuth 1.0a
+        console.log('Uploading to Twitter using OAuth 1.0a...');
+        const mediaId = await this.uploadWithOAuth1(processedBuffer, mimetype, oauth1Tokens);
+        
+        console.log('Twitter upload successful, mediaId:', mediaId);
         mediaIds.push(mediaId);
 
         // Save locally for reference
-        await this.saveLocal(processedBuffer, mediaFile.originalname);
+        await this.saveLocal(processedBuffer, `uploaded_${Date.now()}.jpg`);
 
       } catch (error) {
         console.error('Media upload error:', error);
@@ -47,6 +104,78 @@ class MediaService {
     return mediaIds;
   }
 
+  async uploadWithOAuth1(buffer, mimetype, oauth1Tokens) {
+    try {
+      // Initialize OAuth 1.0a
+      const oauth = OAuth({
+        consumer: {
+          key: process.env.TWITTER_CONSUMER_KEY,
+          secret: process.env.TWITTER_CONSUMER_SECRET,
+        },
+        signature_method: 'HMAC-SHA1',
+        hash_function(base_string, key) {
+          return crypto.createHmac('sha1', key).update(base_string).digest('base64');
+        },
+      });
+
+      // Prepare OAuth request
+      const requestData = {
+        url: 'https://upload.twitter.com/1.1/media/upload.json',
+        method: 'POST',
+      };
+
+      // Get OAuth headers
+      const oauthHeaders = oauth.toHeader(oauth.authorize(requestData, {
+        key: oauth1Tokens.accessToken,
+        secret: oauth1Tokens.accessTokenSecret,
+      }));
+
+      console.log('Making OAuth 1.0a media upload request...');
+
+      // Create form data using URLSearchParams approach instead of FormData
+      const boundary = '----formdata-tweetgenie-' + Math.random().toString(36);
+      
+      // Create multipart body manually
+      let body = '';
+      body += `--${boundary}\r\n`;
+      body += `Content-Disposition: form-data; name="media"; filename="image.jpg"\r\n`;
+      body += `Content-Type: ${mimetype}\r\n\r\n`;
+      
+      // Convert buffer to binary string for body
+      const binaryString = buffer.toString('binary');
+      body += binaryString;
+      body += `\r\n--${boundary}--\r\n`;
+      
+      // Convert to buffer
+      const bodyBuffer = Buffer.from(body, 'binary');
+
+      // Make the upload request
+      const response = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+        method: 'POST',
+        headers: {
+          ...oauthHeaders,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': bodyBuffer.length.toString(),
+        },
+        body: bodyBuffer,
+      });
+
+      const responseText = await response.text();
+      
+      if (!response.ok) {
+        console.error('Upload failed:', response.status, responseText);
+        throw new Error(`Upload failed with status ${response.status}: ${responseText}`);
+      }
+
+      const result = JSON.parse(responseText);
+      return result.media_id_string;
+
+    } catch (error) {
+      console.error('OAuth 1.0a upload error:', error);
+      throw error;
+    }
+  }
+
   validateFile(file) {
     // Check file size
     if (file.size > this.maxFileSize) {
@@ -55,6 +184,20 @@ class MediaService {
 
     // Check file type
     if (!this.allowedTypes.includes(file.mimetype)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  validateFileData(buffer, mimetype) {
+    // Check file size
+    if (buffer.length > this.maxFileSize) {
+      return false;
+    }
+
+    // Check file type
+    if (!this.allowedTypes.includes(mimetype)) {
       return false;
     }
 

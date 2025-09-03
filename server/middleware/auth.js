@@ -204,8 +204,121 @@ export const validateTwitterConnection = async (req, res, next) => {
       return res.status(400).json({ error: 'Twitter account not connected' });
     }
 
-    // Map the twitter_auth data to the expected format for tweet posting
     const twitterAuthData = rows[0];
+    
+    // Check if token is expired or expiring soon (refresh 10 minutes before expiry)
+    const now = new Date();
+    const tokenExpiry = new Date(twitterAuthData.token_expires_at);
+    const refreshThreshold = new Date(tokenExpiry.getTime() - (10 * 60 * 1000)); // 10 minutes before expiry
+    
+    // More detailed logging
+    console.log('Twitter token detailed check:', {
+      userId: req.user.id,
+      now: now.toISOString(),
+      expires: tokenExpiry.toISOString(),
+      refreshThreshold: refreshThreshold.toISOString(),
+      tokenAge: Math.round((now - new Date(twitterAuthData.updated_at || twitterAuthData.created_at)) / 1000 / 60), // minutes old
+      timeUntilExpiry: Math.round((tokenExpiry - now) / 1000 / 60), // minutes until expiry
+      isExpired: tokenExpiry <= now,
+      needsRefresh: now >= refreshThreshold,
+      hasRefreshToken: !!twitterAuthData.refresh_token,
+      refreshTokenPreview: twitterAuthData.refresh_token ? twitterAuthData.refresh_token.substring(0, 20) + '...' : 'none'
+    });
+    
+    if (tokenExpiry <= now || now >= refreshThreshold) {
+      const isExpired = tokenExpiry <= now;
+      console.log(isExpired ? 'Twitter token EXPIRED, attempting refresh...' : 'Twitter token expiring soon, proactively refreshing...');
+      
+      // Try to refresh the token if we have a refresh token
+      if (twitterAuthData.refresh_token) {
+        try {
+          const credentials = Buffer.from(`${process.env.TWITTER_CLIENT_ID}:${process.env.TWITTER_CLIENT_SECRET}`).toString('base64');
+          
+          console.log('Making Twitter token refresh request...');
+          console.log('Using refresh token:', twitterAuthData.refresh_token.substring(0, 20) + '...');
+          
+          const refreshResponse = await fetch('https://api.twitter.com/2/oauth2/token', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Authorization': `Basic ${credentials}`
+            },
+            body: new URLSearchParams({
+              grant_type: 'refresh_token',
+              refresh_token: twitterAuthData.refresh_token,
+              client_id: process.env.TWITTER_CLIENT_ID,
+            }),
+          });
+
+          const tokens = await refreshResponse.json();
+          console.log('Twitter refresh response:', { 
+            status: refreshResponse.status,
+            hasAccessToken: !!tokens.access_token,
+            hasRefreshToken: !!tokens.refresh_token,
+            expiresIn: tokens.expires_in,
+            error: tokens.error,
+            errorDescription: tokens.error_description
+          });
+          
+          if (tokens.access_token) {
+            console.log('✅ Twitter token refreshed successfully');
+            
+            // Update tokens in database
+            const newExpiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
+            const updateResult = await pool.query(
+              'UPDATE twitter_auth SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = CURRENT_TIMESTAMP WHERE user_id = $4 RETURNING *',
+              [tokens.access_token, tokens.refresh_token || twitterAuthData.refresh_token, newExpiresAt, req.user.id]
+            );
+            
+            console.log('Database updated with new tokens:', {
+              newExpiresAt: newExpiresAt.toISOString(),
+              hoursValid: Math.round((newExpiresAt - now) / 1000 / 60 / 60 * 100) / 100
+            });
+            
+            // Use the new token
+            twitterAuthData.access_token = tokens.access_token;
+            twitterAuthData.refresh_token = tokens.refresh_token || twitterAuthData.refresh_token;
+            twitterAuthData.token_expires_at = newExpiresAt;
+          } else {
+            console.log('❌ Failed to refresh Twitter token:', tokens);
+            // Only return error if token is actually expired, not just expiring soon
+            if (isExpired) {
+              return res.status(401).json({ 
+                error: 'Twitter token expired and refresh failed. Please reconnect your Twitter account.',
+                code: 'TWITTER_TOKEN_EXPIRED',
+                action: 'reconnect_twitter',
+                details: tokens.error_description || tokens.error
+              });
+            }
+          }
+        } catch (refreshError) {
+          console.error('❌ Twitter token refresh error:', refreshError);
+          // Only return error if token is actually expired, not just expiring soon
+          if (isExpired) {
+            return res.status(401).json({ 
+              error: 'Twitter token expired and refresh failed. Please reconnect your Twitter account.',
+              code: 'TWITTER_TOKEN_EXPIRED',
+              action: 'reconnect_twitter',
+              details: refreshError.message
+            });
+          }
+        }
+      } else {
+        console.log('❌ No refresh token available');
+        // Only return error if token is actually expired, not just expiring soon
+        if (isExpired) {
+          return res.status(401).json({ 
+            error: 'Twitter token expired. Please reconnect your Twitter account.',
+            code: 'TWITTER_TOKEN_EXPIRED',
+            action: 'reconnect_twitter'
+          });
+        }
+      }
+    } else {
+      console.log('✅ Twitter token is still valid, no refresh needed');
+    }
+
+    // Map the twitter_auth data to the expected format for tweet posting
     req.twitterAccount = {
       id: twitterAuthData.id, // Use the UUID id from twitter_auth table
       twitter_user_id: twitterAuthData.twitter_user_id, // Keep the Twitter ID for reference
@@ -213,7 +326,9 @@ export const validateTwitterConnection = async (req, res, next) => {
       display_name: twitterAuthData.twitter_display_name,
       access_token: twitterAuthData.access_token,
       access_token_secret: twitterAuthData.access_token_secret,
-      refresh_token: twitterAuthData.refresh_token
+      refresh_token: twitterAuthData.refresh_token,
+      oauth1_access_token: twitterAuthData.oauth1_access_token,
+      oauth1_access_token_secret: twitterAuthData.oauth1_access_token_secret
     };
     
     next();

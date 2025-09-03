@@ -129,6 +129,18 @@ const migrations = [
       -- Drop the redundant twitter_accounts table
       DROP TABLE IF EXISTS twitter_accounts CASCADE;
     `
+  },
+  {
+    version: 7,
+    name: 'add_oauth1_fields_to_twitter_auth',
+    sql: `
+      -- Add OAuth 1.0a fields for media upload capability
+      ALTER TABLE twitter_auth ADD COLUMN IF NOT EXISTS oauth1_access_token TEXT;
+      ALTER TABLE twitter_auth ADD COLUMN IF NOT EXISTS oauth1_access_token_secret TEXT;
+      
+      -- Add index for OAuth 1.0a tokens
+      CREATE INDEX IF NOT EXISTS idx_twitter_auth_oauth1_token ON twitter_auth(oauth1_access_token);
+    `
   }
 ];
 

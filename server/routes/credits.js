@@ -11,10 +11,8 @@ router.get('/balance', async (req, res) => {
     const balance = await creditService.getBalance(userId);
     
     res.json({
-      balance: balance.available,
-      total_earned: balance.total_earned,
-      total_used: balance.total_used,
-      last_updated: balance.last_updated
+      balance: balance,
+      creditsRemaining: balance
     });
 
   } catch (error) {
@@ -60,6 +58,42 @@ router.get('/pricing', async (req, res) => {
   } catch (error) {
     console.error('Get pricing error:', error);
     res.status(500).json({ error: 'Failed to fetch pricing information' });
+  }
+});
+
+// Refund credits (for failed operations)
+router.post('/refund', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { amount, reason, transaction_type } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Invalid refund amount' });
+    }
+
+    if (!reason) {
+      return res.status(400).json({ error: 'Refund reason is required' });
+    }
+
+    // Get JWT token for platform API call
+    let userToken = req.cookies?.accessToken;
+    if (!userToken) {
+      const authHeader = req.headers['authorization'];
+      userToken = authHeader && authHeader.split(' ')[1];
+    }
+
+    const result = await creditService.refundCredits(userId, transaction_type || 'refund', amount, userToken);
+
+    res.json({
+      success: true,
+      refunded_amount: amount,
+      new_balance: result.new_balance,
+      transaction_id: result.transaction_id
+    });
+
+  } catch (error) {
+    console.error('Refund credits error:', error);
+    res.status(500).json({ error: 'Failed to process refund' });
   }
 });
 
