@@ -8,6 +8,7 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import TweetComposer from './pages/TweetComposer';
 import Scheduling from './pages/Scheduling';
+import History from './pages/History';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import AuthCallback from './pages/AuthCallback';
@@ -31,6 +32,7 @@ function App() {
                     <Route path="/dashboard" element={<Dashboard />} />
                     <Route path="/compose" element={<TweetComposer />} />
                     <Route path="/scheduling" element={<Scheduling />} />
+                    <Route path="/history" element={<History />} />
                     <Route path="/analytics" element={<Analytics />} />
                     <Route path="/settings" element={<Settings />} />
                   </Routes>

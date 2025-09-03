@@ -13,6 +13,7 @@ import {
   X,
   ChevronDown,
   CreditCard,
+  History,
 } from 'lucide-react';
 
 const Layout = ({ children }) => {
@@ -27,6 +28,7 @@ const Layout = ({ children }) => {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Compose', href: '/compose', icon: Edit3 },
     { name: 'Scheduling', href: '/scheduling', icon: Calendar },
+    { name: 'History', href: '/history', icon: History },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];

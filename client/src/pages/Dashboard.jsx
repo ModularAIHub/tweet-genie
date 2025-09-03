@@ -10,14 +10,15 @@ import {
   MessageCircle,
   Heart,
   Repeat2,
+  Twitter,
 } from 'lucide-react';
-import { analytics, tweets, credits } from '../utils/api';
+import { analytics as analyticsAPI, tweets, credits } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
 
 const Dashboard = () => {
   const [loading, setLoading] = useState(true);
-  const [analytics, setAnalytics] = useState(null);
+  const [analyticsData, setAnalyticsData] = useState(null);
   const [recentTweets, setRecentTweets] = useState([]);
   const [creditBalance, setCreditBalance] = useState(null);
 
@@ -30,13 +31,13 @@ const Dashboard = () => {
       setLoading(true);
       
       const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
-        analytics.getOverview({ days: 30 }),
+        analyticsAPI.getOverview({ days: 30 }),
         tweets.list({ limit: 5 }),
         credits.getBalance(),
       ]);
 
       if (analyticsRes.status === 'fulfilled') {
-        setAnalytics(analyticsRes.value.data);
+        setAnalyticsData(analyticsRes.value.data);
       }
 
       if (tweetsRes.status === 'fulfilled') {
@@ -69,28 +70,28 @@ const Dashboard = () => {
   const stats = [
     {
       name: 'Total Tweets',
-      value: analytics?.overview?.total_tweets || 0,
+      value: analyticsData?.overview?.total_tweets || 0,
       icon: MessageCircle,
       color: 'text-blue-600',
       bgColor: 'bg-blue-50',
     },
     {
       name: 'Total Impressions',
-      value: analytics?.overview?.total_impressions || 0,
+      value: analyticsData?.overview?.total_impressions || 0,
       icon: TrendingUp,
       color: 'text-green-600',
       bgColor: 'bg-green-50',
     },
     {
       name: 'Total Likes',
-      value: analytics?.overview?.total_likes || 0,
+      value: analyticsData?.overview?.total_likes || 0,
       icon: Heart,
       color: 'text-red-600',
       bgColor: 'bg-red-50',
     },
     {
       name: 'Total Retweets',
-      value: analytics?.overview?.total_retweets || 0,
+      value: analyticsData?.overview?.total_retweets || 0,
       icon: Repeat2,
       color: 'text-purple-600',
       bgColor: 'bg-purple-50',

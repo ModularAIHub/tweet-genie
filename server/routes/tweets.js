@@ -439,11 +439,21 @@ router.get('/', async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT t.*, ta.twitter_username as username, ta.twitter_display_name as display_name
+      `SELECT t.*, 
+              ta.twitter_username as username, 
+              ta.twitter_display_name as display_name,
+              CASE 
+                WHEN t.source = 'external' THEN t.external_created_at
+                ELSE t.created_at
+              END as display_created_at
        FROM tweets t
        JOIN twitter_auth ta ON t.user_id = ta.user_id
        ${whereClause}
-       ORDER BY t.created_at DESC
+       ORDER BY 
+         CASE 
+           WHEN t.source = 'external' THEN t.external_created_at
+           ELSE t.created_at
+         END DESC
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset]
     );
