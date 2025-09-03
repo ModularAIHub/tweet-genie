@@ -13,7 +13,7 @@ const router = express.Router();
 // Post a tweet
 router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async (req, res) => {
   try {
-    const { content, media, thread } = req.body;
+    const { content, media, thread, threadMedia } = req.body;
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
 
@@ -110,50 +110,122 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         console.log('Media upload completed, IDs:', mediaIds);
       }
 
-      // Post main tweet
-      console.log('Preparing tweet data...');
-      const tweetData = {
-        text: content,
-        ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
-      };
-      
-      console.log('Posting tweet to Twitter API...', {
-        hasText: !!tweetData.text,
-        textLength: tweetData.text?.length,
-        hasMedia: !!tweetData.media,
-        mediaIds: mediaIds
-      });
-
-      tweetResponse = await twitterClient.v2.tweet(tweetData);
-      console.log('Tweet posted successfully:', {
-        tweetId: tweetResponse.data?.id,
-        text: tweetResponse.data?.text?.substring(0, 50) + '...'
-      });
-
-      // Handle thread if present
+      let tweetResponse;
       let threadTweets = [];
+
+      // If we have a thread, post the first tweet from the thread as the main tweet
       if (thread && thread.length > 0) {
+        console.log('Processing thread with', thread.length, 'tweets');
+        
+        // Use the first thread tweet as the main tweet
+        const firstTweetText = thread[0];
+        let firstTweetMediaIds = [];
+        
+        // Check if we have media for the first thread tweet
+        if (threadMedia && threadMedia[0] && threadMedia[0].length > 0) {
+          console.log('Uploading media for first thread tweet...');
+          
+          // Check if we have OAuth 1.0a tokens for media upload
+          if (!twitterAccount.oauth1_access_token || !twitterAccount.oauth1_access_token_secret) {
+            throw {
+              code: 'OAUTH1_REQUIRED',
+              message: 'Media uploads require OAuth 1.0a authentication. Please reconnect your Twitter account.',
+              details: 'Go to Settings > Twitter Account and reconnect to enable media uploads.'
+            };
+          }
+          
+          const oauth1Tokens = {
+            accessToken: twitterAccount.oauth1_access_token,
+            accessTokenSecret: twitterAccount.oauth1_access_token_secret
+          };
+          
+          firstTweetMediaIds = await mediaService.uploadMedia(threadMedia[0], twitterClient, oauth1Tokens);
+          console.log('Media upload completed for first thread tweet, IDs:', firstTweetMediaIds);
+        }
+
+        // Post the first tweet
+        const firstTweetData = {
+          text: firstTweetText,
+          ...(firstTweetMediaIds.length > 0 && { media: { media_ids: firstTweetMediaIds } })
+        };
+        
+        console.log('Posting first thread tweet to Twitter API...', {
+          hasText: !!firstTweetData.text,
+          textLength: firstTweetData.text?.length,
+          hasMedia: !!firstTweetData.media,
+          mediaIds: firstTweetMediaIds
+        });
+
+        tweetResponse = await twitterClient.v2.tweet(firstTweetData);
+        console.log('First thread tweet posted successfully:', {
+          tweetId: tweetResponse.data?.id,
+          text: tweetResponse.data?.text?.substring(0, 50) + '...'
+        });
+
+        // Post remaining thread tweets (skip the first one since it's already posted)
         let previousTweetId = tweetResponse.data.id;
 
-        for (const threadTweet of thread) {
+        for (let i = 1; i < thread.length; i++) {
+          const threadTweetText = thread[i];
           let threadMediaIds = [];
-          if (threadTweet.media && threadTweet.media.length > 0) {
-            threadMediaIds = await mediaService.uploadMedia(threadTweet.media, twitterClient);
+          
+          // Check if we have specific media for this thread tweet
+          if (threadMedia && threadMedia[i] && threadMedia[i].length > 0) {
+            console.log(`Uploading media for thread tweet ${i + 1}...`);
+            
+            const oauth1Tokens = {
+              accessToken: twitterAccount.oauth1_access_token,
+              accessTokenSecret: twitterAccount.oauth1_access_token_secret
+            };
+            
+            threadMediaIds = await mediaService.uploadMedia(threadMedia[i], twitterClient, oauth1Tokens);
+            console.log(`Media upload completed for thread tweet ${i + 1}, IDs:`, threadMediaIds);
           }
 
           const threadTweetData = {
-            text: threadTweet.content,
+            text: threadTweetText,
             reply: { in_reply_to_tweet_id: previousTweetId },
             ...(threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
           };
 
+          console.log(`Posting thread tweet ${i + 1}:`, {
+            text: threadTweetText.substring(0, 50) + '...',
+            hasMedia: threadMediaIds.length > 0,
+            mediaCount: threadMediaIds.length,
+            replyingTo: previousTweetId
+          });
+
           const threadResponse = await twitterClient.v2.tweet(threadTweetData);
           threadTweets.push(threadResponse.data);
           previousTweetId = threadResponse.data.id;
+          
+          console.log(`Thread tweet ${i + 1} posted successfully:`, threadResponse.data.id);
         }
+      } else {
+        // Regular single tweet
+        // Post main tweet
+        console.log('Preparing single tweet data...');
+        const tweetData = {
+          text: content,
+          ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
+        };
+        
+        console.log('Posting single tweet to Twitter API...', {
+          hasText: !!tweetData.text,
+          textLength: tweetData.text?.length,
+          hasMedia: !!tweetData.media,
+          mediaIds: mediaIds
+        });
+
+        tweetResponse = await twitterClient.v2.tweet(tweetData);
+        console.log('Single tweet posted successfully:', {
+          tweetId: tweetResponse.data?.id,
+          text: tweetResponse.data?.text?.substring(0, 50) + '...'
+        });
       }
 
       // Store tweet in database
+      const mainContent = thread && thread.length > 0 ? thread[0] : content;
       const { rows } = await pool.query(
         `INSERT INTO tweets (
           user_id, tweet_id, content, 
@@ -164,7 +236,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         [
           userId,
           tweetResponse.data.id,
-          content,
+          mainContent,
           JSON.stringify(media || []),
           JSON.stringify(threadTweets),
           0  // No credits used for posting
@@ -176,10 +248,10 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         tweet: {
           id: rows[0].id,
           tweet_id: tweetResponse.data.id,
-          content: content,
+          content: mainContent,
           url: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
           credits_used: 0,  // No credits charged for posting
-          thread_count: threadTweets.length
+          thread_count: thread ? thread.length : 1
         }
       });
 

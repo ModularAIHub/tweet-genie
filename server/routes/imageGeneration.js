@@ -11,6 +11,13 @@ const handleImageGeneration = async (req, res) => {
     const { prompt, style = 'natural' } = req.body;
     const userId = req.user.id;
 
+    console.log('Image generation request received:');
+    console.log('- Raw body:', JSON.stringify(req.body));
+    console.log('- Prompt value:', JSON.stringify(prompt));
+    console.log('- Prompt length:', prompt ? prompt.length : 0);
+    console.log('- Prompt contains spaces:', prompt ? prompt.includes(' ') : false);
+    console.log('- Request headers:', req.headers['content-type']);
+
     if (!prompt || prompt.trim().length === 0) {
       return res.status(400).json({
         success: false,
