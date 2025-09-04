@@ -175,79 +175,13 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
 
     console.log('🔄 Starting comprehensive analytics sync...');
 
-    // Step 1: Fetch user's recent tweets from Twitter (external tweets)
-    console.log('📱 Fetching user timeline from Twitter...');
-    const userTweets = await twitterClient.v2.userTimeline(twitterAccount.twitter_user_id, {
-      max_results: 100,
-      'tweet.fields': [
-        'public_metrics',
-        'created_at',
-        'lang',
-        'author_id'
-      ],
-      exclude: ['retweets', 'replies'] // Focus on original tweets
-    });
-
-    let externalTweetsProcessed = 0;
-    let externalTweetsStored = 0;
-
-    // Step 2: Store external tweets that aren't in our database
-    if (userTweets.data && userTweets.data.length > 0) {
-      console.log(`📥 Processing ${userTweets.data.length} external tweets...`);
-      
-      for (const tweet of userTweets.data) {
-        try {
-          // Check if tweet already exists in our database
-          const { rows: existingTweet } = await pool.query(
-            'SELECT id FROM tweets WHERE tweet_id = $1 AND user_id = $2',
-            [tweet.id, userId]
-          );
-
-          if (existingTweet.length === 0) {
-            // Store new external tweet
-            const publicMetrics = tweet.public_metrics || {};
-            
-            await pool.query(
-              `INSERT INTO tweets (
-                user_id, tweet_id, content, source, external_created_at,
-                author_id, lang, impressions, likes, retweets, replies, 
-                quote_count, bookmark_count, status, created_at, updated_at
-              ) VALUES (
-                $1, $2, $3, 'external', $4, $5, $6, $7, $8, $9, $10, $11, $12, 'posted', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-              )`,
-              [
-                userId,
-                tweet.id,
-                tweet.text || '',
-                new Date(tweet.created_at),
-                tweet.author_id,
-                tweet.lang || 'en',
-                publicMetrics.impression_count || 0,
-                publicMetrics.like_count || 0,
-                publicMetrics.retweet_count || 0,
-                publicMetrics.reply_count || 0,
-                publicMetrics.quote_count || 0,
-                publicMetrics.bookmark_count || 0
-              ]
-            );
-            externalTweetsStored++;
-          }
-          externalTweetsProcessed++;
-        } catch (tweetError) {
-          console.error(`Error storing external tweet ${tweet.id}:`, tweetError.message);
-        }
-      }
-    }
-
-    // Step 3: Update analytics for existing tweets (both platform and external)
-    console.log('📊 Updating analytics for existing tweets...');
-    
-    // Get recent tweets that need metric updates (both platform and external)
+    // Only update metrics for tweets posted from our platform
+    console.log('📊 Updating analytics for platform tweets only...');
     const { rows: tweetsToUpdate } = await pool.query(
-      `SELECT id, tweet_id, content, source FROM tweets 
-       WHERE user_id = $1 AND status = 'posted' 
-       AND (created_at >= NOW() - INTERVAL '30 days' OR external_created_at >= NOW() - INTERVAL '30 days')
-       ORDER BY COALESCE(external_created_at, created_at) DESC LIMIT 200`,
+      `SELECT id, tweet_id, content FROM tweets 
+       WHERE user_id = $1 AND status = 'posted' AND source = 'platform'
+       AND created_at >= NOW() - INTERVAL '30 days'
+       ORDER BY created_at DESC LIMIT 200`,
       [userId]
     );
 
@@ -259,10 +193,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
     const batchSize = 25;
     for (let i = 0; i < tweetsToUpdate.length; i += batchSize) {
       const batch = tweetsToUpdate.slice(i, i + batchSize);
-      
       for (const tweet of batch) {
         if (!tweet.tweet_id) continue;
-
         try {
           // Get basic tweet metrics from Twitter API v2 (public metrics only)
           const tweetData = await twitterClient.v2.singleTweet(tweet.tweet_id, {
@@ -271,11 +203,9 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
               'created_at'
             ]
           });
-
           if (tweetData.data) {
             const data = tweetData.data;
             const publicMetrics = data.public_metrics || {};
-
             // Update metrics in database with public data
             const updatePromise = pool.query(
               `UPDATE tweets SET 
@@ -297,14 +227,12 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
                 tweet.id
               ]
             );
-
             updatePromises.push(updatePromise);
             updatedCount++;
           }
         } catch (tweetError) {
           console.error(`Error updating metrics for tweet ${tweet.tweet_id}:`, tweetError.message);
           errorCount++;
-          
           // If tweet is deleted or not found, mark it
           if (tweetError.code === 144 || tweetError.status === 404) {
             await pool.query(
@@ -313,29 +241,22 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
             );
           }
         }
-
         // Add delay to respect rate limits
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-
       // Wait between batches
       if (i + batchSize < tweetsToUpdate.length) {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
-
     // Execute all updates
     await Promise.all(updatePromises);
-
     // Get user's Twitter profile for additional insights
     try {
       const userProfile = await twitterClient.v2.me({
         'user.fields': ['public_metrics', 'verified', 'created_at']
       });
-
       const profileMetrics = userProfile.data?.public_metrics || {};
-      
-      // Store profile metrics in a separate table or return with response
       const followerInsights = {
         followers_count: profileMetrics.followers_count || 0,
         following_count: profileMetrics.following_count || 0,
@@ -343,35 +264,25 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
         listed_count: profileMetrics.listed_count || 0,
         verified: userProfile.data?.verified || false
       };
-
-      console.log(`✅ Comprehensive analytics sync complete:
-      📥 External tweets processed: ${externalTweetsProcessed}
-      💾 New external tweets stored: ${externalTweetsStored}
-      📊 Metrics updated: ${updatedCount}
+      console.log(`✅ Platform analytics sync complete:
+       Metrics updated: ${updatedCount}
       ❌ Errors: ${errorCount}`);
-
       res.json({
         success: true,
-        message: `Comprehensive analytics sync completed. Processed ${externalTweetsProcessed} external tweets, stored ${externalTweetsStored} new ones, updated ${updatedCount} metrics${errorCount > 0 ? `, ${errorCount} errors` : ''}`,
+        message: `Platform analytics sync completed. Updated ${updatedCount} metrics${errorCount > 0 ? `, ${errorCount} errors` : ''}`,
         stats: {
-          external_tweets_processed: externalTweetsProcessed,
-          external_tweets_stored: externalTweetsStored,
           metrics_updated: updatedCount,
           errors: errorCount,
           total_processed: tweetsToUpdate.length
         },
         profile_insights: followerInsights
       });
-
     } catch (profileError) {
       console.error('Error fetching profile metrics:', profileError);
-      
       res.json({
         success: true,
-        message: `Comprehensive sync completed. Processed ${externalTweetsProcessed} external tweets, stored ${externalTweetsStored} new ones, updated ${updatedCount} metrics${errorCount > 0 ? `, ${errorCount} errors` : ''}`,
+        message: `Platform sync completed. Updated ${updatedCount} metrics${errorCount > 0 ? `, ${errorCount} errors` : ''}`,
         stats: {
-          external_tweets_processed: externalTweetsProcessed,
-          external_tweets_stored: externalTweetsStored,
           metrics_updated: updatedCount,
           errors: errorCount,
           total_processed: tweetsToUpdate.length

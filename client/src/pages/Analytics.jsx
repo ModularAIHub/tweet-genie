@@ -93,9 +93,7 @@ const Analytics = () => {
       if (response.data.success) {
         // Show success message with stats
         const stats = response.data.stats;
-        alert(`Sync completed! 
-📥 External tweets processed: ${stats.external_tweets_processed}
-💾 New external tweets stored: ${stats.external_tweets_stored}
+        alert(`Sync completed!
 📊 Metrics updated: ${stats.metrics_updated}
 ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
         
@@ -120,6 +118,16 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
       } else {
         setError('Failed to sync analytics data. Please try again later.');
       }
+
+      if (error.response?.data.type === 'rate_limit' && error.response?.data.resetTime) {
+        // Convert UTC reset time to IST
+        const resetDate = new Date(error.response.data.resetTime);
+        const istOffsetMs = 5.5 * 60 * 60 * 1000;
+        const istDate = new Date(resetDate.getTime() + istOffsetMs);
+        const istString = istDate.toLocaleString('en-IN', { hour12: false });
+        alert(`Twitter rate limit hit!\nYou can start posting again after: ${istString} (IST)`);
+        return;
+      }
     } finally {
       setSyncing(false);
     }
@@ -143,6 +151,7 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
   const hourlyEngagement = analyticsData?.hourly_engagement || [];
   const contentTypeMetrics = analyticsData?.content_type_metrics || [];
   const growth = analyticsData?.growth || {};
+  const engagementData = analyticsData?.engagementData || [];
 
   // Calculate growth percentages
   const calculateGrowth = (current, previous) => {
@@ -460,20 +469,20 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
             </div>
 
             <div className="card">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                Engagement Breakdown
-              </h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="likes" fill="#ef4444" name="Likes" />
-                  <Bar dataKey="retweets" fill="#8b5cf6" name="Retweets" />
-                  <Bar dataKey="replies" fill="#10b981" name="Replies" />
-                </BarChart>
-              </ResponsiveContainer>
+           <h3 className="text-lg font-semibold text-gray-900 mb-4">
+  Engagement Breakdown
+</h3>
+<ResponsiveContainer width="100%" height={300}>
+  <BarChart data={engagementData}>
+    {/* Add your BarChart children here */}
+    <CartesianGrid strokeDasharray="3 3" />
+    <XAxis dataKey="name" />
+    <YAxis />
+    <Tooltip />
+    <Legend />
+    <Bar dataKey="engagement" fill="#8884d8" />
+  </BarChart>
+</ResponsiveContainer>
             </div>
           </div>
         </div>
@@ -1451,7 +1460,7 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
                   <Share2 className="h-5 w-5 text-orange-500 mr-2" />
                   <h4 className="font-medium text-orange-900">Share Rate</h4>
                 </div>
-                <p className="text-2xl font-bold text-orange-700">{Math.round(Math.random() * 15 + 5)}%</p>
+                               <p className="text-2xl font-bold text-orange-700">{Math.round(Math.random() * 15 + 5)}%</p>
                 <p className="text-sm text-orange-600">Content shared by audience</p>
               </div>
             </div>
