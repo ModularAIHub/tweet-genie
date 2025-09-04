@@ -446,14 +446,16 @@ export const useTweetComposer = () => {
         if (isThread) {
           const content = sanitizedContent;
           console.log('AI Response for thread:', content);
-          
           // Split the content by --- separators or fallback to smart splitting
           const threadTweets = splitIntoTweets(content);
           console.log('Final thread tweets:', threadTweets);
-          
           setThreadTweets(threadTweets.length > 0 ? threadTweets : [content]);
         } else {
-          setContent(sanitizedContent);
+          // Always treat as single tweet, even if AI returns separators
+          let tweet = sanitizedContent.replace(/---/g, '').trim();
+          // Limit to 280 characters (Twitter limit)
+          if (tweet.length > 280) tweet = tweet.substring(0, 280);
+          setContent(tweet);
         }
         
         setShowAIPrompt(false);

@@ -9,7 +9,7 @@ const router = express.Router();
 // Generate AI content
 router.post('/generate', authenticateToken, async (req, res) => {
   try {
-    const { prompt, style = 'casual' } = req.body;
+  const { prompt, style = 'casual', isThread = false } = req.body;
 
     // Rate limiting
     if (!checkRateLimit(req.user.id, 'ai_generation', 10, 60000)) {
@@ -38,10 +38,12 @@ router.post('/generate', authenticateToken, async (req, res) => {
       });
     }
 
-    // Extract requested thread count from prompt to estimate credits needed upfront
-    const threadCountMatch = prompt.match(/generate\s+(\d+)\s+threads?/i);
-    const estimatedThreadCount = threadCountMatch ? parseInt(threadCountMatch[1]) : 1;
-    
+    // Only estimate thread count if isThread is true
+    let estimatedThreadCount = 1;
+    if (isThread) {
+      const threadCountMatch = prompt.match(/generate\s+(\d+)\s+threads?/i);
+      estimatedThreadCount = threadCountMatch ? parseInt(threadCountMatch[1]) : 1;
+    }
     // Calculate estimated credits needed (1.2 credits per thread)
     const estimatedCreditsNeeded = estimatedThreadCount * 1.2;
 
@@ -71,31 +73,30 @@ router.post('/generate', authenticateToken, async (req, res) => {
     // Use the AI-generated content directly (no post-sanitization to prevent [FILTERED])
     const sanitizedContent = result.content;
 
-    // Analyze content to count threads for credit calculation
-    let threadCount = 1; // Default to 1 thread
-    
-    // Count threads by splitting on "---" separator (the actual format used by AI service)
-    const threadSeparators = sanitizedContent.split('---').filter(section => section.trim().length > 0);
-    
-    if (threadSeparators.length > 1) {
-      threadCount = threadSeparators.length;
-      console.log(`Multiple threads detected: ${threadCount} threads (separated by ---)`);
-    } else {
-      // Fallback: if no --- separators, check if it's a single long thread
-      const lines = sanitizedContent.split('\n').filter(line => line.trim().length > 0);
-      if (lines.length > 3) {
-        // If more than 3 substantial lines, might be multiple conceptual tweets
-        threadCount = Math.min(Math.ceil(lines.length / 3), 5); // Estimate 3 lines per tweet, cap at 5
-        console.log(`Long content detected: estimated ${threadCount} tweets based on ${lines.length} lines`);
+    // Only treat as thread if isThread is true
+    let threadCount = 1;
+    if (isThread) {
+      // Count threads by splitting on "---" separator (the actual format used by AI service)
+      const threadSeparators = sanitizedContent.split('---').filter(section => section.trim().length > 0);
+      if (threadSeparators.length > 1) {
+        threadCount = threadSeparators.length;
+        console.log(`Multiple threads detected: ${threadCount} threads (separated by ---)`);
+      } else {
+        // Fallback: if no --- separators, check if it's a single long thread
+        const lines = sanitizedContent.split('\n').filter(line => line.trim().length > 0);
+        if (lines.length > 3) {
+          threadCount = Math.min(Math.ceil(lines.length / 3), 5); // Estimate 3 lines per tweet, cap at 5
+          console.log(`Long content detected: estimated ${threadCount} tweets based on ${lines.length} lines`);
+        }
       }
     }
 
     // Calculate actual credits needed (1.2 credits per thread)
     const actualCreditsNeeded = Math.round((threadCount * 1.2) * 100) / 100; // Round to 2 decimal places
-    
+
     // Adjust credits if there's a difference between estimated and actual
     const creditDifference = Math.round((actualCreditsNeeded - estimatedCreditsNeeded) * 100) / 100;
-    
+
     if (creditDifference > 0.01) { // Only adjust if difference is significant (> 1 cent)
       // Need to deduct more credits
       console.log(`Deducting additional ${creditDifference} credits (actual: ${threadCount}, estimated: ${estimatedThreadCount})`);
