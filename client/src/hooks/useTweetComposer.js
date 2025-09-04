@@ -81,10 +81,10 @@ export const useTweetComposer = () => {
     // Ensure threadImages array matches threadTweets length
     setThreadImages(prev => {
       const newImages = [...prev];
-      while (newImages.length < sanitizedTweets.length) {
+      while (newImages.length < cleanedTweets.length) {
         newImages.push([]);
       }
-      return newImages.slice(0, sanitizedTweets.length);
+      return newImages.slice(0, cleanedTweets.length);
     });
   };
 
