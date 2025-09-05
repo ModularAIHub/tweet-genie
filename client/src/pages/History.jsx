@@ -83,17 +83,25 @@ const History = () => {
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     const now = new Date();
-    const diffInHours = (now - date) / (1000 * 60 * 60);
-    
-    if (diffInHours < 1) {
-      const diffInMinutes = Math.floor((now - date) / (1000 * 60));
+    // Always compare UTC times for accurate difference
+    const diffMs = now.getTime() - date.getTime();
+    const diffInMinutes = Math.floor(diffMs / (1000 * 60));
+    const diffInHours = diffMs / (1000 * 60 * 60);
+    const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (diffInMinutes < 1) {
+      return 'just now';
+    } else if (diffInHours < 1) {
       return `${diffInMinutes}m ago`;
     } else if (diffInHours < 24) {
       return `${Math.floor(diffInHours)}h ago`;
     } else {
-      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { 
-        hour: '2-digit', 
-        minute: '2-digit' 
+      return date.toLocaleString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        timeZone: userTimezone
       });
     }
   };

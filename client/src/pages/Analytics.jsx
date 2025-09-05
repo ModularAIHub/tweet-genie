@@ -107,7 +107,8 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
         const errorData = error.response.data;
         if (errorData.type === 'rate_limit') {
           const resetTime = new Date(errorData.resetTime);
-          const resetTimeLocal = resetTime.toLocaleString();
+          const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const resetTimeLocal = resetTime.toLocaleString(undefined, { timeZone: userTimezone });
           const waitMinutes = errorData.waitMinutes;
           setError(`🐦 Twitter API rate limit exceeded. Your external tweets will sync automatically at ${resetTimeLocal} (in about ${waitMinutes} minutes). Please try again then.`);
         } else {
@@ -120,11 +121,10 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
       }
 
       if (error.response?.data.type === 'rate_limit' && error.response?.data.resetTime) {
-        // Convert UTC reset time to IST
-        const resetDate = new Date(error.response.data.resetTime);
-        const istOffsetMs = 5.5 * 60 * 60 * 1000;
-        const istDate = new Date(resetDate.getTime() + istOffsetMs);
-        const istString = istDate.toLocaleString('en-IN', { hour12: false });
+  // Convert UTC reset time to user's local timezone
+  const resetDate = new Date(error.response.data.resetTime);
+  const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const localString = resetDate.toLocaleString(undefined, { timeZone: userTimezone, hour12: false });
         alert(`Twitter rate limit hit!\nYou can start posting again after: ${istString} (IST)`);
         return;
       }

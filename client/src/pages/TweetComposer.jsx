@@ -183,17 +183,8 @@ const TweetComposer = () => {
             </div>
           </div>
 
-          {/* Sidebar */}
-          <div className="space-y-6">
-            <SchedulingPanel
-              scheduledFor={scheduledFor}
-              setScheduledFor={setScheduledFor}
-              scheduledTweets={scheduledTweets}
-              isLoadingScheduled={isLoadingScheduled}
-              onRefreshScheduled={fetchScheduledTweets}
-              onCancelScheduled={handleCancelScheduled}
-            />
-          </div>
+          {/* Sidebar intentionally left empty: Scheduled Tweets panel removed (see dedicated scheduling page) */}
+          <div className="space-y-6"></div>
         </div>
       </div>
     </div>

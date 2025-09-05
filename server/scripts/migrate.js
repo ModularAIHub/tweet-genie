@@ -1,3 +1,4 @@
+  
 import { pool } from '../config/database.js';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -79,7 +80,7 @@ const migrations = [
       CREATE TABLE IF NOT EXISTS scheduled_tweets (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID NOT NULL,
-        tweet_id UUID NOT NULL,
+        tweet_id UUID,
         scheduled_for TIMESTAMP NOT NULL,
         timezone VARCHAR(50) DEFAULT 'UTC',
         status VARCHAR(20) DEFAULT 'pending',
@@ -92,6 +93,23 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_user_id ON scheduled_tweets(user_id);
       CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_scheduled_for ON scheduled_tweets(scheduled_for);
       CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_status ON scheduled_tweets(status);
+    `
+  },
+  {
+    version: 9,
+    name: 'add_content_and_media_to_scheduled_tweets',
+    sql: `
+      ALTER TABLE scheduled_tweets
+        ADD COLUMN IF NOT EXISTS content TEXT,
+        ADD COLUMN IF NOT EXISTS media JSONB;
+    `
+  },
+  {
+    version: 10,
+    name: 'remove_tweet_id_from_scheduled_tweets',
+    sql: `
+      ALTER TABLE scheduled_tweets
+        DROP COLUMN IF EXISTS tweet_id;
     `
   },
   {

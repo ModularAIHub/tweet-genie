@@ -86,12 +86,10 @@ router.get('/', async (req, res) => {
     const offset = (page - 1) * limit;
 
     const { rows } = await pool.query(
-      `SELECT st.*, t.content, t.media_urls, ta.twitter_username as username
-       FROM scheduled_tweets st
-       JOIN tweets t ON st.tweet_id = t.id
-       JOIN twitter_auth ta ON t.user_id = ta.user_id
-       WHERE st.user_id::text = $1 AND st.status = $2
-       ORDER BY st.scheduled_for ASC
+      `SELECT *
+       FROM scheduled_tweets
+       WHERE user_id::text = $1 AND status = $2
+       ORDER BY scheduled_for ASC
        LIMIT $3 OFFSET $4`,
       [req.user.id, status, limit, offset]
     );
