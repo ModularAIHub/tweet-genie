@@ -1,0 +1,21 @@
+import { Queue } from 'bullmq';
+import IORedis from 'ioredis';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+// Use REDIS_URL connection string for Upstash or local Redis
+const connection = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
+
+// Scheduled tweet queue
+export const scheduledTweetQueue = new Queue('scheduled-tweet-queue', {
+  connection,
+  defaultJobOptions: {
+    removeOnComplete: true,
+    removeOnFail: false,
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 60000 },
+  },
+});
+
+export default scheduledTweetQueue;

@@ -4,6 +4,7 @@ import { validateRequest, scheduleSchema } from '../middleware/validation.js';
 import { validateTwitterConnection } from '../middleware/auth.js';
 import { creditService } from '../services/creditService.js';
 import { scheduledTweetService } from '../services/scheduledTweetService.js';
+import { scheduledTweetQueue } from '../services/queueService.js';
 import moment from 'moment-timezone';
 
 const router = express.Router();
@@ -11,7 +12,7 @@ const router = express.Router();
 // Schedule a tweet
 router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, async (req, res) => {
   try {
-    const { tweet_id, scheduled_for, timezone = 'UTC' } = req.body;
+    const { content, media = [], scheduled_for, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
 
     // Validate timezone
@@ -43,13 +44,21 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       });
     }
 
-    // Create scheduled tweet
+    // Save scheduled tweet (not posted yet)
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tweets (
-        user_id, tweet_id, scheduled_for, timezone, status
-      ) VALUES ($1, $2, $3, $4, 'pending')
+        user_id, content, media, scheduled_for, timezone, status
+      ) VALUES ($1, $2, $3, $4, $5, 'pending')
       RETURNING *`,
-      [userId, tweet_id, scheduledTime, timezone]
+      [userId, content, JSON.stringify(media), scheduledTime, timezone]
+    );
+
+    // Enqueue BullMQ job for scheduled tweet
+    const delay = Math.max(0, new Date(scheduledTime).getTime() - Date.now());
+    await scheduledTweetQueue.add(
+      'scheduled-tweet',
+      { scheduledTweetId: rows[0].id },
+      { delay }
     );
 
     res.json({
@@ -58,7 +67,9 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
         id: rows[0].id,
         scheduled_for: rows[0].scheduled_for,
         timezone: rows[0].timezone,
-        status: rows[0].status
+        status: rows[0].status,
+        content: rows[0].content,
+        media: rows[0].media
       }
     });
 
@@ -108,6 +119,15 @@ router.delete('/:scheduleId', async (req, res) => {
       return res.status(404).json({ error: 'Scheduled tweet not found' });
     }
 
+
+    // Remove BullMQ job if it exists
+    const jobs = await scheduledTweetQueue.getDelayed();
+    for (const job of jobs) {
+      if (job.data.scheduledTweetId === rows[0].id) {
+        await job.remove();
+      }
+    }
+
     res.json({ success: true, message: 'Scheduled tweet cancelled' });
 
   } catch (error) {
@@ -139,6 +159,7 @@ router.put('/:scheduleId', validateRequest(scheduleSchema), async (req, res) => 
       });
     }
 
+
     const { rows } = await pool.query(
       `UPDATE scheduled_tweets 
        SET scheduled_for = $1, timezone = $2, updated_at = CURRENT_TIMESTAMP
@@ -150,6 +171,22 @@ router.put('/:scheduleId', validateRequest(scheduleSchema), async (req, res) => 
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Scheduled tweet not found or already processed' });
     }
+
+    // Remove any existing BullMQ job for this scheduled tweet (if exists)
+    const jobs = await scheduledTweetQueue.getDelayed();
+    for (const job of jobs) {
+      if (job.data.scheduledTweetId === rows[0].id) {
+        await job.remove();
+      }
+    }
+
+    // Enqueue new BullMQ job with updated delay
+    const delay = Math.max(0, new Date(scheduledTime).getTime() - Date.now());
+    await scheduledTweetQueue.add(
+      'scheduled-tweet',
+      { scheduledTweetId: rows[0].id },
+      { delay }
+    );
 
     res.json({
       success: true,

@@ -142,8 +142,7 @@ export const useTweetComposer = () => {
     try {
       setIsLoadingScheduled(true);
       const response = await scheduling.list();
-      const tweets = response.data || [];
-      // Ensure we always set an array
+      const tweets = response.data?.scheduled_tweets || [];
       setScheduledTweets(Array.isArray(tweets) ? tweets : []);
     } catch (error) {
       console.error('Error fetching scheduled tweets:', error);
@@ -167,7 +166,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast.warning(warning));
+  validation.warnings.forEach(warning => toast.error(warning));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
@@ -220,7 +219,7 @@ export const useTweetComposer = () => {
         }
         if (validation.warnings.length > 0) {
           validation.warnings.forEach(warning => 
-            toast.warning(`Tweet ${i + 1}: ${warning}`)
+            toast.error(`Tweet ${i + 1}: ${warning}`)
           );
         }
         // Update with sanitized content
@@ -238,7 +237,7 @@ export const useTweetComposer = () => {
         return;
       }
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast.warning(warning));
+  validation.warnings.forEach(warning => toast.error(warning));
       }
       if (!validation.sanitizedContent.trim() && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -365,17 +364,16 @@ export const useTweetComposer = () => {
     }
   };
 
-  const handleSchedule = async () => {
+  // Accepts a date string and timezone as arguments
+  const handleSchedule = async (dateString, timezone) => {
     if (!content.trim() && selectedImages.length === 0) {
       toast.error('Please enter some content or add images');
       return;
     }
-
-    if (!scheduledFor) {
+    if (!dateString) {
       toast.error('Please select a date and time');
       return;
     }
-
     setIsScheduling(true);
     try {
       // Convert images to base64 data URLs for backend processing
@@ -390,13 +388,15 @@ export const useTweetComposer = () => {
           mediaFiles.push(base64);
         }
       }
-      
+
+      // Directly schedule the tweet (do not post immediately)
       await scheduling.create({
         content: content.trim(),
-        scheduled_for: scheduledFor,
-        media: mediaFiles.length > 0 ? mediaFiles : undefined
+        media: mediaFiles.length > 0 ? mediaFiles : undefined,
+        scheduled_for: dateString,
+        timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
       });
-      
+
       toast.success('Tweet scheduled successfully!');
       setContent('');
       setScheduledFor('');
@@ -407,10 +407,9 @@ export const useTweetComposer = () => {
       });
       setSelectedImages([]);
       fetchScheduledTweets();
-      
     } catch (error) {
       console.error('Schedule tweet error:', error);
-      const errorMessage = error.response?.data?.error || 'Failed to schedule tweet';
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to schedule tweet';
       toast.error(errorMessage);
     } finally {
       setIsScheduling(false);
@@ -418,19 +417,30 @@ export const useTweetComposer = () => {
   };
 
   const handleAIGenerate = async () => {
-    const sanitizedPrompt = sanitizeUserInput(aiPrompt.trim(), { maxLength: 1000 });
-    
+    let sanitizedPrompt = sanitizeUserInput(aiPrompt.trim(), { maxLength: 1000 });
+
     if (!sanitizedPrompt) {
       toast.error('Please enter a valid prompt');
       return;
     }
 
+    // If not thread mode, force prompt to request a single tweet under 280 chars
+    let aiRequestPrompt = sanitizedPrompt;
+    let aiRequestIsThread = isThread;
+    if (!isThread) {
+      aiRequestPrompt = `Write a single tweet under 280 characters about: ${sanitizedPrompt}`;
+      aiRequestIsThread = false;
+    }
+
     setIsGenerating(true);
     try {
-      // Send the prompt directly to the backend without enhancement
-      // The backend now handles thread counting and prompt enhancement
-      const response = await ai.generate(sanitizedPrompt, aiStyle);
-      
+      // Send the prompt to the backend, always include isThread
+      const response = await ai.generate({
+        prompt: aiRequestPrompt,
+        style: aiStyle,
+        isThread: aiRequestIsThread
+      });
+
       if (response.data && response.data.content) {
         // Sanitize AI response
         const sanitizedContent = sanitizeAIContent(response.data.content, {
@@ -457,10 +467,10 @@ export const useTweetComposer = () => {
           if (tweet.length > 280) tweet = tweet.substring(0, 280);
           setContent(tweet);
         }
-        
+
         setShowAIPrompt(false);
         setAiPrompt('');
-        
+
         // Show credits used information if available
         if (response.data.creditsUsed && response.data.threadCount) {
           toast.success(`Content generated successfully! Used ${response.data.creditsUsed} credits for ${response.data.threadCount} thread(s).`);
@@ -472,7 +482,7 @@ export const useTweetComposer = () => {
       }
     } catch (error) {
       console.error('AI generation error:', error);
-      
+
       // Handle specific credit errors
       if (error.response?.status === 402) {
         const errorData = error.response.data;
@@ -583,7 +593,7 @@ export const useTweetComposer = () => {
     }
 
     if (sanitizedPrompt.includes('[FILTERED]')) {
-      toast.warning('Some content was filtered from your prompt for safety reasons');
+  toast.error('Some content was filtered from your prompt for safety reasons');
     }
 
     setIsGeneratingImage(true);
@@ -664,7 +674,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast.warning(warning));
+  validation.warnings.forEach(warning => toast.error(warning));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
