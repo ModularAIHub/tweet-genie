@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
-import cron from 'node-cron';
+// import cron from 'node-cron';
 
 // Route imports
 import authRoutes from './routes/auth.js';
@@ -21,7 +21,7 @@ import { authenticateToken } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 // Service imports
-import { scheduledTweetService } from './services/scheduledTweetService.js';
+// import { scheduledTweetService } from './services/scheduledTweetService.js';
 
 dotenv.config();
 
@@ -58,14 +58,9 @@ app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 // Error handling
 app.use(errorHandler);
 
-// Schedule tweet posting job (runs every minute)
-cron.schedule('* * * * *', async () => {
-  try {
-    await scheduledTweetService.processScheduledTweets();
-  } catch (error) {
-    console.error('Error processing scheduled tweets:', error);
-  }
-});
+
+// Start BullMQ worker for scheduled tweets
+import './workers/scheduledTweetWorker.js';
 
 app.listen(PORT, () => {
   console.log(`Tweet Genie server running on port ${PORT}`);

@@ -146,7 +146,7 @@ export const providers = {
 
 // AI Content Generation endpoints
 export const ai = {
-  generate: (prompt, style = 'casual') => api.post('/api/ai/generate', { prompt, style }),
+  generate: ({ prompt, style = 'casual', isThread = false }) => api.post('/api/ai/generate', { prompt, style, isThread }),
   generateOptions: (prompt, style = 'casual', count = 3) => 
     api.post('/api/ai/generate-options', { prompt, style, count }),
 };

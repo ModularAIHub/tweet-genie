@@ -38,9 +38,10 @@ export const aiGenerateSchema = Joi.object({
   max_tweets: Joi.number().min(1).max(10).default(1)
 });
 
-// Schedule validation
+// Schedule validation (accepts content/media directly, not tweet_id)
 export const scheduleSchema = Joi.object({
-  tweet_id: Joi.string().uuid().required(),
+  content: Joi.string().min(1).max(280).required(),
+  media: Joi.array().items(Joi.string()).max(4).optional(),
   scheduled_for: Joi.date().greater('now').required(),
   timezone: Joi.string().optional()
 });

@@ -271,12 +271,12 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       
       if (isRateLimitError) {
         console.log('✅ Rate limit detected - Twitter API returned 429');
-        throw {
+        return res.status(429).json({
+          error: 'Twitter rate limit reached. Please try again later.',
           code: 'TWITTER_RATE_LIMIT',
-          message: 'Twitter rate limit reached. Please try again later.',
           details: twitterError.message,
           retryAfter: twitterError.rateLimit?.reset || 'unknown'
-        };
+        });
       } else if (is403Error) {
         console.log('🔐 Permissions error detected - Twitter API returned 403');
         throw {

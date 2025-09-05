@@ -4,6 +4,21 @@ import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 
 class ScheduledTweetService {
+  // For BullMQ worker: process a scheduled tweet by its ID
+  async processSingleScheduledTweetById(scheduledTweetId) {
+    // Fetch the scheduled tweet and related info
+    const { rows } = await pool.query(
+      `SELECT st.*, ta.access_token, ta.twitter_username
+         FROM scheduled_tweets st
+         JOIN twitter_auth ta ON st.user_id = ta.user_id
+         WHERE st.id = $1`,
+      [scheduledTweetId]
+    );
+    if (!rows.length) {
+      throw new Error(`Scheduled tweet not found: ${scheduledTweetId}`);
+    }
+    await this.processSingleScheduledTweet(rows[0]);
+  }
   async processScheduledTweets() {
     try {
       // Get tweets scheduled for now or earlier
