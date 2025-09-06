@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
   TwitterAccountInfo,
@@ -13,6 +13,7 @@ import {
 import { useTweetComposer } from '../hooks/useTweetComposer';
 
 const TweetComposer = () => {
+  const [imageModal, setImageModal] = useState({ open: false, src: null });
   const {
     // State
     content,
@@ -166,7 +167,17 @@ const TweetComposer = () => {
                   onImageUpload={handleImageUpload}
                   onImageRemove={handleImageRemove}
                   isUploadingImages={isUploadingImages}
+                  onImagePreview={img => setImageModal({ open: true, src: img.preview || img.url })}
                 />
+  {/* Image Modal for full preview */}
+  {imageModal.open && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70" onClick={() => setImageModal({ open: false, src: null })}>
+      <div className="relative max-w-3xl w-full flex flex-col items-center" onClick={e => e.stopPropagation()}>
+        <img src={imageModal.src} alt="Full preview" className="max-h-[80vh] max-w-full rounded shadow-lg border-4 border-white" />
+        <button className="mt-4 px-6 py-2 bg-white text-black rounded shadow font-semibold" onClick={() => setImageModal({ open: false, src: null })}>Close</button>
+      </div>
+    </div>
+  )}
               </div>
 
               {/* Tweet Actions */}

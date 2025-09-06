@@ -79,8 +79,8 @@ router.get('/overview', authenticateToken, async (req, res) => {
       [userId, startDate]
     );
 
-    // Get top performing tweets
-    const { rows: topTweets } = await pool.query(
+    // Get all tweets for analytics (not just top performing)
+    const { rows: tweets } = await pool.query(
       `SELECT 
         id, content, 
         COALESCE(impressions, 0) as impressions, 
@@ -98,8 +98,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
        WHERE user_id = $1 
        AND (created_at >= $2 OR external_created_at >= $2) 
        AND status = 'posted'
-       ORDER BY engagement_score DESC
-       LIMIT 10`,
+       ORDER BY created_at DESC`,
       [userId, startDate]
     );
 
@@ -157,7 +156,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
     res.json({
       overview: tweetMetrics[0] || {},
       daily_metrics: dailyMetrics || [],
-      top_tweets: topTweets || [],
+      tweets: tweets || [],
       hourly_engagement: hourlyEngagement || [],
       content_type_metrics: contentTypeMetrics || [],
       growth: {
@@ -181,6 +180,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
   let updatedCount = 0;
   let errorCount = 0;
   let rateLimitExceeded = false;
+  const updatedTweetIds = [];
+  const skippedTweetIds = [];
 
   try {
     const userId = req.user.id;
@@ -262,24 +263,21 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
     for (let i = 0; i < tweetsToUpdate.length; i += batchSize) {
       const batch = tweetsToUpdate.slice(i, i + batchSize);
       console.log(`Processing tweet ${i + 1}/${tweetsToUpdate.length}`);
-      
       for (const tweet of batch) {
-        if (!tweet.tweet_id || rateLimitExceeded) continue;
-        
+        if (!tweet.tweet_id || rateLimitExceeded) {
+          skippedTweetIds.push(tweet.id);
+          continue;
+        }
         try {
           // Add random jitter to avoid predictable patterns
           const jitter = Math.random() * 1000;
           await new Promise(resolve => setTimeout(resolve, requestDelay + jitter));
-          
           console.log(`Fetching metrics for tweet ${tweet.tweet_id}...`);
-          
           const tweetData = await twitterClient.v2.singleTweet(tweet.tweet_id, {
             'tweet.fields': ['public_metrics', 'created_at']
           });
-          
           if (tweetData.data && tweetData.data.public_metrics) {
             const publicMetrics = tweetData.data.public_metrics;
-            
             await pool.query(
               `UPDATE tweets SET 
                 impressions = $1,
@@ -300,11 +298,12 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
                 tweet.id
               ]
             );
-            
             updatedCount++;
+            updatedTweetIds.push(tweet.id);
             console.log(`✅ Updated tweet ${tweet.tweet_id}: ${publicMetrics.impression_count} impressions`);
           } else {
             console.log(`⚠️ No metrics data for tweet ${tweet.tweet_id}`);
+            skippedTweetIds.push(tweet.id);
           }
         } catch (tweetError) {
           console.error(`❌ Error for tweet ${tweet.tweet_id}:`, {
@@ -312,9 +311,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
             code: tweetError.code,
             status: tweetError.status
           });
-          
           errorCount++;
-          
           if (tweetError.code === 429) {
             console.log('🛑 Rate limit hit, stopping sync completely');
             // Debug logging to see what headers we get
@@ -324,6 +321,10 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
               responseHeaders: !!tweetError.response?.headers?.['x-rate-limit-reset']
             });
             rateLimitExceeded = true;
+            // Mark all remaining tweets as skipped
+            for (let j = i + 1; j < tweetsToUpdate.length; j++) {
+              skippedTweetIds.push(tweetsToUpdate[j].id);
+            }
             // Try to get x-rate-limit-reset from error headers
             let resetTimestamp = Date.now() + 15 * 60 * 1000;
             if (tweetError.rateLimit?.reset) {
@@ -341,6 +342,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
               type: 'rate_limit',
               resetTime: resetTime.toISOString(),
               waitMinutes: waitMinutes,
+              updatedTweetIds,
+              skippedTweetIds,
               stats: {
                 metrics_updated: updatedCount,
                 errors: errorCount,
@@ -353,10 +356,12 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
               `UPDATE tweets SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
               [tweet.id]
             );
+            skippedTweetIds.push(tweet.id);
+          } else {
+            skippedTweetIds.push(tweet.id);
           }
         }
       }
-      
       // Long delay between batches to respect rate limits
       if (i + batchSize < tweetsToUpdate.length && !rateLimitExceeded) {
         console.log(`Waiting ${batchDelay/1000}s before next tweet...`);
@@ -369,6 +374,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
     res.json({
       success: true,
       message: `Analytics sync completed! Updated ${updatedCount} tweets${errorCount > 0 ? `, ${errorCount} errors` : ''}`,
+      updatedTweetIds,
+      skippedTweetIds,
       stats: {
         metrics_updated: updatedCount,
         errors: errorCount,

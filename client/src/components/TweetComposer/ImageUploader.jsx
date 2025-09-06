@@ -5,7 +5,8 @@ const ImageUploader = ({
   selectedImages,
   onImageUpload,
   onImageRemove,
-  isUploadingImages
+  isUploadingImages,
+  onImagePreview
 }) => {
   return (
     <div className="space-y-4">
@@ -35,7 +36,8 @@ const ImageUploader = ({
               <img
                 src={image.preview || image.url}
                 alt={`Preview ${index + 1}`}
-                className="w-full h-32 object-cover rounded-lg border"
+                className="w-full h-32 object-cover rounded-lg border cursor-pointer"
+                onClick={() => onImagePreview && onImagePreview(image)}
               />
               <button
                 onClick={() => onImageRemove(index)}

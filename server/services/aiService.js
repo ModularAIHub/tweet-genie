@@ -580,6 +580,37 @@ Generate tweet content for: ${prompt}`;
       throw error;
     }
   }
+
+  // Generate a tweet or thread for a prompt, returning { text, isThread, threadParts }
+  async generateTweetOrThread(prompt, options = {}) {
+    const style = options.style || 'casual';
+    let aiPrompt = prompt;
+    // If isThread is true, force thread generation in the prompt
+    if (options.isThread) {
+      aiPrompt = `${prompt}\nGenerate a Twitter thread (3-5 tweets, separated by ---).`;
+    }
+    const result = await this.generateContent(aiPrompt, style);
+    if (options.isThread) {
+      const threadParts = result.content.split(/---+/).map(t => t.trim()).filter(Boolean);
+      return {
+        text: result.content,
+        isThread: true,
+        threadParts,
+        provider: result.provider,
+        success: true
+      };
+    } else {
+      // Always return a single tweet (first part)
+      const first = typeof result.content === 'string' ? result.content.split(/---+/)[0].trim() : '';
+      return {
+        text: first,
+        isThread: false,
+        threadParts: [first],
+        provider: result.provider,
+        success: true
+      };
+    }
+  }
 }
 
 export const aiService = new AIService();

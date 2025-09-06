@@ -1,3 +1,32 @@
+
+const router = express.Router();
+
+// Bulk save generated tweets/threads as drafts
+router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
+  try {
+    const { items } = req.body; // [{ text, isThread, threadParts, images }]
+    const userId = req.user.id;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'No items to save' });
+    }
+    const saved = [];
+    for (const item of items) {
+      // Save as draft (status = 'draft')
+      const { text, isThread, threadParts } = item;
+      const { rows } = await pool.query(
+        `INSERT INTO tweets (user_id, content, is_thread, thread_parts, status, created_at)
+         VALUES ($1, $2, $3, $4, 'draft', NOW())
+         RETURNING *`,
+        [userId, text, !!isThread, isThread ? JSON.stringify(threadParts) : null]
+      );
+      saved.push(rows[0]);
+    }
+    res.json({ success: true, saved });
+  } catch (error) {
+    console.error('Bulk save error:', error);
+    res.status(500).json({ error: 'Failed to save generated content' });
+  }
+});
 import express from 'express';
 import { TwitterApi } from 'twitter-api-v2';
 import pool from '../config/database.js';
@@ -8,7 +37,7 @@ import { creditService } from '../services/creditService.js';
 import { aiService } from '../services/aiService.js';
 import { mediaService } from '../services/mediaService.js';
 
-const router = express.Router();
+
 
 // Post a tweet
 router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async (req, res) => {

@@ -70,6 +70,9 @@ const Analytics = () => {
   const [timeframe, setTimeframe] = useState('30');
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
+  // Store updated/skipped tweet IDs as Sets for O(1) lookup
+  const [updatedTweetIds, setUpdatedTweetIds] = useState(new Set());
+  const [skippedTweetIds, setSkippedTweetIds] = useState(new Set());
 
   const fetchAnalytics = async () => {
     try {
@@ -89,20 +92,18 @@ const Analytics = () => {
       setSyncing(true);
       setError(null);
       const response = await api.post('/api/analytics/sync');
-      
       if (response.data.success) {
         // Show success message with stats
         const stats = response.data.stats;
-        alert(`Sync completed!
-📊 Metrics updated: ${stats.metrics_updated}
-${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
-        
+        alert(`Sync completed!\n📊 Metrics updated: ${stats.metrics_updated}\n${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
+        // Store updated/skipped tweet IDs as Sets
+        setUpdatedTweetIds(new Set(response.data.updatedTweetIds || []));
+        setSkippedTweetIds(new Set(response.data.skippedTweetIds || []));
         // Refresh analytics data
         await fetchAnalytics();
       }
     } catch (error) {
       console.error('Failed to sync analytics:', error);
-      
       if (error.response?.status === 429) {
         const errorData = error.response.data;
         if (errorData.type === 'rate_limit') {
@@ -111,6 +112,8 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
           const resetTimeLocal = resetTime.toLocaleString(undefined, { timeZone: userTimezone });
           const waitMinutes = errorData.waitMinutes;
           setError(`🐦 Twitter API rate limit exceeded. Your external tweets will sync automatically at ${resetTimeLocal} (in about ${waitMinutes} minutes). Please try again then.`);
+          setUpdatedTweetIds(new Set(errorData.updatedTweetIds || []));
+          setSkippedTweetIds(new Set(errorData.skippedTweetIds || []));
         } else {
           setError('Rate limit exceeded. Please try again later.');
         }
@@ -118,15 +121,6 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
         setError(`Twitter API Error: ${error.response.data.message}`);
       } else {
         setError('Failed to sync analytics data. Please try again later.');
-      }
-
-      if (error.response?.data.type === 'rate_limit' && error.response?.data.resetTime) {
-  // Convert UTC reset time to user's local timezone
-  const resetDate = new Date(error.response.data.resetTime);
-  const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const localString = resetDate.toLocaleString(undefined, { timeZone: userTimezone, hour12: false });
-        alert(`Twitter rate limit hit!\nYou can start posting again after: ${istString} (IST)`);
-        return;
       }
     } finally {
       setSyncing(false);
@@ -147,7 +141,7 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
 
   const overview = analyticsData?.overview || {};
   const dailyMetrics = analyticsData?.daily_metrics || [];
-  const topTweets = analyticsData?.top_tweets || [];
+  const topTweets = analyticsData?.tweets || [];
   const hourlyEngagement = analyticsData?.hourly_engagement || [];
   const contentTypeMetrics = analyticsData?.content_type_metrics || [];
   const growth = analyticsData?.growth || {};
@@ -1472,7 +1466,7 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
       <div className="card">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-lg font-semibold text-gray-900">
-            Top Performing Content
+            Tweets
           </h3>
           <span className="text-sm text-gray-500">
             Last {timeframe} days
@@ -1481,51 +1475,60 @@ ${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
 
         {topTweets.length > 0 ? (
           <div className="space-y-4">
-            {topTweets.slice(0, 5).map((tweet, index) => (
-              <div key={tweet.id} className="p-4 bg-gray-50 rounded-lg border-l-4 border-blue-500">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center space-x-2 mb-2">
-                      <span className="inline-flex items-center justify-center w-6 h-6 bg-blue-500 text-white text-xs font-bold rounded-full">
-                        {index + 1}
-                      </span>
-                      <span className="text-xs text-gray-500">
-                        {new Date(tweet.created_at).toLocaleDateString()}
-                      </span>
-                      <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
-                        {tweet.tweet_engagement_rate}% engagement rate
-                      </span>
-                    </div>
-                    <p className="text-gray-700 mb-3 line-clamp-3">
-                      {tweet.content.split('---')[0].substring(0, 200)}
-                      {tweet.content.length > 200 ? '...' : ''}
-                    </p>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                      <div className="flex items-center text-gray-600">
-                        <Eye className="h-4 w-4 mr-1" />
-                        <span className="font-medium">{(tweet.impressions || 0).toLocaleString()}</span>
-                        <span className="ml-1">views</span>
+            {topTweets.map((tweet, index) => {
+              let badge = null;
+              if (updatedTweetIds.has(tweet.id)) {
+                badge = <span className="ml-2 px-2 py-0.5 rounded-full bg-green-200 text-green-800 text-xs font-semibold">Synced</span>;
+              } else if (skippedTweetIds.has(tweet.id)) {
+                badge = <span className="ml-2 px-2 py-0.5 rounded-full bg-yellow-200 text-yellow-800 text-xs font-semibold">Skipped</span>;
+              }
+              return (
+                <div key={tweet.id} className="p-4 bg-gray-50 rounded-lg border-l-4 border-blue-500">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center space-x-2 mb-2">
+                        <span className="inline-flex items-center justify-center w-6 h-6 bg-blue-500 text-white text-xs font-bold rounded-full">
+                          {index + 1}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {new Date(tweet.created_at).toLocaleDateString()}
+                        </span>
+                        <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
+                          {tweet.tweet_engagement_rate}% engagement rate
+                        </span>
+                        {badge}
                       </div>
-                      <div className="flex items-center text-red-600">
-                        <Heart className="h-4 w-4 mr-1" />
-                        <span className="font-medium">{tweet.likes || 0}</span>
-                        <span className="ml-1">likes</span>
-                      </div>
-                      <div className="flex items-center text-green-600">
-                        <Repeat2 className="h-4 w-4 mr-1" />
-                        <span className="font-medium">{tweet.retweets || 0}</span>
-                        <span className="ml-1">retweets</span>
-                      </div>
-                      <div className="flex items-center text-blue-600">
-                        <MessageCircle className="h-4 w-4 mr-1" />
-                        <span className="font-medium">{tweet.replies || 0}</span>
-                        <span className="ml-1">replies</span>
+                      <p className="text-gray-700 mb-3 line-clamp-3">
+                        {tweet.content.split('---')[0].substring(0, 200)}
+                        {tweet.content.length > 200 ? '...' : ''}
+                      </p>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                        <div className="flex items-center text-gray-600">
+                          <Eye className="h-4 w-4 mr-1" />
+                          <span className="font-medium">{(tweet.impressions || 0).toLocaleString()}</span>
+                          <span className="ml-1">views</span>
+                        </div>
+                        <div className="flex items-center text-red-600">
+                          <Heart className="h-4 w-4 mr-1" />
+                          <span className="font-medium">{tweet.likes || 0}</span>
+                          <span className="ml-1">likes</span>
+                        </div>
+                        <div className="flex items-center text-green-600">
+                          <Repeat2 className="h-4 w-4 mr-1" />
+                          <span className="font-medium">{tweet.retweets || 0}</span>
+                          <span className="ml-1">retweets</span>
+                        </div>
+                        <div className="flex items-center text-blue-600">
+                          <MessageCircle className="h-4 w-4 mr-1" />
+                          <span className="font-medium">{tweet.replies || 0}</span>
+                          <span className="ml-1">replies</span>
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="text-center py-8">
