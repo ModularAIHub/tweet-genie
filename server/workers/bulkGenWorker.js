@@ -1,9 +1,11 @@
 import { bulkGenQueue, getRedisClient } from '../config/bulkGenQueue.js';
 import { aiService } from '../services/aiService.js';
 import { creditService } from '../services/creditService.js';
-import { Worker } from 'bullmq';
 
 const redis = getRedisClient();
+redis.connect();
+
+import { Worker } from 'bullmq';
 
 export function startBulkGenWorker() {
   new Worker(
@@ -23,13 +25,13 @@ export function startBulkGenWorker() {
         console.log(`[BulkGenWorker] Job ${job.id} generated result:`, result);
         // Store result in Redis with jobId as key
         await redis.set(`bulkgen:result:${job.id}`,
-          JSON.stringify(result), 'EX', 60 * 60); // 1 hour expiry
+          JSON.stringify(result), { EX: 60 * 60 }); // 1 hour expiry
         console.log(`[BulkGenWorker] Result for job ${job.id} written to Redis.`);
         return result;
       } catch (err) {
         console.error(`[BulkGenWorker] Error processing job ${job.id}:`, err);
         await redis.set(`bulkgen:result:${job.id}`,
-          JSON.stringify({ error: err.message }), 'EX', 60 * 60);
+          JSON.stringify({ error: err.message }), { EX: 60 * 60 });
         throw err;
       }
     },
