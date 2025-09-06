@@ -3,6 +3,7 @@ import { aiService } from '../services/aiService.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { creditService } from '../services/creditService.js';
 import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/sanitization.js';
+// import { bulkGenerate } from '../controllers/aiController.js';
 
 const router = express.Router();
 
@@ -311,5 +312,44 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
     });
   }
 });
+
+// Bulk AI generation (multiple prompts)
+
+// New: Enqueue bulk generation jobs, return job IDs
+import { enqueueBulkGenJobs } from '../utils/bulkGenEnqueue.js';
+router.post('/bulk-gen-queue', authenticateToken, async (req, res) => {
+  try {
+    const { prompts, options } = req.body;
+    if (!Array.isArray(prompts) || prompts.length === 0) {
+      return res.status(400).json({ error: 'No prompts provided' });
+    }
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const jobIds = await enqueueBulkGenJobs(prompts, options, userId);
+    res.json({ jobIds });
+  } catch (error) {
+    console.error('Bulk enqueue error:', error);
+    res.status(500).json({ error: 'Failed to enqueue jobs', message: error.message });
+  }
+});
+
+// New: Poll for job result by job ID
+import { getBulkGenResult } from '../utils/bulkGenResult.js';
+router.get('/bulk-gen-result/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    if (!jobId) return res.status(400).json({ error: 'Missing jobId' });
+    const result = await getBulkGenResult(jobId);
+    if (!result) return res.json({ status: 'pending' });
+    res.json({ status: 'done', result });
+  } catch (error) {
+    console.error('Bulk result poll error:', error);
+    res.status(500).json({ error: 'Failed to fetch job result', message: error.message });
+  }
+});
+
+// router.post('/bulk-generate', authenticateToken, bulkGenerate);
 
 export default router;

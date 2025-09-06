@@ -9,6 +9,85 @@ import moment from 'moment-timezone';
 
 const router = express.Router();
 
+// Bulk schedule drafts
+router.post('/bulk', async (req, res) => {
+  try {
+    const { items, frequency, startDate, timeOfDay, daysOfWeek, images, timezone = 'UTC' } = req.body;
+    const userId = req.user.id;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'No items to schedule' });
+    }
+    if (!moment.tz.zone(timezone)) {
+      return res.status(400).json({ error: 'Invalid timezone' });
+    }
+    const scheduled = [];
+    let current = moment.tz(startDate, timezone);
+    let scheduledCount = 0;
+    for (const item of items) {
+      let content = item.text;
+      let isThread = item.isThread;
+      let threadParts = item.threadParts || null;
+      let media = images?.[scheduledCount] || [];
+      if (frequency === 'once_daily') {
+        current.set({ hour: Number(timeOfDay.split(':')[0]), minute: Number(timeOfDay.split(':')[1]), second: 0, millisecond: 0 });
+        const scheduledForUTC = current.clone().utc().toDate();
+        const { rows } = await pool.query(
+          `INSERT INTO scheduled_tweets (user_id, content, is_thread, thread_parts, media, scheduled_for, timezone, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
+          [userId, content, !!isThread, isThread ? JSON.stringify(threadParts) : null, JSON.stringify(media), scheduledForUTC, timezone]
+        );
+        scheduled.push(rows[0]);
+        current.add(1, 'day');
+      } else if (frequency === 'twice_daily') {
+        for (const hour of [9, 18]) {
+          current.set({ hour, minute: 0, second: 0, millisecond: 0 });
+          const scheduledForUTC = current.clone().utc().toDate();
+          const { rows } = await pool.query(
+            `INSERT INTO scheduled_tweets (user_id, content, is_thread, thread_parts, media, scheduled_for, timezone, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
+            [userId, content, !!isThread, isThread ? JSON.stringify(threadParts) : null, JSON.stringify(media), scheduledForUTC, timezone]
+          );
+          scheduled.push(rows[0]);
+        }
+        current.add(1, 'day');
+      } else if (frequency === 'thrice_weekly' || frequency === 'four_times_weekly') {
+        const days = frequency === 'thrice_weekly' ? [1, 3, 5] : [0, 2, 4, 6];
+        for (const day of days) {
+          const next = current.clone().day(day);
+          next.set({ hour: Number(timeOfDay.split(':')[0]), minute: Number(timeOfDay.split(':')[1]), second: 0, millisecond: 0 });
+          const scheduledForUTC = next.clone().utc().toDate();
+          const { rows } = await pool.query(
+            `INSERT INTO scheduled_tweets (user_id, content, is_thread, thread_parts, media, scheduled_for, timezone, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
+            [userId, content, !!isThread, isThread ? JSON.stringify(threadParts) : null, JSON.stringify(media), scheduledForUTC, timezone]
+          );
+          scheduled.push(rows[0]);
+        }
+        current.add(1, 'week');
+      } else if (frequency === 'custom' && Array.isArray(daysOfWeek)) {
+        for (const day of daysOfWeek) {
+          const next = current.clone().day(day);
+          next.set({ hour: Number(timeOfDay.split(':')[0]), minute: Number(timeOfDay.split(':')[1]), second: 0, millisecond: 0 });
+          const scheduledForUTC = next.clone().utc().toDate();
+          const { rows } = await pool.query(
+            `INSERT INTO scheduled_tweets (user_id, content, is_thread, thread_parts, media, scheduled_for, timezone, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
+            [userId, content, !!isThread, isThread ? JSON.stringify(threadParts) : null, JSON.stringify(media), scheduledForUTC, timezone]
+          );
+          scheduled.push(rows[0]);
+        }
+        current.add(1, 'week');
+      }
+      scheduledCount++;
+    }
+    res.json({ success: true, scheduled });
+  } catch (error) {
+    console.error('Bulk schedule error:', error);
+    res.status(500).json({ error: 'Failed to schedule bulk content' });
+  }
+});
+
+
 // Schedule a tweet
 router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, async (req, res) => {
   try {

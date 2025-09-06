@@ -109,6 +109,8 @@ export const tweets = {
   list: (params) => api.get('/api/tweets', { params }),
   delete: (tweetId) => api.delete(`/api/tweets/${tweetId}`),
   generateAI: (prompt) => api.post('/api/tweets/ai-generate', prompt),
+  // Bulk save generated tweets/threads as drafts
+  bulkSaveDrafts: (items) => api.post('/api/tweets/bulk-save', { items }),
 };
 
 // Scheduling endpoints
@@ -144,11 +146,14 @@ export const providers = {
   test: (provider) => api.post(`/api/providers/${provider}/test`),
 };
 
-// AI Content Generation endpoints
+// AI endpoints
 export const ai = {
   generate: ({ prompt, style = 'casual', isThread = false }) => api.post('/api/ai/generate', { prompt, style, isThread }),
   generateOptions: (prompt, style = 'casual', count = 3) => 
     api.post('/api/ai/generate-options', { prompt, style, count }),
+  bulkGenerate: (prompts, options) => api.post('/api/ai/bulk-generate', { prompts, options }),
+  bulkGenQueue: (prompts, options) => api.post('/api/ai/bulk-gen-queue', { prompts, options }),
+  bulkGenResult: (jobId) => api.get(`/api/ai/bulk-gen-result/${jobId}`),
 };
 
 // AI Image Generation endpoints

@@ -7,6 +7,7 @@ import Layout from './components/Layout';
 // Pages
 import Dashboard from './pages/Dashboard';
 import TweetComposer from './pages/TweetComposer';
+import BulkGeneration from './pages/BulkGeneration';
 import Scheduling from './pages/Scheduling';
 import History from './pages/History';
 import Analytics from './pages/Analytics';
@@ -31,6 +32,7 @@ function App() {
                     <Route path="/" element={<Navigate to="/dashboard" replace />} />
                     <Route path="/dashboard" element={<Dashboard />} />
                     <Route path="/compose" element={<TweetComposer />} />
+                    <Route path="/bulk-generation" element={<BulkGeneration />} />
                     <Route path="/scheduling" element={<Scheduling />} />
                     <Route path="/history" element={<History />} />
                     <Route path="/analytics" element={<Analytics />} />

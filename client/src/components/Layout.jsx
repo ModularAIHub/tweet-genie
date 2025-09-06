@@ -27,6 +27,7 @@ const Layout = ({ children }) => {
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Compose', href: '/compose', icon: Edit3 },
+    { name: 'Bulk Generation', href: '/bulk-generation', icon: BarChart3 },
     { name: 'Scheduling', href: '/scheduling', icon: Calendar },
     { name: 'History', href: '/history', icon: History },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },

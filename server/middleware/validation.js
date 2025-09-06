@@ -38,13 +38,19 @@ export const aiGenerateSchema = Joi.object({
   max_tweets: Joi.number().min(1).max(10).default(1)
 });
 
-// Schedule validation (accepts content/media directly, not tweet_id)
+// Schedule validation (accepts content/media for single, or thread/threadMedia for thread)
 export const scheduleSchema = Joi.object({
-  content: Joi.string().min(1).max(280).required(),
+  content: Joi.string().min(1).max(280).when('thread', {
+    is: Joi.exist(),
+    then: Joi.optional(),
+    otherwise: Joi.required()
+  }),
   media: Joi.array().items(Joi.string()).max(4).optional(),
+  thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
+  threadMedia: Joi.array().items(Joi.string()).max(25).optional(),
   scheduled_for: Joi.date().greater('now').required(),
   timezone: Joi.string().optional()
-});
+}).or('content', 'thread');
 
 // Analytics validation (simplified)
 export const analyticsQuerySchema = Joi.object({
