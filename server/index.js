@@ -31,9 +31,13 @@ const PORT = process.env.PORT || 3002;
 // Basic middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5174',
+  origin: [
+    'https://kanishksaraswat.me',
+    'https://tweet.kanishksaraswat.me'
+  ],
   credentials: true
 }));
+app.set('trust proxy', 1);
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
