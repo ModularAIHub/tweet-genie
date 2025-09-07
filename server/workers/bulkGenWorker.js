@@ -1,3 +1,7 @@
+import dotenv from 'dotenv';
+dotenv.config({ path: '../.env' });
+// Debug: print REDIS_URL to verify environment variable is loaded
+console.log('REDIS_URL:', process.env.REDIS_URL);
 import { bulkGenQueue, getRedisClient } from '../config/bulkGenQueue.js';
 import { aiService } from '../services/aiService.js';
 import { creditService } from '../services/creditService.js';
