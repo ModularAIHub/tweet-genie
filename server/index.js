@@ -33,9 +33,12 @@ app.use(helmet());
 app.use(cors({
   origin: [
     'https://kanishksaraswat.me',
+    'https://platform.kanishksaraswat.me',
     'https://tweet.kanishksaraswat.me'
   ],
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.set('trust proxy', 1);
 app.use(cookieParser());

@@ -21,8 +21,9 @@ router.get('/callback', async (req, res) => {
     // Set httpOnly cookies that match Platform's cookie names
     res.cookie('accessToken', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: true,
+      sameSite: 'none',
+      domain: '.kanishksaraswat.me',
       maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
     });
 
@@ -31,8 +32,9 @@ router.get('/callback', async (req, res) => {
       console.log('Setting refresh token cookie...');
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        secure: true,
+        sameSite: 'none',
+        domain: '.kanishksaraswat.me',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
       });
     } else {
@@ -65,8 +67,9 @@ router.post('/callback', async (req, res) => {
     // Set httpOnly cookies that match Platform's cookie names
     res.cookie('accessToken', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: true,
+      sameSite: 'none',
+      domain: '.kanishksaraswat.me',
       maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
     });
 
@@ -74,8 +77,9 @@ router.post('/callback', async (req, res) => {
     if (refreshToken) {
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        secure: true,
+        sameSite: 'none',
+        domain: '.kanishksaraswat.me',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
       });
     }
