@@ -32,9 +32,10 @@ const PORT = process.env.PORT || 3002;
 app.use(helmet());
 app.use(cors({
   origin: [
-    'https://kanishksaraswat.me',
-    'https://platform.kanishksaraswat.me',
-    'https://tweet.kanishksaraswat.me'
+    'https://suitegenie.in',
+    'http://localhost:5174',
+    'http://localhost:5173',
+    'https://tweet.suitegenie.in'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
