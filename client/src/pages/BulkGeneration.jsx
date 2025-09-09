@@ -146,7 +146,7 @@ const BulkGeneration = () => {
         const payload = item.isThread
           ? {
               thread: item.threadParts,
-              threadMedia: media,
+              threadMedia: Array.isArray(media) && media.flat ? media.flat() : [].concat(...media),
               scheduled_for,
               timezone,
             }
@@ -161,17 +161,29 @@ const BulkGeneration = () => {
           await scheduling.create(payload);
           results.push({ success: true });
         } catch (err) {
-          results.push({ success: false, error: err?.response?.data?.error || err.message });
+          // Log error details for debugging
+          const details = err?.response?.data?.details;
+          const errorMsg = err?.response?.data?.error || err.message;
+          results.push({ success: false, error: errorMsg, details });
         }
       }
       const successCount = results.filter(r => r.success).length;
       const failCount = results.length - successCount;
       setSchedulingStatus('success');
       setShowScheduleModal(false);
-      alert(`Scheduled ${successCount} successfully.${failCount > 0 ? ' ' + failCount + ' failed.' : ''}`);
+      // Show error details if any failed
+      if (failCount > 0) {
+        const failed = results.filter(r => !r.success);
+        const errorDetails = failed.map(f => f.error + (f.details ? ('\n' + f.details.join('\n')) : '')).join('\n---\n');
+        alert(`Scheduled ${successCount} successfully. ${failCount} failed.\n\nDetails:\n${errorDetails}`);
+      } else {
+        alert(`Scheduled ${successCount} successfully.`);
+      }
     } catch (err) {
       setSchedulingStatus('error');
-      alert('Failed to schedule.');
+      const details = err?.response?.data?.details;
+      const errorMsg = err?.response?.data?.error || err.message;
+      alert('Failed to schedule.' + (details ? ('\n' + details.join('\n')) : '') + '\n' + errorMsg);
     }
   };
 
@@ -183,57 +195,84 @@ const BulkGeneration = () => {
     setPromptList(lines.map((prompt, idx) => ({ prompt, isThread: false, id: idx })));
   };
 
-  // Call backend for bulk generation using progressive job queue
-  const handleGenerate = async () => {
+  // Call backend for bulk generation directly (no queue)
+  const toggleThread = (idx) => {
+  setOutputs((prev) => {
+    const updated = { ...prev };
+    if (updated[idx]) {
+      updated[idx] = { ...updated[idx], isThread: !updated[idx].isThread };
+    }
+    return updated;
+  });
+  setPromptList((prev) => prev.map((p, i) => i === idx ? { ...p, isThread: !p.isThread } : p));
+};
+
+const updateText = (idx, value) => {
+  setOutputs((prev) => {
+    const updated = { ...prev };
+    if (updated[idx]) {
+      updated[idx] = { ...updated[idx], text: value };
+    }
+    return updated;
+  });
+};
+
+const handleImageUpload = (outputIdx, partIdx, files) => {
+  setOutputs((prev) => {
+    const updated = { ...prev };
+    if (updated[outputIdx]) {
+      const newImages = [...(updated[outputIdx].images || [])];
+      newImages[partIdx] = files[0] || null;
+      updated[outputIdx] = { ...updated[outputIdx], images: newImages };
+    }
+    return updated;
+  });
+};
+const handleGenerate = async () => {
     setLoading(true);
     setError('');
     setOutputs({});
     try {
-      const promptsArr = promptList.map(p => p.prompt);
-      const optionsArr = promptList.map(p => ({ isThread: p.isThread }));
-      // Enqueue jobs and get job IDs
-      const res = await ai.bulkGenQueue(promptsArr, optionsArr);
-      const jobIds = res.data.jobIds;
-      if (!Array.isArray(jobIds) || jobIds.length !== promptsArr.length) {
-        throw new Error('Failed to enqueue jobs');
-      }
-      // For each job, poll for result and append as soon as ready
-      jobIds.forEach((jobId, idx) => {
-        setOutputs(prev => ({ ...prev, [idx]: { loading: true, prompt: promptsArr[idx] } }));
-        const poll = async () => {
-          let tries = 0;
-          while (tries < 120) { // up to 2 minutes per job
-            try {
-              const pollRes = await ai.bulkGenResult(jobId);
-              if (pollRes.data.status === 'done' && pollRes.data.result) {
-                const result = pollRes.data.result;
-                setOutputs(prev => ({
-                  ...prev,
-                  [idx]: {
-                    prompt: promptsArr[idx],
-                    text: result.text,
-                    isThread: result.isThread,
-                    threadParts: result.threadParts,
-                    images: result.isThread ? result.threadParts.map(() => null) : [null],
-                    id: idx,
-                    loading: false,
-                    error: null,
-                    appeared: true,
-                  }
-                }));
-                break;
-              }
-            } catch (e) {
-              if (tries === 119) {
-                setOutputs(prev => ({ ...prev, [idx]: { ...prev[idx], loading: false, error: 'Failed to generate.' } }));
-              }
-            }
-            await new Promise(r => setTimeout(r, 1000));
-            tries++;
+      const newOutputs = {};
+      for (let idx = 0; idx < promptList.length; idx++) {
+        const { prompt, isThread } = promptList[idx];
+        setOutputs(prev => ({ ...prev, [idx]: { loading: true, prompt } }));
+        try {
+          const res = await ai.generate({ prompt, isThread });
+          const data = res.data;
+          if (isThread) {
+            newOutputs[idx] = {
+              prompt,
+              text: data.content,
+              isThread: true,
+              threadParts: data.content.split('---').map(t => t.trim()).filter(Boolean),
+              images: Array((data.threadCount || 1)).fill(null),
+              id: idx,
+              loading: false,
+              error: null,
+              appeared: true,
+            };
+          } else {
+            let tweetText = data.content.split('---')[0].trim();
+            if (tweetText.length > 280) tweetText = tweetText.slice(0, 280);
+            newOutputs[idx] = {
+              prompt,
+              text: tweetText,
+              isThread: false,
+              threadParts: undefined,
+              images: [null],
+              id: idx,
+              loading: false,
+              error: null,
+              appeared: true,
+            };
           }
-        };
-        poll();
-      });
+          setOutputs(prev => ({ ...prev, [idx]: newOutputs[idx] }));
+        } catch (err) {
+          newOutputs[idx] = { prompt, loading: false, error: err?.response?.data?.error || 'Failed to generate.' };
+          setOutputs(prev => ({ ...prev, [idx]: newOutputs[idx] }));
+        }
+      }
       setPrompts('');
       setPromptList([]);
     } catch (err) {
@@ -241,34 +280,6 @@ const BulkGeneration = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  // Toggle thread/single for an output
-  const toggleThread = (idx) => {
-    setOutputs((prev) =>
-      prev.map((o, i) =>
-        i === idx ? { ...o, isThread: !o.isThread } : o
-      )
-    );
-  };
-
-  // Update text for an output
-  const updateText = (idx, value) => {
-    setOutputs((prev) =>
-      prev.map((o, i) => (i === idx ? { ...o, text: value } : o))
-    );
-  };
-
-  // Handle image upload for a specific tweet/thread part
-  const handleImageUpload = (outputIdx, partIdx, files) => {
-    setOutputs((prev) =>
-      prev.map((o, i) => {
-        if (i !== outputIdx) return o;
-        const newImages = [...o.images];
-        newImages[partIdx] = files[0] || null;
-        return { ...o, images: newImages };
-      })
-    );
   };
 
   const handleImageChange = (draftId, files) => {
