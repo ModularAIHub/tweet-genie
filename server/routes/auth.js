@@ -1,6 +1,7 @@
 import express from 'express';
 import axios from 'axios';
 import { authenticateToken } from '../middleware/auth.js';
+import { setAuthCookies, clearAuthCookies } from '../utils/cookieUtils.js';
 
 const router = express.Router();
 
@@ -18,28 +19,9 @@ router.get('/callback', async (req, res) => {
     }
 
     console.log('Setting auth cookies...');
-    // Set httpOnly cookies that match Platform's cookie names
-    res.cookie('accessToken', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      domain: '.kanishksaraswat.me',
-      maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
-    });
-
-    // Set refresh token if available
-    if (refreshToken) {
-      console.log('Setting refresh token cookie...');
-      res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        domain: '.kanishksaraswat.me',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
-      });
-    } else {
-      console.log('No refresh token provided in callback');
-    }
+    
+    // Set authentication cookies using utility function
+    setAuthCookies(res, token, refreshToken);
 
     // Redirect to original URL or dashboard
     const finalRedirectUrl = redirect || '/dashboard';
@@ -64,25 +46,8 @@ router.post('/callback', async (req, res) => {
       return res.status(400).json({ error: 'Token required' });
     }
 
-    // Set httpOnly cookies that match Platform's cookie names
-    res.cookie('accessToken', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      domain: '.kanishksaraswat.me',
-      maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
-    });
-
-    // Set refresh token if available
-    if (refreshToken) {
-      res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        domain: '.kanishksaraswat.me',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
-      });
-    }
+    // Set authentication cookies using utility function
+    setAuthCookies(res, token, refreshToken);
 
     // Note: Both tokens are now properly set for automatic refresh
 
@@ -177,8 +142,8 @@ router.post('/refresh', async (req, res) => {
 
 // Logout route - clears cookie
 router.post('/logout', (req, res) => {
-  res.clearCookie('accessToken');
-  res.clearCookie('refreshToken');
+  // Clear authentication cookies using utility function
+  clearAuthCookies(res);
   res.json({ success: true });
 });
 

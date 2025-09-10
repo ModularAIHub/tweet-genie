@@ -123,14 +123,10 @@ export const AuthProvider = ({ children }) => {
       // If it's a 401, the backend middleware should have already attempted
       // token refresh. If we still get 401, it means refresh failed.
       if (error.response?.status === 401) {
-        console.log('401 error - authentication failed, redirecting to login');
+        console.log('401 error - authentication failed, will redirect to login');
         setIsAuthenticated(false);
         setUser(null);
-        
-        // Only redirect if we're on a protected page
-        if (window.location.pathname !== '/') {
-          redirectToLogin();
-        }
+        // Note: Don't redirect here, let ProtectedRoute handle it
       } else {
         // For other errors (network, etc), don't immediately redirect
         // The user might still be authenticated
@@ -144,16 +140,26 @@ export const AuthProvider = ({ children }) => {
 
   const redirectToLogin = () => {
     const currentUrl = encodeURIComponent(window.location.href);
-    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
+    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
     window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
   };
 
   const logout = async () => {
     try {
-      // Call backend logout to clear cookie
+      // Call Tweet Genie backend logout to clear local cookies
       await fetch('/api/auth/logout', {
         method: 'POST',
         credentials: 'include',
+      });
+
+      // Also call Platform logout to clear platform cookies
+      const platformUrl = import.meta.env.VITE_PLATFORM_API_URL || 'http://localhost:3000';
+      await fetch(`${platformUrl}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      }).catch(error => {
+        console.warn('Platform logout failed:', error);
+        // Don't throw error if platform logout fails
       });
     } catch (error) {
       console.error('Logout error:', error);
@@ -163,9 +169,9 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(false);
     toast.success('Logged out successfully');
     
-    // Redirect to main platform
-    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
-    window.location.href = `${platformUrl}/login`;
+    // Redirect to main platform login page with logout flag
+    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
+    window.location.href = `${platformUrl}/login?logout=true`;
   };
 
   const value = {
