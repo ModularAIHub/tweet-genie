@@ -74,7 +74,7 @@ api.interceptors.response.use(
             !currentPath.includes('/login')) {
           console.log('Redirecting to platform for re-authentication');
           const currentUrl = encodeURIComponent(window.location.href);
-          const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:3000';
+          const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
           window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
         }
 

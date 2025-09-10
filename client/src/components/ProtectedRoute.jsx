@@ -1,9 +1,20 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { useNavigate, useLocation } from 'react-router-dom';
 import LoadingSpinner from './LoadingSpinner';
 
 export const ProtectedRoute = ({ children }) => {
   const { isAuthenticated, isLoading, redirectToLogin } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // Redirect authenticated users from root to dashboard
+  useEffect(() => {
+    if (isAuthenticated && !isLoading && location.pathname === '/') {
+      console.log('Authenticated user on root path, redirecting to Tweet Genie dashboard');
+      navigate('/dashboard', { replace: true });
+    }
+  }, [isAuthenticated, isLoading, location.pathname, navigate]);
 
   if (isLoading) {
     return (

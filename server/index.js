@@ -30,12 +30,26 @@ const PORT = process.env.PORT || 3002;
 
 // Basic middleware
 app.use(helmet());
+
+// CORS configuration with both production and development origins
+const allowedOrigins = [
+  'https://suitegenie.in',
+  'https://api.suitegenie.in',
+  'https://tweet.suitegenie.in'
+];
+
+// Add development origins if in development mode
+if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
+  allowedOrigins.push(
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:3000',
+    'http://localhost:3002'
+  );
+}
+
 app.use(cors({
-  origin: [
-    'https://kanishksaraswat.me',
-    'https://platform.kanishksaraswat.me',
-    'https://tweet.kanishksaraswat.me'
-  ],
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
