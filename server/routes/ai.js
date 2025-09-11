@@ -1,3 +1,4 @@
+
 import express from 'express';
 import { aiService } from '../services/aiService.js';
 import { authenticateToken } from '../middleware/auth.js';
@@ -7,10 +8,67 @@ import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/saniti
 
 const router = express.Router();
 
+// Synchronous bulk generation endpoint (no queue, no Redis)
+// Scheduling service import (assume exists, adjust import if needed)
+import { scheduledTweetService } from '../services/scheduledTweetService.js';
+
+router.post('/bulk-generate', authenticateToken, async (req, res) => {
+  try {
+    const { prompts, options, schedule = false, scheduleOptions = {} } = req.body;
+    if (!Array.isArray(prompts) || prompts.length === 0) {
+      return res.status(400).json({ error: 'No prompts provided' });
+    }
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Synchronously generate content for each prompt
+    const results = [];
+    const scheduled = [];
+    for (let i = 0; i < prompts.length; i++) {
+      const prompt = prompts[i];
+      const opt = options && options[i] ? options[i] : {};
+      try {
+        const result = await aiService.generateContent(prompt, opt.style || 'casual');
+        results.push({ success: true, result });
+        // If scheduling is requested, schedule the tweet/thread
+        if (schedule) {
+          // If thread, split by '---', else single tweet
+          const tweets = result.content.includes('---')
+            ? result.content.split('---').map(t => t.trim()).filter(Boolean)
+            : [result.content.trim()];
+          // Schedule the tweets for future posting
+          const scheduledResult = await scheduledTweetService.scheduleTweets({
+            userId,
+            tweets,
+            options: { ...scheduleOptions, ...opt }
+          });
+          // Optionally, immediately post if scheduled time is now or in the past
+          if (scheduledResult && scheduledResult.scheduledTime && new Date(scheduledResult.scheduledTime) <= new Date()) {
+            await scheduledTweetService.processSingleScheduledTweetById(scheduledResult.scheduledId);
+            scheduledResult.posted = true;
+          } else {
+            scheduledResult.posted = false;
+          }
+          scheduled.push({ promptIndex: i, scheduled: true, scheduledResult });
+        }
+      } catch (err) {
+        results.push({ success: false, error: err.message });
+        if (schedule) scheduled.push({ promptIndex: i, scheduled: false, error: err.message });
+      }
+    }
+    res.json(schedule ? { results, scheduled } : { results });
+  } catch (error) {
+    console.error('Bulk generation error:', error);
+    res.status(500).json({ error: 'Failed to generate content', message: error.message });
+  }
+});
+
 // Generate AI content
 router.post('/generate', authenticateToken, async (req, res) => {
   try {
-  const { prompt, style = 'casual', isThread = false } = req.body;
+    const { prompt, style = 'casual', isThread = false, schedule = false, scheduleOptions = {} } = req.body;
 
     // Rate limiting
     if (!checkRateLimit(req.user.id, 'ai_generation', 10, 60000)) {
@@ -76,17 +134,25 @@ router.post('/generate', authenticateToken, async (req, res) => {
 
     // Only treat as thread if isThread is true
     let threadCount = 1;
+    let tweets = [sanitizedContent];
     if (isThread) {
       // Count threads by splitting on "---" separator (the actual format used by AI service)
       const threadSeparators = sanitizedContent.split('---').filter(section => section.trim().length > 0);
       if (threadSeparators.length > 1) {
         threadCount = threadSeparators.length;
+        tweets = threadSeparators.map(t => t.trim());
         console.log(`Multiple threads detected: ${threadCount} threads (separated by ---)`);
       } else {
         // Fallback: if no --- separators, check if it's a single long thread
         const lines = sanitizedContent.split('\n').filter(line => line.trim().length > 0);
         if (lines.length > 3) {
           threadCount = Math.min(Math.ceil(lines.length / 3), 5); // Estimate 3 lines per tweet, cap at 5
+          // Split into tweets of 3 lines each
+          tweets = [];
+          for (let i = 0; i < lines.length; i += 3) {
+            tweets.push(lines.slice(i, i + 3).join('\n'));
+          }
+          tweets = tweets.slice(0, 5);
           console.log(`Long content detected: estimated ${threadCount} tweets based on ${lines.length} lines`);
         }
       }
@@ -130,6 +196,24 @@ router.post('/generate', authenticateToken, async (req, res) => {
 
     console.log(`Final credits used: ${actualCreditsNeeded} for ${threadCount} threads (estimated: ${estimatedThreadCount})`);
 
+    // If scheduling is requested, schedule the tweet/thread
+
+    let scheduledResult = null;
+    if (schedule) {
+      scheduledResult = await scheduledTweetService.scheduleTweets({
+        userId: req.user.id,
+        tweets,
+        options: scheduleOptions
+      });
+      // Optionally, immediately post if scheduled time is now or in the past
+      if (scheduledResult && scheduledResult.scheduledTime && new Date(scheduledResult.scheduledTime) <= new Date()) {
+        await scheduledTweetService.processSingleScheduledTweetById(scheduledResult.scheduledId);
+        scheduledResult.posted = true;
+      } else {
+        scheduledResult.posted = false;
+      }
+    }
+
     res.json({
       success: true,
       content: sanitizedContent,
@@ -137,7 +221,9 @@ router.post('/generate', authenticateToken, async (req, res) => {
       threadCount: threadCount,
       estimatedThreads: estimatedThreadCount,
       creditsUsed: actualCreditsNeeded,
-      generatedAt: new Date().toISOString()
+      generatedAt: new Date().toISOString(),
+      scheduled: schedule ? true : false,
+      scheduledResult
     });
 
   } catch (error) {
@@ -316,39 +402,6 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
 // Bulk AI generation (multiple prompts)
 
 // New: Enqueue bulk generation jobs, return job IDs
-import { enqueueBulkGenJobs } from '../utils/bulkGenEnqueue.js';
-router.post('/bulk-gen-queue', authenticateToken, async (req, res) => {
-  try {
-    const { prompts, options } = req.body;
-    if (!Array.isArray(prompts) || prompts.length === 0) {
-      return res.status(400).json({ error: 'No prompts provided' });
-    }
-    const userId = req.user?.id;
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    const jobIds = await enqueueBulkGenJobs(prompts, options, userId);
-    res.json({ jobIds });
-  } catch (error) {
-    console.error('Bulk enqueue error:', error);
-    res.status(500).json({ error: 'Failed to enqueue jobs', message: error.message });
-  }
-});
-
-// New: Poll for job result by job ID
-import { getBulkGenResult } from '../utils/bulkGenResult.js';
-router.get('/bulk-gen-result/:jobId', authenticateToken, async (req, res) => {
-  try {
-    const { jobId } = req.params;
-    if (!jobId) return res.status(400).json({ error: 'Missing jobId' });
-    const result = await getBulkGenResult(jobId);
-    if (!result) return res.json({ status: 'pending' });
-    res.json({ status: 'done', result });
-  } catch (error) {
-    console.error('Bulk result poll error:', error);
-    res.status(500).json({ error: 'Failed to fetch job result', message: error.message });
-  }
-});
 
 // router.post('/bulk-generate', authenticateToken, bulkGenerate);
 

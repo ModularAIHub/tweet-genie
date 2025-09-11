@@ -146,7 +146,7 @@ const BulkGeneration = () => {
         const payload = item.isThread
           ? {
               thread: item.threadParts,
-              threadMedia: Array.isArray(media) && media.flat ? media.flat() : [].concat(...media),
+              threadMedia: (Array.isArray(media) && media.flat ? media.flat() : [].concat(...media)).filter(x => typeof x === 'string' && x.length > 0),
               scheduled_for,
               timezone,
             }

@@ -152,8 +152,7 @@ export const ai = {
   generateOptions: (prompt, style = 'casual', count = 3) => 
     api.post('/api/ai/generate-options', { prompt, style, count }),
   bulkGenerate: (prompts, options) => api.post('/api/ai/bulk-generate', { prompts, options }),
-  bulkGenQueue: (prompts, options) => api.post('/api/ai/bulk-gen-queue', { prompts, options }),
-  bulkGenResult: (jobId) => api.get(`/api/ai/bulk-gen-result/${jobId}`),
+  // Removed queue-based endpoints for bulk generation
 };
 
 // AI Image Generation endpoints

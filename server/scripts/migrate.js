@@ -113,6 +113,14 @@ const migrations = [
     `
   },
   {
+    version: 11,
+    name: 'add_thread_tweets_to_scheduled_tweets',
+    sql: `
+      ALTER TABLE scheduled_tweets
+        ADD COLUMN IF NOT EXISTS thread_tweets JSONB DEFAULT '[]';
+    `
+  },
+  {
     version: 5,
     name: 'create_ai_generations_table',
     sql: `
@@ -180,12 +188,19 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_tweets_external_created_at ON tweets(external_created_at);
       CREATE INDEX IF NOT EXISTS idx_tweets_author_id ON tweets(author_id);
       
-      -- Add constraint to ensure either platform or external data is present
-      ALTER TABLE tweets ADD CONSTRAINT check_tweet_data 
-        CHECK (
-          (source = 'platform' AND content IS NOT NULL) OR 
-          (source = 'external' AND tweet_id IS NOT NULL)
-        );
+      -- Add constraint to ensure either platform or external data is present, only if it does not already exist
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'check_tweet_data' AND conrelid = 'tweets'::regclass
+        ) THEN
+          ALTER TABLE tweets ADD CONSTRAINT check_tweet_data 
+            CHECK (
+              (source = 'platform' AND content IS NOT NULL) OR 
+              (source = 'external' AND tweet_id IS NOT NULL)
+            );
+        END IF;
+      END$$;
     `
   }
 ];
