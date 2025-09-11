@@ -36,7 +36,8 @@ app.use(helmet());
 const allowedOrigins = [
   'https://suitegenie.in',
   'https://api.suitegenie.in',
-  'https://tweet.suitegenie.in'
+  'https://tweet.suitegenie.in',
+  'https://tweetapi.suitegenie.in',
 ];
 
 // Add development origins if in development mode
