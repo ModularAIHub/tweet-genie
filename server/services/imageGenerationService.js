@@ -29,12 +29,8 @@ class ImageGenerationService {
       this.googleAI = null;
     }
     
-    this.uploadPath = process.env.UPLOAD_PATH || './uploads';
-    
-    // Ensure upload directory exists
-    if (!fs.existsSync(this.uploadPath)) {
-      fs.mkdirSync(this.uploadPath, { recursive: true });
-    }
+    // Remove local file system operations for serverless compatibility
+    console.log('✅ Image generation service initialized for serverless environment');
   }
 
   async generateImage(prompt, style = 'natural', size = '1024x1024') {
@@ -138,17 +134,12 @@ class ImageGenerationService {
           
           // Generate unique filename
           const filename = `ai-generated-${uuidv4()}.png`;
-          const filepath = path.join(this.uploadPath, filename);
           
-          // Save image to disk
-          fs.writeFileSync(filepath, imageBuffer);
-          
-          console.log(`Image saved as ${filename}`);
+          console.log(`Image generated: ${filename}`);
           
           return {
             imageBuffer,
             filename,
-            filepath,
             provider: 'Gemini 2.5 Flash'
           };
         }
@@ -202,15 +193,10 @@ class ImageGenerationService {
       
       // Generate unique filename
       const filename = `ai-generated-${uuidv4()}.png`;
-      const filepath = path.join(this.uploadPath, filename);
-      
-      // Save image to disk
-      fs.writeFileSync(filepath, imageBuffer);
       
       return {
         imageBuffer,
         filename,
-        filepath,
         provider: 'OpenAI DALL-E 3'
       };
     } catch (error) {
@@ -315,16 +301,7 @@ class ImageGenerationService {
   }
 
   // Clean up generated files (optional cleanup)
-  async cleanupFile(filepath) {
-    try {
-      if (fs.existsSync(filepath)) {
-        fs.unlinkSync(filepath);
-        console.log(`Cleaned up file: ${filepath}`);
-      }
-    } catch (error) {
-      console.error('Error cleaning up file:', error);
-    }
-  }
+  // Remove cleanup method since we don't use local files anymore
 }
 
 export const imageGenerationService = new ImageGenerationService();

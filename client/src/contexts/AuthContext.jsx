@@ -58,46 +58,8 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Check if we have tokens in the URL (from platform redirect)
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token');
-    const refreshToken = urlParams.get('refreshToken');
-    const redirectUrl = urlParams.get('redirect');
-    
-    if (token) {
-      handleAuthCallback(token, refreshToken, redirectUrl);
-    }
-  }, []);
-
-  const handleAuthCallback = async (token, refreshToken, redirectUrl) => {
-    try {
-      // Send tokens to backend to set httpOnly cookies
-      const response = await fetch('/api/auth/callback', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ token, refreshToken, redirectUrl }),
-      });
-
-      if (response.ok) {
-        // Clean URL and redirect to dashboard or original URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-        await checkAuthStatus();
-        
-        // Default to dashboard if not already there
-        const finalRedirectUrl = redirectUrl || '/dashboard';
-        if (window.location.pathname !== finalRedirectUrl && window.location.pathname !== '/dashboard') {
-          window.location.href = finalRedirectUrl;
-        }
-      }
-    } catch (error) {
-      console.error('Auth callback failed:', error);
-      redirectToLogin();
-    }
-  };
+  // Remove client-side token processing since we use server callback now
+  // The server /api/auth/callback endpoint handles token processing and cookie setting
 
   const checkAuthStatus = async () => {
     try {
@@ -169,9 +131,9 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(false);
     toast.success('Logged out successfully');
     
-    // Redirect to main platform login page with logout flag
+    // Redirect to main platform root (not login)
     const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
-    window.location.href = `${platformUrl}/login?logout=true`;
+    window.location.href = platformUrl;
   };
 
   const value = {
