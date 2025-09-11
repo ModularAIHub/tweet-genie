@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
 import OAuth from 'oauth-1.0a';
@@ -9,34 +7,19 @@ import { createClient } from '@supabase/supabase-js';
 
 class MediaService {
   constructor() {
-    // Use /tmp for serverless environments (Vercel, AWS Lambda, etc.)
-    const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY;
-    this.uploadPath = process.env.UPLOAD_PATH || (isServerless ? '/tmp' : './uploads');
     this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '5242880'); // 5MB (5 * 1024 * 1024)
     this.allowedTypes = (process.env.ALLOWED_IMAGE_TYPES || 'image/jpeg,image/png,image/gif,image/webp').split(',');
     
-    // Initialize Supabase client
-    this.supabase = null;
-    if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
-      this.supabase = createClient(
-        process.env.SUPABASE_URL,
-        process.env.SUPABASE_ANON_KEY
-      );
-      console.log('✅ Supabase storage initialized');
-    } else {
-      console.warn('⚠️ Supabase credentials not found, using local storage only');
+    // Initialize Supabase client (required for production)
+    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+      throw new Error('Supabase credentials are required for media uploads');
     }
     
-    // Skip directory creation in serverless environments to avoid errors
-    if (!isServerless) {
-      try {
-        if (!fs.existsSync(this.uploadPath)) {
-          fs.mkdirSync(this.uploadPath, { recursive: true });
-        }
-      } catch (error) {
-        console.warn('Could not create upload directory:', error.message);
-      }
-    }
+    this.supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY
+    );
+    console.log('✅ Supabase storage initialized');
   }
 
   async uploadMedia(mediaFiles, twitterClient, oauth1Tokens = null) {
@@ -125,11 +108,6 @@ class MediaService {
         const supabaseResult = await this.saveToSupabase(processedBuffer, `uploaded_${Date.now()}.jpg`);
         if (supabaseResult) {
           console.log('✅ Saved to Supabase:', supabaseResult.url);
-        }
-        
-        // Also save locally as backup (if not in serverless environment)
-        if (!process.env.VERCEL) {
-          await this.saveLocal(processedBuffer, `uploaded_${Date.now()}.jpg`);
         }
 
       } catch (error) {
@@ -344,34 +322,6 @@ class MediaService {
       '.avi': 'video/x-msvideo'
     };
     return mimeTypes[ext.toLowerCase()] || 'application/octet-stream';
-  }
-
-  async saveLocal(buffer, originalName) {
-    try {
-      const ext = path.extname(originalName);
-      const filename = `${uuidv4()}${ext}`;
-      const filepath = path.join(this.uploadPath, filename);
-
-      await fs.promises.writeFile(filepath, buffer);
-      
-      return filename;
-    } catch (error) {
-      console.error('Local save error:', error);
-      // Don't throw error for local save failures
-      return null;
-    }
-  }
-
-  async deleteLocal(filename) {
-    try {
-      const filepath = path.join(this.uploadPath, filename);
-      if (fs.existsSync(filepath)) {
-        await fs.promises.unlink(filepath);
-      }
-    } catch (error) {
-      console.error('Local delete error:', error);
-      // Don't throw error for delete failures
-    }
   }
 
   getMediaInfo(buffer, mimetype) {

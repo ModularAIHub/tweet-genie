@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 
 // Route imports
 import authRoutes from './routes/auth.js';
+import secureAuthRoutes from './routes/secure-auth.js';
 import twitterRoutes from './routes/twitter.js';
 import tweetsRoutes from './routes/tweets.js';
 import schedulingRoutes from './routes/scheduling.js';
@@ -49,10 +50,21 @@ if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
 }
 
 app.use(cors({
-  origin: allowedOrigins,
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
+    } else {
+      console.log('CORS blocked origin:', origin);
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+  exposedHeaders: ['Set-Cookie']
 }));
 app.set('trust proxy', 1);
 app.use(cookieParser());
@@ -66,6 +78,7 @@ app.get('/health', (req, res) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/auth', secureAuthRoutes);
 app.use('/api/twitter', authenticateToken, twitterRoutes);
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);

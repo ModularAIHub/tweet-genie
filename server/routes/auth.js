@@ -1,5 +1,6 @@
 import express from 'express';
 import axios from 'axios';
+import jwt from 'jsonwebtoken';
 import { authenticateToken } from '../middleware/auth.js';
 import { setAuthCookies, clearAuthCookies } from '../utils/cookieUtils.js';
 
@@ -9,9 +10,33 @@ const router = express.Router();
 router.get('/callback', async (req, res) => {
   try {
     console.log('Auth callback called with query params:', req.query);
-    const { token, refreshToken, redirect } = req.query;
+    const { token, refreshToken, session, redirect } = req.query;
     
-    if (!token) {
+    let finalToken = token;
+    let finalRefreshToken = refreshToken;
+    
+    // Handle session token approach (secure)
+    if (session) {
+      try {
+        // Verify and decode the session token
+        const decoded = jwt.verify(session, process.env.JWT_SECRET || 'your-secret-key');
+        
+        if (decoded.type === 'session') {
+          // Extract the actual tokens from the session
+          finalToken = decoded.accessToken;
+          finalRefreshToken = decoded.refreshToken;
+          console.log('Session token decoded successfully');
+        } else {
+          throw new Error('Invalid session token type');
+        }
+      } catch (error) {
+        console.error('Session token verification failed:', error);
+        const platformUrl = process.env.PLATFORM_URL || 'http://localhost:3000';
+        return res.redirect(`${platformUrl}/login?error=invalid_session`);
+      }
+    }
+    
+    if (!finalToken) {
       console.log('No token provided, redirecting to platform login');
       // If no token, redirect to platform login
       const platformUrl = process.env.PLATFORM_URL || 'http://localhost:3000';
@@ -21,14 +46,14 @@ router.get('/callback', async (req, res) => {
     console.log('Setting auth cookies...');
     
     // Set authentication cookies using utility function
-    setAuthCookies(res, token, refreshToken);
+    setAuthCookies(res, finalToken, finalRefreshToken);
 
-    // Redirect to original URL or dashboard
+    // Redirect to original URL or dashboard (clean URL without tokens)
     const finalRedirectUrl = redirect || '/dashboard';
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:5174';
     const redirectTo = `${clientUrl}${finalRedirectUrl}`;
     
-    console.log('Redirecting to:', redirectTo);
+    console.log('Redirecting to clean URL:', redirectTo);
     res.redirect(redirectTo);
   } catch (error) {
     console.error('Auth callback error:', error);
