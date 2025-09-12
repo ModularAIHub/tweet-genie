@@ -108,6 +108,11 @@ const TweetComposer = () => {
             {/* Twitter Account Info */}
             <TwitterAccountInfo twitterAccounts={twitterAccounts} />
 
+            {/* Thread scheduling info message */}
+            <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 mb-4 rounded">
+              <strong>Note:</strong> Thread scheduling is only supported in the Bulk Generator. To schedule a thread, please use the <a href="/bulk-generation" className="underline text-blue-700">Bulk Generator</a> page.
+            </div>
+
             {/* Tweet Composer */}
             <div className="card">
               {/* Thread Toggle and Content Editor */}

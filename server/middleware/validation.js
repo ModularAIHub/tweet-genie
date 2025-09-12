@@ -2,8 +2,10 @@ import Joi from 'joi';
 
 export const validateRequest = (schema) => {
   return (req, res, next) => {
+    console.log('[validateRequest] Incoming body:', JSON.stringify(req.body));
     const { error } = schema.validate(req.body);
     if (error) {
+      console.error('[validateRequest] Validation error:', error.details.map(detail => detail.message));
       return res.status(400).json({
         error: 'Validation error',
         details: error.details.map(detail => detail.message)
@@ -40,17 +42,21 @@ export const aiGenerateSchema = Joi.object({
 
 // Schedule validation (accepts content/media for single, or thread/threadMedia for thread)
 export const scheduleSchema = Joi.object({
-  content: Joi.string().min(1).max(280).when('thread', {
-    is: Joi.exist(),
-    then: Joi.optional(),
-    otherwise: Joi.required()
-  }),
-  media: Joi.array().items(Joi.string()).max(4).optional(),
-  thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
-  threadMedia: Joi.array().items(Joi.string()).max(25).optional(),
+  content: Joi.string().allow('').max(280),
+  media: Joi.array().items(Joi.string()).max(4),
+  thread: Joi.array().items(Joi.string().min(1).max(280)).max(25),
+  threadMedia: Joi.array().items(Joi.string()).max(25),
   scheduled_for: Joi.date().greater('now').required(),
   timezone: Joi.string().optional()
-}).or('content', 'thread');
+}).custom((value, helpers) => {
+  const hasContent = typeof value.content === 'string' && value.content.trim().length > 0;
+  const hasMedia = Array.isArray(value.media) && value.media.length > 0;
+  const hasThread = Array.isArray(value.thread) && value.thread.length > 0 && value.thread.some(t => t && t.trim().length > 0);
+  if (!hasContent && !hasMedia && !hasThread) {
+    return helpers.error('any.custom', { message: 'Please enter some content or add images' });
+  }
+  return value;
+}, 'Require content, media, or thread');
 
 // Analytics validation (simplified)
 export const analyticsQuerySchema = Joi.object({

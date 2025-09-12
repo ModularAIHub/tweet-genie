@@ -91,7 +91,7 @@ router.post('/bulk', async (req, res) => {
 // Schedule a tweet
 router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, async (req, res) => {
   try {
-    const { content, media = [], scheduled_for, timezone = 'UTC' } = req.body;
+    const { content, media = [], thread, scheduled_for, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
 
     // Validate timezone
@@ -123,13 +123,36 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       });
     }
 
+    // Thread support: if thread is present and valid, use it
+    let mainContent = content;
+    let threadTweets = [];
+    if (Array.isArray(thread) && thread.length > 0) {
+      // Filter/sanitize thread: allow string or object with content
+      const flatThread = thread
+        .map(t => (typeof t === 'string' ? t : (t && typeof t.content === 'string' ? t.content : '')))
+        .map(t => (t || '').trim())
+        .filter(t => t.length > 0);
+      if (flatThread.length > 0) {
+        mainContent = flatThread[0];
+        threadTweets = flatThread.length > 1 ? flatThread.slice(1).map(content => ({ content })) : [];
+      }
+    }
+
+    // Debug logging for validation issues
+    if (!mainContent || mainContent.trim().length === 0) {
+      console.error('[Schedule Debug] Incoming payload:', req.body);
+      console.error('[Schedule Debug] Computed mainContent:', mainContent);
+      console.error('[Schedule Debug] Computed threadTweets:', threadTweets);
+      return res.status(400).json({ error: 'Please enter some content or add images' });
+    }
+
     // Save scheduled tweet (not posted yet)
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tweets (
-        user_id, content, media, scheduled_for, timezone, status
-      ) VALUES ($1, $2, $3, $4, $5, 'pending')
+        user_id, content, media, thread_tweets, scheduled_for, timezone, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending')
       RETURNING *`,
-      [userId, content, JSON.stringify(media), scheduledTime, timezone]
+      [userId, mainContent, JSON.stringify(media), JSON.stringify(threadTweets), scheduledTime, timezone]
     );
 
     // Enqueue BullMQ job for scheduled tweet
@@ -148,7 +171,8 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
         timezone: rows[0].timezone,
         status: rows[0].status,
         content: rows[0].content,
-        media: rows[0].media
+        media: rows[0].media,
+        thread_tweets: rows[0].thread_tweets
       }
     });
 

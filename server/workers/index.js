@@ -1,5 +1,1 @@
-import { startBulkGenWorker } from './bulkGenWorker.js';
-
-startBulkGenWorker();
-
-console.log('BulkGenWorker started.');
+// BulkGenWorker disabled: BullMQ and Redis connection removed to avoid Upstash request exhaustion.
