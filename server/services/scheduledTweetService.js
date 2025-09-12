@@ -4,6 +4,61 @@ import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 
 class ScheduledTweetService {
+  /**
+   * Schedule a tweet or thread for future posting.
+   * @param {Object} params
+   *   - userId: UUID of the user
+   *   - tweets: array of tweet strings (for thread) or single tweet
+   *   - options: { scheduledFor, timezone, mediaUrls, ... }
+   * @returns {Object} { scheduledId, scheduledTime }
+   */
+  async scheduleTweets({ userId, tweets, options = {} }) {
+    // Accepts: array of strings, array of objects, or mixed
+    if (!userId || !Array.isArray(tweets)) {
+      throw new Error('Missing userId or tweets for scheduling');
+    }
+
+    // Flatten and sanitize tweets: allow [{content: "..."}, "..."] or ["..."]
+    let flatTweets = tweets
+      .map(t => (typeof t === 'string' ? t : (t && typeof t.content === 'string' ? t.content : '')))
+      .map(t => (t || '').trim())
+      .filter(t => t.length > 0);
+
+    if (flatTweets.length === 0) {
+      throw new Error('No valid tweets to schedule');
+    }
+
+    const scheduledFor = options.scheduledFor || options.scheduled_for || new Date();
+    const timezone = options.timezone || 'UTC';
+    const mediaUrls = options.mediaUrls || options.media_urls || [];
+
+    // Main tweet is first, rest are thread
+    const mainContent = flatTweets[0];
+    const threadTweets = flatTweets.length > 1 ? flatTweets.slice(1).map(content => ({ content })) : [];
+
+    // Insert into scheduled_tweets
+    const insertQuery = `
+      INSERT INTO scheduled_tweets
+        (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, created_at, updated_at)
+      VALUES
+        ($1, $2, $3, 'pending', $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING id, scheduled_for;
+    `;
+    const values = [
+      userId,
+      scheduledFor,
+      timezone,
+      mainContent,
+      JSON.stringify(mediaUrls),
+      JSON.stringify(threadTweets)
+    ];
+
+    const { rows } = await pool.query(insertQuery, values);
+    return {
+      scheduledId: rows[0].id,
+      scheduledTime: rows[0].scheduled_for
+    };
+  }
   // For BullMQ worker: process a scheduled tweet by its ID
   async processSingleScheduledTweetById(scheduledTweetId) {
     // Fetch the scheduled tweet and related info

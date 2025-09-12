@@ -262,18 +262,15 @@ export const useTweetComposer = () => {
       
       if (isThread) {
         const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
-        
         // Create a mapping from original tweet indices to media
         const threadMediaFiles = [];
         let validTweetIndex = 0;
-        
         for (let i = 0; i < threadTweets.length; i++) {
           const tweet = threadTweets[i];
           // Skip separators and empty tweets
           if (tweet.trim().length > 0 && tweet !== '---') {
             const tweetImages = threadImages[i] || [];
             const tweetMedia = [];
-            
             for (const img of tweetImages) {
               if (img.isAIGenerated && img.preview.startsWith('data:')) {
                 tweetMedia.push(img.preview);
@@ -282,25 +279,23 @@ export const useTweetComposer = () => {
                 tweetMedia.push(base64);
               }
             }
-            
-            threadMediaFiles.push(tweetMedia);
+            threadMediaFiles.push(...tweetMedia);
             validTweetIndex++;
           }
         }
-        
+        // Only send array of strings for threadMedia
+        const filteredThreadMedia = threadMediaFiles.filter(x => typeof x === 'string' && x.length > 0);
         console.log('Posting thread:', {
           validTweetsCount: validTweets.length,
-          threadMediaCount: threadMediaFiles.length,
+          threadMediaCount: filteredThreadMedia.length,
           validTweets: validTweets.map(t => t.substring(0, 50) + '...'),
-          mediaPerTweet: threadMediaFiles.map(media => media.length)
+          mediaPerTweet: filteredThreadMedia.length
         });
-        
         await tweets.create({
           thread: validTweets,
-          threadMedia: threadMediaFiles,
+          threadMedia: filteredThreadMedia,
           media: mediaFiles.length > 0 ? mediaFiles : undefined
         });
-        
         toast.success(`Thread with ${validTweets.length} tweets posted successfully!`);
         setThreadTweets(['']);
         setThreadImages([]);
