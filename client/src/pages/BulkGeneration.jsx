@@ -21,6 +21,7 @@ const BulkGeneration = () => {
   const [imageModal, setImageModal] = useState({ open: false, src: null });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showCreditInfo, setShowCreditInfo] = useState(true);
 
   const frequencyOptions = [
     { value: 'once_daily', label: 'Once a day' },
@@ -289,21 +290,48 @@ const handleGenerate = async () => {
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 min-h-[80vh]">
-      <h1 className="text-3xl font-bold mb-6">Bulk Tweet & Thread Generation</h1>
-      <div className="mb-6 bg-white rounded-lg shadow p-6 border">
-        <label className="block text-lg font-semibold mb-2">Prompts (one per line):</label>
-        <textarea
-          className="w-full border rounded p-3 min-h-[260px] text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition"
-          style={{ resize: 'vertical', fontSize: '1.1rem' }}
-          value={prompts}
-          onChange={handlePromptsChange}
-          placeholder="Enter one prompt per line..."
-          disabled={loading}
-        />
+      {/* Gradient header */}
+      <div className="rounded-xl bg-gradient-to-r from-blue-700 via-blue-500 to-blue-300 p-1 mb-8 shadow-lg">
+        <div className="bg-white rounded-xl p-6 flex flex-col md:flex-row md:items-center md:justify-between">
+          <h1 className="text-3xl font-extrabold text-gray-900 mb-2 md:mb-0 flex items-center gap-3">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8h2a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2v-8a2 2 0 012-2h2M12 12v6m0 0l-3-3m3 3l3-3m-6-6V6a2 2 0 012-2h2a2 2 0 012 2v2" /></svg>
+            Bulk Tweet & Thread Generation
+          </h1>
+          {showCreditInfo && (
+            <div className="relative bg-blue-50 border border-blue-300 rounded-lg px-5 py-3 flex items-center gap-3 shadow-sm mt-4 md:mt-0">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M12 20a8 8 0 100-16 8 8 0 000 16z" /></svg>
+              <span className="text-blue-900 text-sm font-medium">
+                <b>How credits are deducted:</b> Each generated tweet or thread costs <b>1 credit</b>. (A thread, no matter how many tweets, is 1 credit. Images do not cost extra.)
+              </span>
+              <button onClick={() => setShowCreditInfo(false)} className="ml-3 text-blue-400 hover:text-blue-700 text-lg font-bold focus:outline-none">&times;</button>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mb-8 bg-blue-50 rounded-2xl shadow-2xl p-10 border border-blue-100">
+        <div className="relative mb-6">
+          <textarea
+            className="peer w-full border-2 border-blue-200 bg-white rounded-xl p-4 min-h-[180px] text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition shadow-sm placeholder-transparent resize-vertical"
+            style={{ fontSize: '1.1rem', transition: 'border 0.2s, box-shadow 0.2s' }}
+            value={prompts}
+            onChange={handlePromptsChange}
+            placeholder="Enter one prompt per line..."
+            disabled={loading}
+            id="bulk-prompts"
+            aria-label="Prompts (one per line)"
+          />
+          <label htmlFor="bulk-prompts" className="absolute left-4 top-3 text-blue-500 text-base font-medium pointer-events-none transition-all duration-200 peer-focus:-top-5 peer-focus:text-sm peer-focus:text-blue-700 peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-placeholder-shown:text-blue-400 bg-blue-50 px-1 rounded">
+            Prompts (one per line)
+          </label>
+          <div className="absolute right-4 bottom-3 text-xs text-blue-400 select-none">
+            {prompts.split('\n').filter(Boolean).length} lines
+          </div>
+        </div>
+        <div className="text-xs text-blue-500 mb-4">Tip: Paste or type multiple prompts, one per line. Each line will generate a tweet or thread. You can edit or discard results after generation.</div>
         {promptList.length > 0 && (
           <div className="mt-4 space-y-2">
             {promptList.map((p, idx) => (
-              <div key={p.id} className="flex items-center justify-between bg-gray-50 rounded px-3 py-2 border">
+              <div key={p.id} className="flex items-center justify-between bg-gradient-to-r from-blue-100 to-blue-200 rounded-xl px-4 py-2 border border-blue-200 shadow-sm">
                 <span className="text-sm text-gray-700 flex-1 truncate">{p.prompt}</span>
                 <div className="flex items-center ml-4">
                   <label className="flex items-center cursor-pointer">
@@ -312,7 +340,7 @@ const handleGenerate = async () => {
                       checked={p.isThread}
                       onChange={e => setPromptList(list => list.map((item, i) => i === idx ? { ...item, isThread: e.target.checked } : item))}
                       disabled={loading}
-                      className="form-checkbox h-4 w-4 text-purple-600 transition"
+                      className="form-checkbox h-4 w-4 text-fuchsia-600 transition"
                     />
                     <span className="ml-2 text-xs text-gray-600">Thread</span>
                   </label>
@@ -324,11 +352,13 @@ const handleGenerate = async () => {
           </div>
         )}
         <button
-          className="mt-4 btn btn-primary px-6 py-2 text-lg font-semibold rounded shadow"
+          className="mt-6 bg-gradient-to-r from-blue-600 to-blue-400 text-white px-10 py-3 text-lg font-semibold rounded-xl shadow-lg hover:from-blue-700 hover:to-blue-500 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
           onClick={handleGenerate}
           disabled={loading || !prompts.trim()}
         >
-          {loading ? 'Generating...' : 'Generate Tweets/Threads'}
+          {loading ? (
+            <span className="flex items-center gap-2"><span className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></span> Generating...</span>
+          ) : 'Generate Tweets/Threads'}
         </button>
         {error && <div className="mt-4 text-red-600 font-medium">{error}</div>}
       </div>
