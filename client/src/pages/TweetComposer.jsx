@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
   TwitterAccountInfo,
@@ -11,9 +11,20 @@ import {
   SchedulingPanel
 } from '../components/TweetComposer';
 import { useTweetComposer } from '../hooks/useTweetComposer';
+import { fetchApiKeyPreference } from '../utils/byok-platform';
 
 const TweetComposer = () => {
   const [imageModal, setImageModal] = useState({ open: false, src: null });
+  const [apiKeyMode, setApiKeyMode] = useState('platform');
+
+  // Fetch BYOK/platform mode on mount
+  useEffect(() => {
+    let mounted = true;
+    fetchApiKeyPreference().then(mode => {
+      if (mounted) setApiKeyMode(mode);
+    });
+    return () => { mounted = false; };
+  }, []);
   const {
     // State
     content,
@@ -101,6 +112,12 @@ const TweetComposer = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* BYOK/platform mode indicator - always visible at top */}
+      <div className="w-full flex justify-center pt-4 pb-2">
+        <span className="inline-block px-4 py-2 rounded-full text-sm font-semibold bg-blue-100 text-blue-700 shadow">
+          {apiKeyMode === 'byok' ? 'Using Your Own API Key (BYOK)' : 'Using Platform API Key'}
+        </span>
+      </div>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Main Content */}

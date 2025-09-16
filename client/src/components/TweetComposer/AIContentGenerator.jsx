@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Sparkles, ArrowRight } from 'lucide-react';
+import { fetchApiKeyPreference } from '../../utils/byok-platform';
 
 const AIContentGenerator = ({
   showAIPrompt,
@@ -11,8 +12,20 @@ const AIContentGenerator = ({
   onGenerate,
   onCancel
 }) => {
+
   // Local state for unrestricted input
   const [localPrompt, setLocalPrompt] = useState(aiPrompt || '');
+  // State for BYOK/platform mode
+  const [apiKeyMode, setApiKeyMode] = useState('platform');
+
+  // Fetch BYOK/platform mode on mount
+  useEffect(() => {
+    let mounted = true;
+    fetchApiKeyPreference().then(mode => {
+      if (mounted) setApiKeyMode(mode);
+    });
+    return () => { mounted = false; };
+  }, []);
 
   // Sync with parent state when it changes externally
   useEffect(() => {
@@ -40,8 +53,8 @@ const AIContentGenerator = ({
   if (!showAIPrompt) return null;
 
   return (
-  <div className="shadow-lg border border-blue-100 rounded-2xl p-6 mb-6 bg-gradient-to-br from-blue-50 via-white to-blue-100">
-  <div className="flex items-center justify-between mb-4">
+    <div className="shadow-lg border border-blue-100 rounded-2xl p-6 mb-6 bg-gradient-to-br from-blue-50 via-white to-blue-100">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center">
           <Sparkles className="h-6 w-6 text-blue-500 mr-2 animate-pulse" />
           <h3 className="font-semibold text-blue-900 text-lg tracking-tight">AI Content Generator</h3>
@@ -54,8 +67,13 @@ const AIContentGenerator = ({
           ×
         </button>
       </div>
-      
-  <div className="space-y-5">
+      {/* BYOK/platform mode indicator */}
+      <div className="mb-3">
+        <span className="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">
+          {apiKeyMode === 'byok' ? 'Using Your Own API Key (BYOK)' : 'Using Platform API Key'}
+        </span>
+      </div>
+      <div className="space-y-5">
         <div>
           <label className="block text-base font-semibold text-blue-900 mb-2">
             What would you like to tweet about?

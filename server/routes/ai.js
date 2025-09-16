@@ -127,7 +127,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
     console.log(`AI generation request: "${sanitizedPrompt}" with style: ${style}`);
 
     // First generate the content to analyze thread count
-    const result = await aiService.generateContent(sanitizedPrompt, style);
+  const result = await aiService.generateContent(sanitizedPrompt, style, 3, req.cookies?.accessToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) || null, req.user.id);
 
     // Use the AI-generated content directly (no post-sanitization to prevent [FILTERED])
     const sanitizedContent = result.content;
@@ -218,6 +218,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
       success: true,
       content: sanitizedContent,
       provider: result.provider,
+      keyType: result.keyType,
       threadCount: threadCount,
       estimatedThreads: estimatedThreadCount,
       creditsUsed: actualCreditsNeeded,
