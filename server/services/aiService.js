@@ -1,6 +1,25 @@
+
 import OpenAI from 'openai';
 import axios from 'axios';
 import { sanitizeAIPrompt, sanitizeInput } from '../utils/sanitization.js';
+
+// Helper to fetch user preference and keys from new-platform
+async function getUserPreferenceAndKeys(userToken) {
+  const baseUrl = process.env.NEW_PLATFORM_API_URL || 'https://your-new-platform-domain/api';
+  // Fetch preference
+  const prefRes = await axios.get(`${baseUrl}/byok/preference`, {
+    headers: { Authorization: `Bearer ${userToken}` }
+  });
+  const preference = prefRes.data.api_key_preference;
+  let userKeys = [];
+  if (preference === 'byok') {
+    const keysRes = await axios.get(`${baseUrl}/byok/keys`, {
+      headers: { Authorization: `Bearer ${userToken}` }
+    });
+    userKeys = keysRes.data.keys;
+  }
+  return { preference, userKeys };
+}
 
 class AIService {
   constructor() {
@@ -22,7 +41,7 @@ class AIService {
     this.hubApiKey = process.env.HUB_API_KEY;
   }
 
-  async generateContent(prompt, style = 'casual', maxRetries = 3) {
+  async generateContent(prompt, style = 'casual', maxRetries = 3, userToken = null, userId = null) {
     // Skip all sanitization for AI prompts to prevent [FILTERED] content
     // Just do basic validation
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5) {
@@ -35,19 +54,36 @@ class AIService {
     const threadCountMatch = prompt.match(/generate\s+(\d+)\s+threads?/i);
     const requestedCount = threadCountMatch ? parseInt(threadCountMatch[1]) : null;
 
-    // Build providers array based on available API keys
+    // Fetch user preference and keys from new-platform if userToken is provided
+    let preference = 'platform';
+    let userKeys = [];
+    if (userToken) {
+      try {
+        const prefResult = await getUserPreferenceAndKeys(userToken);
+        preference = prefResult.preference;
+        userKeys = prefResult.userKeys;
+        console.log('[BYOK DEBUG] userKeys from new-platform:', JSON.stringify(userKeys, null, 2));
+      } catch (err) {
+        console.error('Failed to fetch user BYOK preference/keys:', err.message);
+      }
+    }
+
+    // Build providers array based on available API keys (user or platform)
     const providers = [];
-    
-    if (this.perplexityApiKey) {
-      providers.push({ name: 'perplexity', method: this.generateWithPerplexity.bind(this) });
+    // Perplexity
+    let perplexityKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'perplexity')?.apiKey) : this.perplexityApiKey;
+    if (perplexityKey) {
+      providers.push({ name: 'perplexity', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey) });
     }
-    
-    if (this.googleApiKey) {
-      providers.push({ name: 'google', method: this.generateWithGoogle.bind(this) });
+    // Google
+    let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
+    if (googleKey) {
+      providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
     }
-    
-    if (this.openai && process.env.OPENAI_API_KEY) {
-      providers.push({ name: 'openai', method: this.generateWithOpenAI.bind(this) });
+    // OpenAI
+    let openaiKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'openai')?.apiKey) : process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+      providers.push({ name: 'openai', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey) });
     }
 
     if (providers.length === 0) {
@@ -57,15 +93,19 @@ class AIService {
     console.log(`Available AI providers: ${providers.map(p => p.name).join(', ')}`);
 
     let lastError = null;
-
     for (const provider of providers) {
       try {
+        // Log which key and provider is being used
+        if (userId) {
+          console.log(`[AI Key Usage] userId=${userId} provider=${provider.name} keyType=${provider.keyType}`);
+        }
         console.log(`Attempting content generation with ${provider.name}...`);
         const result = await provider.method(sanitizedPrompt, style, requestedCount);
         console.log(`✅ Content generated successfully with ${provider.name}`);
         return {
           content: result,
           provider: provider.name,
+          keyType: provider.keyType,
           success: true
         };
       } catch (error) {
@@ -78,8 +118,9 @@ class AIService {
     throw new Error(`All AI providers failed. Last error: ${lastError?.message || 'Unknown error'}`);
   }
 
-  async generateWithPerplexity(prompt, style, requestedCount = null) {
-    if (!this.perplexityApiKey) {
+  async generateWithPerplexity(prompt, style, requestedCount = null, apiKey = null) {
+    const keyToUse = apiKey || this.perplexityApiKey;
+    if (!keyToUse) {
       throw new Error('Perplexity API key not configured');
     }
 
@@ -144,7 +185,7 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
         },
         {
           headers: {
-            'Authorization': `Bearer ${this.perplexityApiKey}`,
+            'Authorization': `Bearer ${keyToUse}`,
             'Content-Type': 'application/json'
           }
         }
@@ -173,8 +214,9 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
     }
   }
 
-  async generateWithGoogle(prompt, style, requestedCount = null) {
-    if (!this.googleApiKey) {
+  async generateWithGoogle(prompt, style, requestedCount = null, apiKey = null) {
+    const keyToUse = apiKey || this.googleApiKey;
+    if (!keyToUse) {
       throw new Error('Google AI API key not configured');
     }
 
@@ -227,7 +269,7 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
     }
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${this.googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${keyToUse}`,
       {
         contents: [{
           parts: [{
@@ -266,9 +308,17 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
     return content;
   }
 
-  async generateWithOpenAI(prompt, style, requestedCount = null) {
-    if (!this.openai || !process.env.OPENAI_API_KEY) {
+  async generateWithOpenAI(prompt, style, requestedCount = null, apiKey = null) {
+    const keyToUse = apiKey || process.env.OPENAI_API_KEY;
+    if (!keyToUse) {
       throw new Error('OpenAI API key not configured');
+    }
+
+    // Create a new OpenAI client if using BYOK key
+    let openaiClient = this.openai;
+    if (apiKey && apiKey !== process.env.OPENAI_API_KEY) {
+      const OpenAI = (await import('openai')).default;
+      openaiClient = new OpenAI({ apiKey });
     }
 
     const stylePrompts = {
@@ -319,7 +369,7 @@ User request: ${prompt}
 Generate appropriate tweet content with relevant hashtags. DO NOT add any citations or references.`;
     }
 
-    const response = await this.openai.chat.completions.create({
+    const response = await openaiClient.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
         { role: 'system', content: systemPrompt },
