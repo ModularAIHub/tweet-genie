@@ -23,7 +23,7 @@ router.get('/callback', async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: 'none',
-      domain: '.kanishksaraswat.me',
+      domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
       maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
     });
 
@@ -34,7 +34,7 @@ router.get('/callback', async (req, res) => {
         httpOnly: true,
         secure: true,
         sameSite: 'none',
-        domain: '.kanishksaraswat.me',
+        domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
       });
     } else {
@@ -69,7 +69,7 @@ router.post('/callback', async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: 'none',
-      domain: '.kanishksaraswat.me',
+      domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
       maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
     });
 
@@ -79,7 +79,7 @@ router.post('/callback', async (req, res) => {
         httpOnly: true,
         secure: true,
         sameSite: 'none',
-        domain: '.kanishksaraswat.me',
+        domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
       });
     }
