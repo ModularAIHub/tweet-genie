@@ -370,9 +370,18 @@ export const useTweetComposer = () => {
 
   // Accepts a date string and timezone as arguments
   const handleSchedule = async (dateString, timezone) => {
-    if (!content.trim() && selectedImages.length === 0) {
-      toast.error('Please enter some content or add images');
-      return;
+    if (isThread) {
+      // Validate thread content
+      const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
+      if (validTweets.length === 0) {
+        toast.error('Please enter some content for the thread');
+        return;
+      }
+    } else {
+      if (!content.trim() && selectedImages.length === 0) {
+        toast.error('Please enter some content or add images');
+        return;
+      }
     }
     if (!dateString) {
       toast.error('Please select a date and time');
@@ -380,38 +389,86 @@ export const useTweetComposer = () => {
     }
     setIsScheduling(true);
     try {
-      // Upload images to Twitter and get media IDs
       let mediaIds = [];
-      if (selectedImages.length > 0) {
-        const mediaFiles = [];
-        for (const img of selectedImages) {
-          if (img.isAIGenerated && img.preview.startsWith('data:')) {
-            mediaFiles.push(img.preview);
-          } else if (img.file) {
-            const base64 = await fileToBase64(img.file);
-            mediaFiles.push(base64);
+      let threadMedia = [];
+      if (isThread) {
+        // Upload images for each tweet in the thread
+        for (let i = 0; i < threadTweets.length; i++) {
+          const tweet = threadTweets[i];
+          if (tweet.trim().length > 0 && tweet !== '---') {
+            const tweetImages = threadImages[i] || [];
+            if (tweetImages.length > 0) {
+              const tweetMediaFiles = [];
+              for (const img of tweetImages) {
+                if (img.isAIGenerated && img.preview.startsWith('data:')) {
+                  tweetMediaFiles.push(img.preview);
+                } else if (img.file) {
+                  const base64 = await fileToBase64(img.file);
+                  tweetMediaFiles.push(base64);
+                }
+              }
+              if (tweetMediaFiles.length > 0) {
+                const uploadRes = await media.upload(tweetMediaFiles);
+                if (uploadRes.data && uploadRes.data.mediaIds) {
+                  threadMedia.push(uploadRes.data.mediaIds);
+                } else {
+                  throw new Error('Failed to upload thread images to Twitter');
+                }
+              } else {
+                threadMedia.push([]);
+              }
+            } else {
+              threadMedia.push([]);
+            }
           }
         }
-        if (mediaFiles.length > 0) {
-          const uploadRes = await media.upload(mediaFiles);
-          if (uploadRes.data && uploadRes.data.mediaIds) {
-            mediaIds = uploadRes.data.mediaIds;
-          } else {
-            throw new Error('Failed to upload images to Twitter');
+      } else {
+        // Single tweet: upload main images
+        if (selectedImages.length > 0) {
+          const mediaFiles = [];
+          for (const img of selectedImages) {
+            if (img.isAIGenerated && img.preview.startsWith('data:')) {
+              mediaFiles.push(img.preview);
+            } else if (img.file) {
+              const base64 = await fileToBase64(img.file);
+              mediaFiles.push(base64);
+            }
+          }
+          if (mediaFiles.length > 0) {
+            const uploadRes = await media.upload(mediaFiles);
+            if (uploadRes.data && uploadRes.data.mediaIds) {
+              mediaIds = uploadRes.data.mediaIds;
+            } else {
+              throw new Error('Failed to upload images to Twitter');
+            }
           }
         }
       }
 
-      // Directly schedule the tweet (do not post immediately)
-      await scheduling.create({
-        content: content.trim(),
-        media: mediaIds.length > 0 ? mediaIds : undefined,
-        scheduled_for: dateString,
-        timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
-      });
+      if (isThread) {
+        const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
+        // threadMedia is an array of arrays of media IDs, one per tweet
+        await scheduling.create({
+          thread: validTweets,
+          threadMedia,
+          scheduled_for: dateString,
+          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+        });
+        toast.success('Thread scheduled successfully!');
+        setThreadTweets(['']);
+        setThreadImages([]);
+        setIsThread(false);
+      } else {
+        await scheduling.create({
+          content: content.trim(),
+          media: mediaIds.length > 0 ? mediaIds : undefined,
+          scheduled_for: dateString,
+          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+        });
+        toast.success('Tweet scheduled successfully!');
+        setContent('');
+      }
 
-      toast.success('Tweet scheduled successfully!');
-      setContent('');
       setScheduledFor('');
       selectedImages.forEach(img => {
         if (img.preview && img.preview.startsWith('blob:')) {

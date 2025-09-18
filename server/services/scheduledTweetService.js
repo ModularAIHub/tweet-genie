@@ -138,6 +138,20 @@ class ScheduledTweetService {
         }
       }
 
+      // Parse per-tweet media for thread tweets
+      let threadMediaArr = [];
+      if (scheduledTweet.thread_media) {
+        try {
+          if (typeof scheduledTweet.thread_media === 'string') {
+            threadMediaArr = JSON.parse(scheduledTweet.thread_media);
+          } else if (Array.isArray(scheduledTweet.thread_media)) {
+            threadMediaArr = scheduledTweet.thread_media;
+          }
+        } catch (e) {
+          threadMediaArr = [];
+        }
+      }
+
       // Post main tweet with media IDs if present, decode HTML entities ONCE
       // Log for debugging encoding issues
       console.log('[Thread Unicode Debug] Posting main tweet:', scheduledTweet.content);
@@ -151,15 +165,17 @@ class ScheduledTweetService {
       // Handle thread if present
       if (scheduledTweet.thread_tweets && scheduledTweet.thread_tweets.length > 0) {
         let previousTweetId = tweetResponse.data.id;
-
-        for (const threadTweet of scheduledTweet.thread_tweets) {
+        for (let i = 0; i < scheduledTweet.thread_tweets.length; i++) {
+          const threadTweet = scheduledTweet.thread_tweets[i];
           // Log for debugging encoding issues
           console.log('[Thread Unicode Debug] Posting thread tweet:', threadTweet.content);
+          let threadMediaIds = Array.isArray(threadMediaArr) && threadMediaArr[i + 1] ? threadMediaArr[i + 1] : [];
+          // threadMediaArr[0] is for main tweet, [1] for first thread tweet, etc.
           const threadTweetData = {
             text: decodeHTMLEntities(threadTweet.content),
-            reply: { in_reply_to_tweet_id: previousTweetId }
+            reply: { in_reply_to_tweet_id: previousTweetId },
+            ...(Array.isArray(threadMediaIds) && threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
           };
-
           const threadResponse = await twitterClient.v2.tweet(threadTweetData);
           previousTweetId = threadResponse.data.id;
         }

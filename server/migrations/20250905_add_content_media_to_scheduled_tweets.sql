@@ -1,6 +1,3 @@
--- Migration: Add content and media columns to scheduled_tweets
+-- Only add new columns that do not exist yet!
 ALTER TABLE scheduled_tweets
-  ADD COLUMN content TEXT,
-  ADD COLUMN media JSONB;
--- Optional: Remove tweet_id column if not needed
--- ALTER TABLE scheduled_tweets DROP COLUMN tweet_id;
+  ADD COLUMN thread_media JSONB;
