@@ -136,13 +136,15 @@ const History = () => {
   // Get thread preview (first tweet + count)
   const getThreadPreview = (tweet) => {
     if (!isThread(tweet)) return tweet.content;
-    
+
     const threadTweets = parseThreadTweets(tweet.content);
     const firstTweet = threadTweets[0] || tweet.content;
+    const secondTweet = threadTweets[1] || null;
     const count = threadTweets.length;
-    
+
     return {
       preview: firstTweet,
+      second: secondTweet,
       count: count
     };
   };
@@ -422,8 +424,12 @@ const History = () => {
                           </span>
                         )}
                         {isThreadTweet && (
-                          <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
-                            Thread ({threadPreview.count} tweets)
+                          <span className="flex items-center gap-1 px-2 py-1 bg-gradient-to-r from-purple-500 via-pink-500 to-blue-500 text-white rounded-full text-xs font-semibold shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-4 w-4">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M7 8h10M7 12h6m-6 4h10" />
+                            </svg>
+                            Thread
+                            <span className="ml-1 font-bold">({threadPreview.count} tweets)</span>
                           </span>
                         )}
                       </div>
@@ -449,9 +455,16 @@ const History = () => {
                         {/* Thread Preview or Full Thread */}
                         {!isExpanded ? (
                           <div>
-                            <p className="text-gray-900 whitespace-pre-wrap mb-2">
-                              {threadPreview.preview}
-                            </p>
+                            <div className="mb-2">
+                              <p className="text-gray-900 whitespace-pre-wrap font-semibold">
+                                {threadPreview.preview}
+                              </p>
+                              {threadPreview.second && (
+                                <p className="text-gray-700 whitespace-pre-wrap mt-1 border-l-2 border-purple-200 pl-3 text-sm">
+                                  {threadPreview.second}
+                                </p>
+                              )}
+                            </div>
                             <button
                               onClick={() => toggleThreadExpansion(tweet.id)}
                               className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-medium"
@@ -464,9 +477,9 @@ const History = () => {
                           <div>
                             <div className="space-y-3">
                               {threadTweets.map((tweetContent, index) => (
-                                <div key={index} className="border-l-2 border-gray-200 pl-4">
+                                <div key={index} className="border-l-2 border-purple-300 pl-4 bg-purple-50/30 rounded-md py-2">
                                   <div className="flex items-center space-x-2 mb-1">
-                                    <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                                    <span className="text-xs text-purple-700 bg-purple-100 px-2 py-1 rounded">
                                       {index + 1}/{threadTweets.length}
                                     </span>
                                   </div>

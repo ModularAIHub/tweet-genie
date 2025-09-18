@@ -1,5 +1,5 @@
-
 const router = express.Router();
+import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 
 // Bulk save generated tweets/threads as drafts
 router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
@@ -174,7 +174,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
         // Post the first tweet
         const firstTweetData = {
-          text: firstTweetText,
+          text: decodeHTMLEntities(firstTweetText),
           ...(firstTweetMediaIds.length > 0 && { media: { media_ids: firstTweetMediaIds } })
         };
         
@@ -197,22 +197,19 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         for (let i = 1; i < thread.length; i++) {
           const threadTweetText = thread[i];
           let threadMediaIds = [];
-          
           // Check if we have specific media for this thread tweet
           if (threadMedia && threadMedia[i] && threadMedia[i].length > 0) {
             console.log(`Uploading media for thread tweet ${i + 1}...`);
-            
             const oauth1Tokens = {
               accessToken: twitterAccount.oauth1_access_token,
               accessTokenSecret: twitterAccount.oauth1_access_token_secret
             };
-            
             threadMediaIds = await mediaService.uploadMedia(threadMedia[i], twitterClient, oauth1Tokens);
             console.log(`Media upload completed for thread tweet ${i + 1}, IDs:`, threadMediaIds);
           }
 
           const threadTweetData = {
-            text: threadTweetText,
+            text: decodeHTMLEntities(threadTweetText),
             reply: { in_reply_to_tweet_id: previousTweetId },
             ...(threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
           };
@@ -235,7 +232,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         // Post main tweet
         console.log('Preparing single tweet data...');
         const tweetData = {
-          text: content,
+          text: decodeHTMLEntities(content),
           ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
         };
         
