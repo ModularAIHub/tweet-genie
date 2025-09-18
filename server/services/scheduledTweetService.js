@@ -138,7 +138,9 @@ class ScheduledTweetService {
         }
       }
 
-      // Post main tweet with media IDs if present, decode HTML entities
+      // Post main tweet with media IDs if present, decode HTML entities ONCE
+      // Log for debugging encoding issues
+      console.log('[Thread Unicode Debug] Posting main tweet:', scheduledTweet.content);
       const tweetData = {
         text: decodeHTMLEntities(scheduledTweet.content),
         ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
@@ -151,6 +153,8 @@ class ScheduledTweetService {
         let previousTweetId = tweetResponse.data.id;
 
         for (const threadTweet of scheduledTweet.thread_tweets) {
+          // Log for debugging encoding issues
+          console.log('[Thread Unicode Debug] Posting thread tweet:', threadTweet.content);
           const threadTweetData = {
             text: decodeHTMLEntities(threadTweet.content),
             reply: { in_reply_to_tweet_id: previousTweetId }

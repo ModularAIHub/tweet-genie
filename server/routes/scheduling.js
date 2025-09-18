@@ -127,11 +127,14 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     let mainContent = content;
     let threadTweets = [];
     if (Array.isArray(thread) && thread.length > 0) {
-      // Filter/sanitize thread: allow string or object with content
+      // Filter: allow string or object with content, preserve raw Unicode, do NOT HTML-encode
       const flatThread = thread
         .map(t => (typeof t === 'string' ? t : (t && typeof t.content === 'string' ? t.content : '')))
         .map(t => (t || '').trim())
         .filter(t => t.length > 0);
+      // Log for debugging encoding issues
+      console.log('[Thread Unicode Debug] Incoming thread:', thread);
+      console.log('[Thread Unicode Debug] Flat thread:', flatThread);
       if (flatThread.length > 0) {
         mainContent = flatThread[0];
         threadTweets = flatThread.length > 1 ? flatThread.slice(1).map(content => ({ content })) : [];
