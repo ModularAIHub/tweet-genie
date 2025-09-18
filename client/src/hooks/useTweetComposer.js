@@ -207,6 +207,7 @@ export const useTweetComposer = () => {
   const handlePost = async () => {
     // Validate content before posting
     if (isThread) {
+      // Only validate, do NOT HTML-encode or sanitize to entities, preserve raw Unicode
       const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
       for (let i = 0; i < validTweets.length; i++) {
         const validation = validateTweetContent(validTweets[i]);
@@ -217,7 +218,7 @@ export const useTweetComposer = () => {
         if (validation.warnings.length > 0) {
           validation.warnings.forEach(warning => toast.error(`Tweet ${i + 1}: ${warning}`));
         }
-        validTweets[i] = validation.sanitizedContent;
+        // DO NOT overwrite validTweets[i] with sanitizedContent (which is HTML-encoded)
       }
       if (validTweets.length === 0 && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -232,7 +233,7 @@ export const useTweetComposer = () => {
       if (validation.warnings.length > 0) {
         validation.warnings.forEach(warning => toast.error(warning));
       }
-      if (!validation.sanitizedContent.trim() && selectedImages.length === 0) {
+      if (!content.trim() && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
         return;
       }
@@ -299,6 +300,7 @@ export const useTweetComposer = () => {
       if (isThread) {
         const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
         // threadMedia is an array of arrays of media IDs, one per tweet
+        // Send only raw Unicode, do NOT HTML-encode or sanitize to entities
         await tweets.create({
           thread: validTweets,
           threadMedia,
