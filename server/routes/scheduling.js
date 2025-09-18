@@ -147,12 +147,13 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     }
 
     // Save scheduled tweet (not posted yet)
+    // Store media IDs in both media and media_urls columns for compatibility
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tweets (
-        user_id, content, media, thread_tweets, scheduled_for, timezone, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+        user_id, content, media, media_urls, thread_tweets, scheduled_for, timezone, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
       RETURNING *`,
-      [userId, mainContent, JSON.stringify(media), JSON.stringify(threadTweets), scheduledTime, timezone]
+      [userId, mainContent, JSON.stringify(media), JSON.stringify(media), JSON.stringify(threadTweets), scheduledTime, timezone]
     );
 
     // Enqueue BullMQ job for scheduled tweet
@@ -165,6 +166,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
 
     res.json({
       success: true,
+      message: 'Tweets are scheduled at least 5 minutes in the future as per platform policy.',
       scheduled_tweet: {
         id: rows[0].id,
         scheduled_for: rows[0].scheduled_for,

@@ -1,3 +1,7 @@
+// Media endpoints
+export const media = {
+  upload: (mediaArray) => api.post('/api/twitter/upload-media', { media: mediaArray }),
+};
 import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';

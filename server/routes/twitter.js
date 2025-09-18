@@ -3,8 +3,37 @@ import express from 'express';
 import pool from '../config/database.js';
 import crypto from 'crypto';
 import OAuth from 'oauth-1.0a';
-
+import { mediaService } from '../services/mediaService.js';
+import { validateTwitterConnection } from '../middleware/auth.js';
 const router = express.Router();
+
+
+// POST /api/twitter/upload-media - Upload images to Twitter and return media IDs
+router.post('/upload-media', validateTwitterConnection, async (req, res) => {
+  try {
+    const { media } = req.body;
+    const twitterAccount = req.twitterAccount;
+    if (!media || !Array.isArray(media) || media.length === 0) {
+      return res.status(400).json({ error: 'No media provided' });
+    }
+    if (!twitterAccount.oauth1_access_token || !twitterAccount.oauth1_access_token_secret) {
+      return res.status(400).json({ error: 'OAuth 1.0a required for media upload. Please reconnect your Twitter account.' });
+    }
+    const oauth1Tokens = {
+      accessToken: twitterAccount.oauth1_access_token,
+      accessTokenSecret: twitterAccount.oauth1_access_token_secret
+    };
+    // Use TwitterApi client with OAuth2 token for user context
+    const { TwitterApi } = await import('twitter-api-v2');
+    const twitterClient = new TwitterApi(twitterAccount.access_token);
+    const mediaIds = await mediaService.uploadMedia(media, twitterClient, oauth1Tokens);
+    res.json({ success: true, mediaIds });
+  } catch (error) {
+    console.error('Upload media error:', error);
+    res.status(500).json({ error: error.message || 'Failed to upload media' });
+  }
+});
+
 
 // Helper function to generate PKCE challenge
 function generatePKCE() {

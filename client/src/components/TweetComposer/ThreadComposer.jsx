@@ -1,4 +1,5 @@
 import React from 'react';
+import { decodeHTMLEntities } from '../../utils/decodeHTMLEntities';
 import { Plus, Trash2, Image, X } from 'lucide-react';
 
 const ThreadComposer = ({
@@ -84,7 +85,7 @@ const ThreadComposer = ({
                     </div>
                     <div className="flex-1">
                       <textarea
-                        value={tweet}
+                        value={decodeHTMLEntities(tweet)}
                         onChange={(e) => onThreadTweetChange(index, e.target.value)}
                         placeholder={`Tweet ${tweetNumber}...`}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"

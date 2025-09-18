@@ -2,6 +2,7 @@ import { pool } from '../config/database.js';
 import { TwitterApi } from 'twitter-api-v2';
 import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
+import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 
 class ScheduledTweetService {
   /**
@@ -111,22 +112,35 @@ class ScheduledTweetService {
       // Create Twitter client with OAuth 2.0
       const twitterClient = new TwitterApi(scheduledTweet.access_token);
 
-      // Handle media upload if present
+
+      // Use stored media IDs directly if present
       let mediaIds = [];
-      if (scheduledTweet.media_urls && scheduledTweet.media_urls.length > 0) {
+      if (scheduledTweet.media_urls) {
         try {
-          // Re-upload media for scheduled tweets
-          // Note: In production, you might want to store media temporarily
-          mediaIds = await this.reuploadMedia(scheduledTweet.media_urls, twitterClient);
-        } catch (mediaError) {
-          console.error('Media upload error for scheduled tweet:', mediaError);
-          // Continue without media rather than failing the entire tweet
+          // Parse media_urls if it's a JSON string or array
+          let parsed = scheduledTweet.media_urls;
+          if (typeof parsed === 'string') {
+            try {
+              parsed = JSON.parse(parsed);
+            } catch (e) {
+              // fallback: treat as comma-separated string
+              parsed = parsed.split(',').map(x => x.trim()).filter(Boolean);
+            }
+          }
+          if (Array.isArray(parsed)) {
+            // Only use as media IDs if all are strings and look like Twitter media IDs (digits)
+            if (parsed.every(x => typeof x === 'string' && /^\d+$/.test(x))) {
+              mediaIds = parsed;
+            }
+          }
+        } catch (mediaParseError) {
+          console.error('Error parsing media_urls for scheduled tweet:', mediaParseError);
         }
       }
 
-      // Post main tweet
+      // Post main tweet with media IDs if present, decode HTML entities
       const tweetData = {
-        text: scheduledTweet.content,
+        text: decodeHTMLEntities(scheduledTweet.content),
         ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
       };
 
@@ -138,7 +152,7 @@ class ScheduledTweetService {
 
         for (const threadTweet of scheduledTweet.thread_tweets) {
           const threadTweetData = {
-            text: threadTweet.content,
+            text: decodeHTMLEntities(threadTweet.content),
             reply: { in_reply_to_tweet_id: previousTweetId }
           };
 
