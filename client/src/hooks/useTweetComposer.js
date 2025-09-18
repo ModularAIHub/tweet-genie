@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { tweets, twitter, ai, imageGeneration, scheduling } from '../utils/api';
+import { tweets, twitter, ai, imageGeneration, scheduling, media } from '../utils/api';
 import { 
   sanitizeUserInput, 
   sanitizeAIContent, 
@@ -14,7 +14,6 @@ const getBase64Size = (base64String) => {
   const base64Data = base64String.replace(/^data:image\/[a-z]+;base64,/, '');
   return (base64Data.length * 3) / 4;
 };
-
 // Maximum image size in bytes (5MB)
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
@@ -99,7 +98,6 @@ export const useTweetComposer = () => {
           URL.revokeObjectURL(img.preview);
         }
       });
-      
       // Clean up thread images
       threadImages.forEach(tweetImages => {
         tweetImages.forEach(img => {
@@ -210,7 +208,6 @@ export const useTweetComposer = () => {
     // Validate content before posting
     if (isThread) {
       const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
-      
       for (let i = 0; i < validTweets.length; i++) {
         const validation = validateTweetContent(validTweets[i]);
         if (!validation.isValid) {
@@ -218,14 +215,10 @@ export const useTweetComposer = () => {
           return;
         }
         if (validation.warnings.length > 0) {
-          validation.warnings.forEach(warning => 
-            toast.error(`Tweet ${i + 1}: ${warning}`)
-          );
+          validation.warnings.forEach(warning => toast.error(`Tweet ${i + 1}: ${warning}`));
         }
-        // Update with sanitized content
         validTweets[i] = validation.sanitizedContent;
       }
-
       if (validTweets.length === 0 && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
         return;
@@ -237,7 +230,7 @@ export const useTweetComposer = () => {
         return;
       }
       if (validation.warnings.length > 0) {
-  validation.warnings.forEach(warning => toast.error(warning));
+        validation.warnings.forEach(warning => toast.error(warning));
       }
       if (!validation.sanitizedContent.trim() && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -247,54 +240,69 @@ export const useTweetComposer = () => {
 
     setIsPosting(true);
     try {
-      // Convert images to base64 data URLs for backend processing
-      const mediaFiles = [];
-      for (const img of selectedImages) {
-        if (img.isAIGenerated && img.preview.startsWith('data:')) {
-          // AI generated images are already base64 data URLs
-          mediaFiles.push(img.preview);
-        } else if (img.file) {
-          // Convert File objects to base64 data URLs
-          const base64 = await fileToBase64(img.file);
-          mediaFiles.push(base64);
-        }
-      }
-      
-      if (isThread) {
-        const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
-        // Create a mapping from original tweet indices to media
-        const threadMediaFiles = [];
-        let validTweetIndex = 0;
-        for (let i = 0; i < threadTweets.length; i++) {
-          const tweet = threadTweets[i];
-          // Skip separators and empty tweets
-          if (tweet.trim().length > 0 && tweet !== '---') {
-            const tweetImages = threadImages[i] || [];
-            const tweetMedia = [];
-            for (const img of tweetImages) {
-              if (img.isAIGenerated && img.preview.startsWith('data:')) {
-                tweetMedia.push(img.preview);
-              } else if (img.file) {
-                const base64 = await fileToBase64(img.file);
-                tweetMedia.push(base64);
-              }
-            }
-            threadMediaFiles.push(...tweetMedia);
-            validTweetIndex++;
+      // Upload main tweet images to Twitter and get media IDs
+      let mediaIds = [];
+      if (selectedImages.length > 0) {
+        const mediaFiles = [];
+        for (const img of selectedImages) {
+          if (img.isAIGenerated && img.preview.startsWith('data:')) {
+            mediaFiles.push(img.preview);
+          } else if (img.file) {
+            const base64 = await fileToBase64(img.file);
+            mediaFiles.push(base64);
           }
         }
-        // Only send array of strings for threadMedia
-        const filteredThreadMedia = threadMediaFiles.filter(x => typeof x === 'string' && x.length > 0);
-        console.log('Posting thread:', {
-          validTweetsCount: validTweets.length,
-          threadMediaCount: filteredThreadMedia.length,
-          validTweets: validTweets.map(t => t.substring(0, 50) + '...'),
-          mediaPerTweet: filteredThreadMedia.length
-        });
+        if (mediaFiles.length > 0) {
+          const uploadRes = await media.upload(mediaFiles);
+          if (uploadRes.data && uploadRes.data.mediaIds) {
+            mediaIds = uploadRes.data.mediaIds;
+          } else {
+            throw new Error('Failed to upload images to Twitter');
+          }
+        }
+      }
+
+      // For threads, upload images for each tweet in the thread
+      let threadMedia = [];
+      if (isThread) {
+        for (let i = 0; i < threadTweets.length; i++) {
+          const tweet = threadTweets[i];
+          if (tweet.trim().length > 0 && tweet !== '---') {
+            const tweetImages = threadImages[i] || [];
+            if (tweetImages.length > 0) {
+              const tweetMediaFiles = [];
+              for (const img of tweetImages) {
+                if (img.isAIGenerated && img.preview.startsWith('data:')) {
+                  tweetMediaFiles.push(img.preview);
+                } else if (img.file) {
+                  const base64 = await fileToBase64(img.file);
+                  tweetMediaFiles.push(base64);
+                }
+              }
+              if (tweetMediaFiles.length > 0) {
+                const uploadRes = await media.upload(tweetMediaFiles);
+                if (uploadRes.data && uploadRes.data.mediaIds) {
+                  threadMedia.push(uploadRes.data.mediaIds);
+                } else {
+                  throw new Error('Failed to upload thread images to Twitter');
+                }
+              } else {
+                threadMedia.push([]);
+              }
+            } else {
+              threadMedia.push([]);
+            }
+          }
+        }
+      }
+
+      if (isThread) {
+        const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
+        // threadMedia is an array of arrays of media IDs, one per tweet
         await tweets.create({
           thread: validTweets,
-          threadMedia: filteredThreadMedia,
-          media: mediaFiles.length > 0 ? mediaFiles : undefined
+          threadMedia,
+          media: mediaIds.length > 0 ? mediaIds : undefined
         });
         toast.success(`Thread with ${validTweets.length} tweets posted successfully!`);
         setThreadTweets(['']);
@@ -303,20 +311,19 @@ export const useTweetComposer = () => {
       } else {
         await tweets.create({
           content: content.trim(),
-          media: mediaFiles.length > 0 ? mediaFiles : undefined
+          media: mediaIds.length > 0 ? mediaIds : undefined
         });
-        
         toast.success('Tweet posted successfully!');
         setContent('');
       }
-      
+
       selectedImages.forEach(img => {
         if (img.preview && img.preview.startsWith('blob:')) {
           URL.revokeObjectURL(img.preview);
         }
       });
       setSelectedImages([]);
-      
+
       // Clean up thread images
       threadImages.forEach(tweetImages => {
         tweetImages.forEach(img => {
@@ -325,23 +332,23 @@ export const useTweetComposer = () => {
           }
         });
       });
-      
+
     } catch (error) {
       console.error('Post tweet error:', error);
-      
+
       if (error.response?.data?.code === 'TWITTER_RATE_LIMIT') {
         toast.error('⏰ Twitter rate limit reached. Please try again in 15-30 minutes. Your credits have been refunded.', {
           duration: 8000
         });
         return;
       }
-      
+
       if (error.response?.data?.code === 'TWITTER_TOKEN_EXPIRED') {
         toast.error('Twitter authentication expired. Please reconnect your account.');
         window.location.href = '/settings';
         return;
       }
-      
+
       if (error.response?.data?.code === 'TWITTER_PERMISSIONS_ERROR') {
         toast.error('Twitter permissions expired. Please reconnect your Twitter account.', {
           duration: 6000
@@ -351,7 +358,7 @@ export const useTweetComposer = () => {
         }, 2000);
         return;
       }
-      
+
       const errorMessage = error.response?.data?.error || 'Failed to post tweet';
       toast.error(errorMessage);
     } finally {
@@ -371,23 +378,32 @@ export const useTweetComposer = () => {
     }
     setIsScheduling(true);
     try {
-      // Convert images to base64 data URLs for backend processing
-      const mediaFiles = [];
-      for (const img of selectedImages) {
-        if (img.isAIGenerated && img.preview.startsWith('data:')) {
-          // AI generated images are already base64 data URLs
-          mediaFiles.push(img.preview);
-        } else if (img.file) {
-          // Convert File objects to base64 data URLs
-          const base64 = await fileToBase64(img.file);
-          mediaFiles.push(base64);
+      // Upload images to Twitter and get media IDs
+      let mediaIds = [];
+      if (selectedImages.length > 0) {
+        const mediaFiles = [];
+        for (const img of selectedImages) {
+          if (img.isAIGenerated && img.preview.startsWith('data:')) {
+            mediaFiles.push(img.preview);
+          } else if (img.file) {
+            const base64 = await fileToBase64(img.file);
+            mediaFiles.push(base64);
+          }
+        }
+        if (mediaFiles.length > 0) {
+          const uploadRes = await media.upload(mediaFiles);
+          if (uploadRes.data && uploadRes.data.mediaIds) {
+            mediaIds = uploadRes.data.mediaIds;
+          } else {
+            throw new Error('Failed to upload images to Twitter');
+          }
         }
       }
 
       // Directly schedule the tweet (do not post immediately)
       await scheduling.create({
         content: content.trim(),
-        media: mediaFiles.length > 0 ? mediaFiles : undefined,
+        media: mediaIds.length > 0 ? mediaIds : undefined,
         scheduled_for: dateString,
         timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
       });
@@ -452,9 +468,9 @@ export const useTweetComposer = () => {
           const content = sanitizedContent;
           console.log('AI Response for thread:', content);
           // Split the content by --- separators or fallback to smart splitting
-          const threadTweets = splitIntoTweets(content);
-          console.log('Final thread tweets:', threadTweets);
-          setThreadTweets(threadTweets.length > 0 ? threadTweets : [content]);
+          const aiTweets = splitIntoTweets(content);
+          console.log('Final thread tweets:', aiTweets);
+          setThreadTweets(aiTweets.length > 0 ? aiTweets : [content]);
         } else {
           // Always treat as single tweet, even if AI returns separators
           let tweet = sanitizedContent.replace(/---/g, '').trim();
@@ -653,7 +669,7 @@ export const useTweetComposer = () => {
     const sanitizedValue = value === '---' ? value : sanitizeUserInput(value, { maxLength: 300 });
     const newTweets = [...threadTweets];
     newTweets[index] = sanitizedValue;
-    setThreadTweetsState(newTweets);
+    setThreadTweets(newTweets);
   };
 
   const handleThreadImageUpload = (threadIndex, event) => {
@@ -743,8 +759,7 @@ export const useTweetComposer = () => {
           }
         });
       }
-      
-      setThreadTweetsState(threadTweets.filter((_, i) => i !== index));
+      setThreadTweets(threadTweets.filter((_, i) => i !== index));
       setThreadImages(prev => prev.filter((_, i) => i !== index));
     }
   };

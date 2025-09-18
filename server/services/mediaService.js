@@ -9,22 +9,22 @@ class MediaService {
   constructor() {
     this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '5242880'); // 5MB (5 * 1024 * 1024)
     this.allowedTypes = (process.env.ALLOWED_IMAGE_TYPES || 'image/jpeg,image/png,image/gif,image/webp').split(',');
-    
-    // Initialize Supabase client (required for production)
-    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-      throw new Error('Supabase credentials are required for media uploads');
+
+    // Initialize Supabase client if credentials are present
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+      this.supabase = createClient(
+        process.env.SUPABASE_URL,
+        process.env.SUPABASE_ANON_KEY
+      );
+      console.log('✅ Supabase storage initialized');
+    } else {
+      this.supabase = null;
+      console.warn('Supabase credentials not found. Skipping Supabase upload.');
     }
-    
-    this.supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
-    console.log('✅ Supabase storage initialized');
   }
 
   async uploadMedia(mediaFiles, twitterClient, oauth1Tokens = null) {
     const mediaIds = [];
-    
     console.log('uploadMedia called with:', {
       mediaFilesLength: mediaFiles?.length,
       mediaFilesType: typeof mediaFiles,
@@ -38,8 +38,14 @@ class MediaService {
 
     for (const mediaFile of mediaFiles) {
       try {
+        // If it's a string and does NOT start with 'data:', treat as Twitter media ID and use directly
+        if (typeof mediaFile === 'string' && !mediaFile.startsWith('data:')) {
+          console.log('Received Twitter media ID, using directly:', mediaFile);
+          mediaIds.push(mediaFile);
+          continue;
+        }
+
         let buffer, mimetype;
-        
         console.log('Processing media file:', {
           type: typeof mediaFile,
           isString: typeof mediaFile === 'string',
@@ -53,20 +59,18 @@ class MediaService {
           const mimeMatch = mediaFile.match(/data:([^;]+);/);
           mimetype = mimeMatch ? mimeMatch[1] : 'image/jpeg';
           buffer = Buffer.from(base64Data, 'base64');
-          
           console.log('Base64 processing result:', {
             mimetype,
             bufferSize: buffer.length,
             base64Length: base64Data.length
           });
         } else if (typeof mediaFile === 'string') {
-          // Handle other string formats (this shouldn't happen with the frontend fix)
+          // Should not reach here due to above check
           throw new Error(`Invalid media format: received string without data: prefix. Length: ${mediaFile.length}`);
         } else {
           // Handle file upload (existing logic)
           buffer = mediaFile.buffer;
           mimetype = mediaFile.mimetype;
-          
           console.log('File upload processing:', {
             mimetype,
             bufferSize: buffer?.length
@@ -90,7 +94,6 @@ class MediaService {
 
         // Process image if needed
         const processedBuffer = await this.processImage(buffer, mimetype);
-        
         console.log('Image processed:', {
           originalSize: buffer.length,
           processedSize: processedBuffer.length,
@@ -100,14 +103,17 @@ class MediaService {
         // Upload to Twitter using OAuth 1.0a
         console.log('Uploading to Twitter using OAuth 1.0a...');
         const mediaId = await this.uploadWithOAuth1(processedBuffer, mimetype, oauth1Tokens);
-        
         console.log('Twitter upload successful, mediaId:', mediaId);
         mediaIds.push(mediaId);
 
-        // Save to Supabase (primary) and local (backup)
-        const supabaseResult = await this.saveToSupabase(processedBuffer, `uploaded_${Date.now()}.jpg`);
-        if (supabaseResult) {
-          console.log('✅ Saved to Supabase:', supabaseResult.url);
+        // Save to Supabase (primary) and local (backup) if configured
+        if (this.supabase) {
+          const supabaseResult = await this.saveToSupabase(processedBuffer, `uploaded_${Date.now()}.jpg`);
+          if (supabaseResult) {
+            console.log('✅ Saved to Supabase:', supabaseResult.url);
+          }
+        } else {
+          console.log('Supabase not configured, skipping cloud upload');
         }
 
       } catch (error) {
