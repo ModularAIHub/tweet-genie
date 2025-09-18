@@ -91,7 +91,7 @@ router.post('/bulk', async (req, res) => {
 // Schedule a tweet
 router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, async (req, res) => {
   try {
-    const { content, media = [], thread, scheduled_for, timezone = 'UTC' } = req.body;
+  const { content, media = [], thread, threadMedia = [], scheduled_for, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
 
     // Validate timezone
@@ -126,6 +126,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     // Thread support: if thread is present and valid, use it
     let mainContent = content;
     let threadTweets = [];
+    let threadMediaArr = [];
     if (Array.isArray(thread) && thread.length > 0) {
       // Filter: allow string or object with content, preserve raw Unicode, do NOT HTML-encode
       const flatThread = thread
@@ -138,6 +139,16 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       if (flatThread.length > 0) {
         mainContent = flatThread[0];
         threadTweets = flatThread.length > 1 ? flatThread.slice(1).map(content => ({ content })) : [];
+        // Accept threadMedia as array of arrays of media IDs, align with thread
+        if (Array.isArray(threadMedia) && threadMedia.length === flatThread.length) {
+          threadMediaArr = threadMedia;
+        } else if (Array.isArray(threadMedia)) {
+          // Fallback: pad or trim to match thread length
+          threadMediaArr = threadMedia.slice(0, flatThread.length);
+          while (threadMediaArr.length < flatThread.length) threadMediaArr.push([]);
+        } else {
+          threadMediaArr = [];
+        }
       }
     }
 
@@ -151,12 +162,13 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
 
     // Save scheduled tweet (not posted yet)
     // Store media IDs in both media and media_urls columns for compatibility
+    // Store per-tweet media for threads in thread_media column
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tweets (
-        user_id, content, media, media_urls, thread_tweets, scheduled_for, timezone, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+        user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
       RETURNING *`,
-      [userId, mainContent, JSON.stringify(media), JSON.stringify(media), JSON.stringify(threadTweets), scheduledTime, timezone]
+      [userId, mainContent, JSON.stringify(media), JSON.stringify(media), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledTime, timezone]
     );
 
     // Enqueue BullMQ job for scheduled tweet
