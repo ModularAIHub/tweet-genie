@@ -165,26 +165,31 @@ router.post('/refresh', async (req, res) => {
         cookie.startsWith('refreshToken=')
       );
 
+      // Cookie options for cross-subdomain auth
+      const isProduction = process.env.NODE_ENV === 'production';
+      const cookieDomain = process.env.COOKIE_DOMAIN || '.suitegenie.in';
+      const accessTokenOptions = {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
+        maxAge: 15 * 60 * 1000,
+        ...(isProduction ? { domain: cookieDomain } : {})
+      };
+      const refreshTokenOptions = {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+        ...(isProduction ? { domain: cookieDomain } : {})
+      };
+
       if (accessTokenCookie) {
         const newAccessToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
-        
-        // Set new access token cookie
-        res.cookie('accessToken', newAccessToken, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
-          maxAge: 15 * 60 * 1000 // 15 minutes
-        });
+        res.cookie('accessToken', newAccessToken, accessTokenOptions);
 
-        // Update refresh token if provided
         if (refreshTokenCookie) {
           const newRefreshToken = refreshTokenCookie.split('refreshToken=')[1].split(';')[0];
-          res.cookie('refreshToken', newRefreshToken, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax',
-            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-          });
+          res.cookie('refreshToken', newRefreshToken, refreshTokenOptions);
         }
 
         console.log('Token refreshed successfully');
