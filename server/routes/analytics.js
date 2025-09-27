@@ -234,14 +234,14 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       throw testError;
     }
 
-    // Get tweets to sync with MUCH MORE conservative filtering
+    // Get tweets to sync with increased limits
     const { rows: tweetsToUpdate } = await pool.query(
       `SELECT id, tweet_id, content, created_at FROM tweets 
        WHERE user_id = $1 AND status = 'posted' AND source = 'platform'
        AND created_at >= NOW() - INTERVAL '7 days'
        AND tweet_id IS NOT NULL
        AND (impressions IS NULL OR impressions = 0 OR updated_at < NOW() - INTERVAL '6 hours')
-       ORDER BY created_at DESC LIMIT 10`,  // Reduced to only 10 tweets
+       ORDER BY created_at DESC LIMIT 20`,  // Increased to 20 tweets
       [userId]
     );
 
@@ -255,10 +255,10 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       });
     }
 
-    // ULTRA-CONSERVATIVE batching (only 1 tweet at a time!)
-    const batchSize = 1; 
-    const requestDelay = 5000; // 5 seconds between requests
-    const batchDelay = 15000;  // 15 seconds between batches
+    // Increased batching (5 tweets at a time)
+    const batchSize = 5; 
+    const requestDelay = 1000; // 1 second between requests
+    const batchDelay = 3000;  // 3 seconds between batches
 
     for (let i = 0; i < tweetsToUpdate.length; i += batchSize) {
       const batch = tweetsToUpdate.slice(i, i + batchSize);
