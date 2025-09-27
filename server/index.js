@@ -91,7 +91,16 @@ app.use('/api/image-generation', authenticateToken, imageGenerationRoutes);
 app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 
 // Error handling
-app.use(errorHandler);
+app.use((err, req, res, next) => {
+  // Add CORS headers even on errors
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  // Delegate to the original error handler
+  errorHandler(err, req, res, next);
+});
 
 
 // Start BullMQ worker for scheduled tweets
