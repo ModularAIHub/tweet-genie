@@ -16,6 +16,19 @@ const api = axios.create({
   withCredentials: true, // Important for cookies
 });
 
+// Request interceptor to attach JWT token
+api.interceptors.request.use(
+  (config) => {
+    // Get token from localStorage (or cookies if you prefer)
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
 // Flag to prevent multiple refresh attempts
 let isRefreshing = false;
 let failedQueue = [];
