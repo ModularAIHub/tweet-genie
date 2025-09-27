@@ -35,8 +35,8 @@ app.use(helmet());
 // CORS configuration with both production and development origins
 const allowedOrigins = [
   'https://suitegenie.in',
-  'https://api.suitegenie.in',
   'https://tweet.suitegenie.in',
+  'https://api.suitegenie.in',
   'https://tweetapi.suitegenie.in',
 ];
 
