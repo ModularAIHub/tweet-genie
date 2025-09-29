@@ -40,9 +40,19 @@ export const AuthProvider = ({ children }) => {
   const refreshTokenIfNeeded = async () => {
     try {
       console.log('Attempting proactive token refresh...');
+      // Fetch CSRF token
+      let csrfToken = null;
+      try {
+        const csrfRes = await fetch('/api/csrf-token', { credentials: 'include' });
+        const data = await csrfRes.json();
+        csrfToken = data.csrfToken;
+      } catch (err) {
+        console.error('Failed to fetch CSRF token for proactive refresh:', err);
+      }
       const response = await fetch('/api/auth/refresh', {
         method: 'POST',
         credentials: 'include',
+        headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {}
       });
 
       if (response.ok) {

@@ -69,9 +69,17 @@ api.interceptors.response.use(
       try {
         console.log('Token expired, attempting automatic refresh...');
         
-        // Call the dedicated refresh endpoint
+        // Fetch CSRF token and send in header for refresh
+        let csrfToken = null;
+        try {
+          const csrfRes = await api.get('/csrf-token');
+          csrfToken = csrfRes.data.csrfToken;
+        } catch (err) {
+          console.error('Failed to fetch CSRF token for refresh:', err);
+        }
         const refreshResponse = await axios.post(`${API_BASE_URL}/api/auth/refresh`, {}, {
-          withCredentials: true
+          withCredentials: true,
+          headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {}
         });
 
         console.log('Token refreshed successfully');
