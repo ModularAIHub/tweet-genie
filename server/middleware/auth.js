@@ -52,7 +52,8 @@ export const authenticateToken = async (req, res, next) => {
               res.cookie('accessToken', newToken, {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production',
-                sameSite: 'lax',
+                sameSite: 'none', // must be 'none' for cross-domain
+                domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
                 maxAge: 15 * 60 * 1000 // 15 minutes
               });
               
@@ -132,7 +133,8 @@ export const authenticateToken = async (req, res, next) => {
               res.cookie('accessToken', newToken, {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production',
-                sameSite: 'lax',
+                sameSite: 'none', // must be 'none' for cross-domain
+                domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
                 maxAge: 15 * 60 * 1000 // 15 minutes
               });
               // Use the new token for subsequent platform requests
