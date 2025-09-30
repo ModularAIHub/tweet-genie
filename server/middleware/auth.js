@@ -37,7 +37,6 @@ export const authenticateToken = async (req, res, next) => {
               withCredentials: true
             }
           );
-          
           // Extract new access token from response cookies
           const setCookieHeader = refreshResponse.headers['set-cookie'];
           if (setCookieHeader) {
@@ -47,7 +46,6 @@ export const authenticateToken = async (req, res, next) => {
             if (accessTokenCookie) {
               const newToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
               console.log('✅ New access token obtained from refresh token');
-              
               // Set the new token in response cookies for future requests
               res.cookie('accessToken', newToken, {
                 httpOnly: true,
@@ -56,7 +54,6 @@ export const authenticateToken = async (req, res, next) => {
                 domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
                 maxAge: 15 * 60 * 1000 // 15 minutes
               });
-              
               // Use the new token and continue with authentication
               token = newToken;
             } else {
@@ -67,6 +64,13 @@ export const authenticateToken = async (req, res, next) => {
           }
         } catch (refreshError) {
           console.log('❌ Refresh token failed:', refreshError.message);
+          // Clear refreshToken cookie to prevent infinite loop
+          res.clearCookie('refreshToken', {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'none',
+            domain: process.env.COOKIE_DOMAIN || '.suitegenie.in'
+          });
           // Fallback to login redirect if refresh fails
           if (req.headers.accept && req.headers.accept.includes('text/html')) {
             const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
