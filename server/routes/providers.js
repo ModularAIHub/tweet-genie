@@ -8,27 +8,24 @@ router.get('/', async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get user's AI provider preferences from Platform
-    const hubProviders = await aiService.getHubProviders(userId);
-
-    // Define available providers (simplified)
+    // Define available providers (now using platform directly, no hub needed)
     const providers = [
       {
         name: 'openai',
         display_name: 'OpenAI GPT',
-        hub_available: hubProviders.openai?.available || false,
+        available: true, // Platform handles provider availability
         models: ['gpt-3.5-turbo', 'gpt-4']
       },
       {
         name: 'perplexity',
         display_name: 'Perplexity AI',
-        hub_available: hubProviders.perplexity?.available || false,
+        available: true,
         models: ['llama-3.1-sonar-small-128k-online']
       },
       {
         name: 'google',
         display_name: 'Google Gemini',
-        hub_available: hubProviders.google?.available || false,
+        available: true,
         models: ['gemini-pro']
       }
     ];
