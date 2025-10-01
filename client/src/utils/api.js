@@ -77,7 +77,8 @@ api.interceptors.response.use(
         } catch (err) {
           console.error('Failed to fetch CSRF token for refresh:', err);
         }
-        const refreshResponse = await axios.post(`${API_BASE_URL}/api/auth/refresh`, {}, {
+        const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
+        const refreshResponse = await axios.post(`${platformUrl}/api/auth/refresh`, {}, {
           withCredentials: true,
           headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {}
         });
