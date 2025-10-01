@@ -55,9 +55,7 @@ Tweet Genie backend server providing Twitter posting, scheduling, and analytics 
    TWITTER_API_SECRET=your_twitter_api_secret
    TWITTER_BEARER_TOKEN=your_twitter_bearer_token
    
-   # Central Hub Integration
-   HUB_API_URL=http://localhost:3001
-   HUB_API_KEY=your_hub_api_key
+   # Platform Integration (handled automatically via authentication)
    
    # JWT
    JWT_SECRET=your_jwt_secret

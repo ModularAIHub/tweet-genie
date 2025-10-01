@@ -77,6 +77,14 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', service: 'Tweet Genie' });
 });
 
+// CSRF token endpoint (for frontend compatibility)
+app.get('/api/csrf-token', (req, res) => {
+  res.json({ 
+    csrfToken: 'dummy-csrf-token',
+    message: 'CSRF protection not implemented in Tweet Genie' 
+  });
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', secureAuthRoutes);

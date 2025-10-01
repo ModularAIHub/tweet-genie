@@ -36,9 +36,7 @@ class AIService {
     this.perplexityApiKey = process.env.PERPLEXITY_API_KEY;
     this.googleApiKey = process.env.GOOGLE_AI_API_KEY;
     
-    // Platform integration (legacy)
-    this.hubApiUrl = process.env.HUB_API_URL;
-    this.hubApiKey = process.env.HUB_API_KEY;
+    // Hub integration removed - now using platform directly
   }
 
   async generateContent(prompt, style = 'casual', maxRetries = 3, userToken = null, userId = null) {
@@ -570,66 +568,22 @@ Generate tweet content for: ${prompt}`;
     };
   }
 
-  // Legacy methods for platform integration
-  async getHubProviders(userId) {
-    try {
-      const response = await axios.get(`${this.hubApiUrl}/api/ai/providers/${userId}`, {
-        headers: {
-          'X-API-Key': this.hubApiKey,
-          'X-Service': 'tweet-genie'
-        }
-      });
-
-      return response.data.providers;
-    } catch (error) {
-      // If Platform doesn't have providers endpoint yet, return empty object silently
-      if (error.response?.status === 404) {
-        console.log('Hub providers endpoint not available, using fallback');
-        return {};
-      }
-      console.error('Error fetching hub providers:', error.message);
-      return {};
-    }
-  }
+  // Legacy hub methods removed - now using platform directly
 
   async generateTweets(params) {
     const { prompt, provider, style, hashtags, mentions, max_tweets, userId } = params;
 
-    // Try new direct AI generation first, fallback to hub if needed
+    // Use direct AI generation through platform
     try {
       const result = await this.generateContent(prompt, style);
       return [result.content];
-    } catch (directError) {
-      console.error('Direct AI generation failed, trying hub provider:', directError);
-      
-      // Fallback to platform hub providers for AI generation
-      try {
-        return await this.generateWithHubProvider(params);
-      } catch (hubError) {
-        console.error('Hub provider error:', hubError);
-        throw new Error(`AI generation failed: ${hubError.message}`);
-      }
-    }
-  }
-
-  async generateWithHubProvider(params) {
-    try {
-      const response = await axios.post(`${this.hubApiUrl}/api/ai/generate`, {
-        ...params,
-        service: 'tweet-genie'
-      }, {
-        headers: {
-          'X-API-Key': this.hubApiKey,
-          'X-Service': 'tweet-genie'
-        }
-      });
-
-      return response.data.tweets;
     } catch (error) {
-      console.error('Hub AI generation error:', error);
-      throw error;
+      console.error('AI generation failed:', error);
+      throw new Error(`AI generation failed: ${error.message}`);
     }
   }
+
+
 
   // Generate a tweet or thread for a prompt, returning { text, isThread, threadParts }
   async generateTweetOrThread(prompt, options = {}) {

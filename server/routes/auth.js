@@ -206,6 +206,16 @@ router.post('/refresh', async (req, res) => {
   }
 });
 
+// Get CSRF token (for compatibility with frontend)
+router.get('/csrf-token', (req, res) => {
+  // For now, return a dummy CSRF token since Tweet Genie doesn't implement CSRF protection
+  // This endpoint exists just to prevent frontend 404 errors
+  res.json({ 
+    csrfToken: 'dummy-csrf-token',
+    message: 'CSRF protection not implemented in Tweet Genie' 
+  });
+});
+
 // Logout route - clears cookie
 router.post('/logout', (req, res) => {
   // Clear authentication cookies using utility function
