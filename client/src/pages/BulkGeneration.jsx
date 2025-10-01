@@ -217,7 +217,57 @@ const BulkGeneration = () => {
   setOutputs((prev) => {
     const updated = { ...prev };
     if (updated[idx]) {
-      updated[idx] = { ...updated[idx], isThread: !updated[idx].isThread };
+      const output = updated[idx];
+      const newIsThread = !output.isThread;
+      
+      if (newIsThread && !output.threadParts) {
+        // Converting from single tweet to thread - try to split the content
+        let threadParts = [];
+        const content = output.text;
+        
+        // Try multiple split methods
+        if (content.includes('---')) {
+          threadParts = content.split('---').map(t => t.trim()).filter(Boolean);
+        } else if (content.match(/^\d+\./m)) {
+          threadParts = content.split(/(?=^\d+\.)/m).map(t => t.trim()).filter(Boolean);
+        } else if (content.includes('\n\n')) {
+          threadParts = content.split('\n\n').map(t => t.trim()).filter(Boolean);
+        } else if (content.length > 280) {
+          // Split long content intelligently
+          const sentences = content.split(/[.!?]+\s+/).filter(s => s.trim());
+          let currentPart = '';
+          
+          for (const sentence of sentences) {
+            if ((currentPart + sentence).length > 250 && currentPart) {
+              threadParts.push(currentPart.trim());
+              currentPart = sentence;
+            } else {
+              currentPart += (currentPart ? '. ' : '') + sentence;
+            }
+          }
+          if (currentPart) threadParts.push(currentPart.trim());
+        } else {
+          threadParts = [content];
+        }
+
+        updated[idx] = { 
+          ...output, 
+          isThread: true, 
+          threadParts: threadParts,
+          images: Array(threadParts.length).fill(null)
+        };
+      } else if (!newIsThread && output.threadParts) {
+        // Converting from thread to single tweet - use first part
+        updated[idx] = { 
+          ...output, 
+          isThread: false, 
+          text: output.threadParts[0] || output.text,
+          threadParts: undefined,
+          images: [output.images ? output.images[0] : null]
+        };
+      } else {
+        updated[idx] = { ...output, isThread: newIsThread };
+      }
     }
     return updated;
   });
@@ -258,12 +308,53 @@ const handleGenerate = async () => {
           const res = await ai.generate({ prompt, isThread });
           const data = res.data;
           if (isThread) {
+            // For threads, try multiple split methods to detect thread parts
+            let threadParts = [];
+            
+            // Method 1: Split by '---' (primary separator)
+            if (data.content.includes('---')) {
+              threadParts = data.content.split('---').map(t => t.trim()).filter(Boolean);
+            }
+            // Method 2: If no '---', try splitting by numbered patterns (1., 2., etc.)
+            else if (data.content.match(/^\d+\./m)) {
+              threadParts = data.content.split(/(?=^\d+\.)/m).map(t => t.trim()).filter(Boolean);
+            }
+            // Method 3: If still no parts, split by double newline
+            else if (data.content.includes('\n\n')) {
+              threadParts = data.content.split('\n\n').map(t => t.trim()).filter(Boolean);
+            }
+            // Method 4: If all else fails but content is long, split intelligently
+            else if (data.content.length > 280) {
+              const sentences = data.content.split(/[.!?]+\s+/).filter(s => s.trim());
+              threadParts = [];
+              let currentPart = '';
+              
+              for (const sentence of sentences) {
+                if ((currentPart + sentence).length > 250 && currentPart) {
+                  threadParts.push(currentPart.trim());
+                  currentPart = sentence;
+                } else {
+                  currentPart += (currentPart ? '. ' : '') + sentence;
+                }
+              }
+              if (currentPart) threadParts.push(currentPart.trim());
+            }
+            // Fallback: treat as single part if nothing worked
+            else {
+              threadParts = [data.content.trim()];
+            }
+
+            // Ensure we have at least one part
+            if (threadParts.length === 0) {
+              threadParts = [data.content.trim()];
+            }
+
             newOutputs[idx] = {
               prompt,
               text: data.content,
               isThread: true,
-              threadParts: data.content.split('---').map(t => t.trim()).filter(Boolean),
-              images: Array((data.threadCount || 1)).fill(null),
+              threadParts: threadParts,
+              images: Array(threadParts.length).fill(null),
               id: idx,
               loading: false,
               error: null,
