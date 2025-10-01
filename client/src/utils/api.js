@@ -142,6 +142,7 @@ export const tweets = {
 // Scheduling endpoints
 export const scheduling = {
   create: (scheduleData) => api.post('/api/scheduling', scheduleData),
+  bulk: (bulkData) => api.post('/api/scheduling/bulk', bulkData),
   list: (params) => api.get('/api/scheduling', { params }),
   update: (scheduleId, data) => api.put(`/api/scheduling/${scheduleId}`, data),
   cancel: (scheduleId) => api.delete(`/api/scheduling/${scheduleId}`),
