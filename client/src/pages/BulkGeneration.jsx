@@ -13,9 +13,11 @@ const BulkGeneration = () => {
   const [outputs, setOutputs] = useState({});
   const [discarded, setDiscarded] = useState([]); // array of idx
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [frequency, setFrequency] = useState('once_daily');
+  const [frequency, setFrequency] = useState('daily');
   const [startDate, setStartDate] = useState(dayjs().format('YYYY-MM-DD'));
   const [timeOfDay, setTimeOfDay] = useState('09:00');
+  const [postsPerDay, setPostsPerDay] = useState(1);
+  const [dailyTimes, setDailyTimes] = useState(['09:00']);
   const [daysOfWeek, setDaysOfWeek] = useState([]); // for custom
   const [schedulingStatus, setSchedulingStatus] = useState('idle');
   const [imageModal, setImageModal] = useState({ open: false, src: null });
@@ -24,12 +26,27 @@ const BulkGeneration = () => {
   const [showCreditInfo, setShowCreditInfo] = useState(true);
 
   const frequencyOptions = [
-    { value: 'once_daily', label: 'Once a day' },
-    { value: 'twice_daily', label: 'Twice a day' },
+    { value: 'daily', label: 'Daily posting' },
     { value: 'thrice_weekly', label: 'Thrice a week' },
     { value: 'four_times_weekly', label: 'Four times a week' },
     { value: 'custom', label: 'Custom days' },
   ];
+
+  // Handle posts per day change
+  const handlePostsPerDayChange = (count) => {
+    setPostsPerDay(count);
+    const newTimes = Array(count).fill(null).map((_, i) => 
+      dailyTimes[i] || `${String(9 + i * 3).padStart(2, '0')}:00`
+    );
+    setDailyTimes(newTimes);
+  };
+
+  // Handle individual time change
+  const handleTimeChange = (index, time) => {
+    const newTimes = [...dailyTimes];
+    newTimes[index] = time;
+    setDailyTimes(newTimes);
+  };
 
   // Discard a generated output by idx
   const handleDiscard = (idx) => {
@@ -64,18 +81,15 @@ const BulkGeneration = () => {
         return;
       }
       const timezone = moment.tz.guess();
-      // Calculate scheduled times for each item based on frequency, startDate, timeOfDay, daysOfWeek
+      // Calculate scheduled times for each item based on frequency, startDate, dailyTimes, daysOfWeek
       let scheduledTimes = [];
-      let current = dayjs(startDate + 'T' + timeOfDay);
-      if (frequency === 'once_daily') {
+      let current = dayjs(startDate);
+      if (frequency === 'daily') {
         for (let i = 0; i < toSchedule.length; i++) {
-          scheduledTimes.push(current.add(i, 'day').format());
-        }
-      } else if (frequency === 'twice_daily') {
-        for (let i = 0; i < toSchedule.length; i++) {
-          const dayOffset = Math.floor(i / 2);
-          const hour = i % 2 === 0 ? 9 : 18;
-          scheduledTimes.push(dayjs(startDate).add(dayOffset, 'day').hour(hour).minute(0).second(0).format());
+          const dayOffset = Math.floor(i / postsPerDay);
+          const timeIndex = i % postsPerDay;
+          const [hour, minute] = dailyTimes[timeIndex].split(':').map(Number);
+          scheduledTimes.push(current.add(dayOffset, 'day').hour(hour).minute(minute).second(0).format());
         }
       } else if (frequency === 'thrice_weekly' || frequency === 'four_times_weekly') {
         const days = frequency === 'thrice_weekly' ? [1, 3, 5] : [0, 2, 4, 6];
@@ -83,8 +97,9 @@ const BulkGeneration = () => {
         let week = 0;
         while (scheduledTimes.length < toSchedule.length) {
           for (const d of days) {
-            if (scheduledTimes.length < toSchedule.length) {
-              scheduledTimes.push(dayjs(startDate).add(week, 'week').day(d).hour(Number(timeOfDay.split(':')[0])).minute(Number(timeOfDay.split(':')[1])).second(0).format());
+            for (let timeIndex = 0; timeIndex < postsPerDay && scheduledTimes.length < toSchedule.length; timeIndex++) {
+              const [hour, minute] = dailyTimes[timeIndex].split(':').map(Number);
+              scheduledTimes.push(dayjs(startDate).add(week, 'week').day(d).hour(hour).minute(minute).second(0).format());
             }
           }
           week++;
@@ -94,24 +109,27 @@ const BulkGeneration = () => {
         let week = 0;
         while (scheduledTimes.length < toSchedule.length) {
           for (const d of daysOfWeek) {
-            if (scheduledTimes.length < toSchedule.length) {
-              scheduledTimes.push(dayjs(startDate).add(week, 'week').day(d).hour(Number(timeOfDay.split(':')[0])).minute(Number(timeOfDay.split(':')[1])).second(0).format());
+            for (let timeIndex = 0; timeIndex < postsPerDay && scheduledTimes.length < toSchedule.length; timeIndex++) {
+              const [hour, minute] = dailyTimes[timeIndex].split(':').map(Number);
+              scheduledTimes.push(dayjs(startDate).add(week, 'week').day(d).hour(hour).minute(minute).second(0).format());
             }
           }
           week++;
         }
       } else {
-        // fallback: all at the same time
+        // fallback: use first time for all posts
+        const [hour, minute] = dailyTimes[0].split(':').map(Number);
         for (let i = 0; i < toSchedule.length; i++) {
-          scheduledTimes.push(current.format());
+          scheduledTimes.push(current.add(i, 'day').hour(hour).minute(minute).second(0).format());
         }
       }
 
-      // Schedule each item using the single scheduling API
-      const results = [];
+      // Prepare items for bulk scheduling
+      const items = [];
+      const mediaMap = {};
+      
       for (let i = 0; i < toSchedule.length; i++) {
         const item = toSchedule[i];
-        const scheduled_for = scheduledTimes[i];
         let media = [];
         if (item.isThread && Array.isArray(item.threadParts)) {
           // For threads, collect images for each part
@@ -143,42 +161,40 @@ const BulkGeneration = () => {
             }
           }
         }
-        // Compose payload
-        const payload = item.isThread
-          ? {
-              thread: item.threadParts,
-              threadMedia: (Array.isArray(media) && media.flat ? media.flat() : [].concat(...media)).filter(x => typeof x === 'string' && x.length > 0),
-              scheduled_for,
-              timezone,
-            }
-          : {
-              content: item.text,
-              media,
-              scheduled_for,
-              timezone,
-            };
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          await scheduling.create(payload);
-          results.push({ success: true });
-        } catch (err) {
-          // Log error details for debugging
-          const details = err?.response?.data?.details;
-          const errorMsg = err?.response?.data?.error || err.message;
-          results.push({ success: false, error: errorMsg, details });
+        
+        items.push({
+          text: item.isThread ? item.threadParts.join('---') : item.text,
+          isThread: item.isThread,
+          threadParts: item.isThread ? item.threadParts : null
+        });
+        
+        if (media.length > 0) {
+          mediaMap[i] = media;
         }
       }
-      const successCount = results.filter(r => r.success).length;
-      const failCount = results.length - successCount;
-      setSchedulingStatus('success');
-      setShowScheduleModal(false);
-      // Show error details if any failed
-      if (failCount > 0) {
-        const failed = results.filter(r => !r.success);
-        const errorDetails = failed.map(f => f.error + (f.details ? ('\n' + f.details.join('\n')) : '')).join('\n---\n');
-        alert(`Scheduled ${successCount} successfully. ${failCount} failed.\n\nDetails:\n${errorDetails}`);
-      } else {
-        alert(`Scheduled ${successCount} successfully.`);
+
+      // Use bulk scheduling API
+      const bulkPayload = {
+        items,
+        frequency,
+        startDate,
+        postsPerDay,
+        dailyTimes,
+        daysOfWeek,
+        images: mediaMap,
+        timezone
+      };
+
+      try {
+        const result = await scheduling.bulk(bulkPayload);
+        setSchedulingStatus('success');
+        setShowScheduleModal(false);
+        alert(`Successfully scheduled ${result.data.scheduled.length} tweets/threads.`);
+      } catch (err) {
+        setSchedulingStatus('error');
+        const details = err?.response?.data?.details;
+        const errorMsg = err?.response?.data?.error || err.message;
+        alert('Failed to schedule.' + (details ? ('\n' + details.join('\n')) : '') + '\n' + errorMsg);
       }
     } catch (err) {
       setSchedulingStatus('error');
@@ -383,8 +399,28 @@ const handleGenerate = async () => {
                   <input type="date" className="border rounded px-3 py-2 w-full" value={startDate} onChange={e => setStartDate(e.target.value)} />
                 </div>
                 <div className="mb-4">
-                  <label className="block font-semibold mb-1">Time of Day:</label>
-                  <input type="time" className="border rounded px-3 py-2 w-full" value={timeOfDay} onChange={e => setTimeOfDay(e.target.value)} />
+                  <label className="block font-semibold mb-1">Posts per Day:</label>
+                  <select className="border rounded px-3 py-2 w-full" value={postsPerDay} onChange={e => handlePostsPerDayChange(Number(e.target.value))}>
+                    {[1, 2, 3, 4, 5].map(num => (
+                      <option key={num} value={num}>{num} post{num > 1 ? 's' : ''} per day</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="mb-4">
+                  <label className="block font-semibold mb-1">Posting Times:</label>
+                  <div className="space-y-2">
+                    {dailyTimes.map((time, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <span className="text-sm text-gray-600 min-w-[60px]">Time {index + 1}:</span>
+                        <input 
+                          type="time" 
+                          className="border rounded px-3 py-2 flex-1" 
+                          value={time} 
+                          onChange={e => handleTimeChange(index, e.target.value)} 
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 {frequency === 'custom' && (
                   <div className="mb-4">
