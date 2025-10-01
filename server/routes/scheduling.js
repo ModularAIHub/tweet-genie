@@ -28,6 +28,15 @@ router.post('/bulk', async (req, res) => {
       let isThread = item.isThread;
       let threadParts = item.threadParts || null;
       let media = images?.[scheduledCount] || [];
+      
+      // If it's a thread, ensure threadParts is properly formatted
+      if (isThread && threadParts && Array.isArray(threadParts)) {
+        // threadParts should be an array of strings
+        threadParts = threadParts.filter(part => part && part.trim().length > 0);
+      } else if (isThread && content && content.includes('---')) {
+        // Fallback: split content by --- if threadParts not provided
+        threadParts = content.split('---').map(part => part.trim()).filter(Boolean);
+      }
       if (frequency === 'daily') {
         const dayOffset = Math.floor(scheduledCount / postsPerDay);
         const timeIndex = scheduledCount % postsPerDay;
@@ -36,10 +45,22 @@ router.post('/bulk', async (req, res) => {
         
         current.add(dayOffset, 'day').set({ hour, minute, second: 0, millisecond: 0 });
         const scheduledForUTC = current.clone().utc().toDate();
+        
+        // Convert to the format expected by the individual scheduling endpoint
+        let mainContent = content;
+        let threadTweets = [];
+        let threadMediaArr = [];
+        
+        if (isThread && threadParts && Array.isArray(threadParts)) {
+          mainContent = threadParts[0] || content;
+          threadTweets = threadParts.length > 1 ? threadParts.slice(1).map(content => ({ content })) : [];
+          threadMediaArr = Array(threadParts.length).fill([]);
+        }
+        
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, content, is_thread, thread_parts, media, scheduled_for, timezone, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
-          [userId, content, !!isThread, isThread ? JSON.stringify(threadParts) : null, JSON.stringify(media), scheduledForUTC, timezone]
+          `INSERT INTO scheduled_tweets (user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
+          [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
         );
         scheduled.push(rows[0]);
       } else if (frequency === 'thrice_weekly' || frequency === 'four_times_weekly') {
@@ -53,10 +74,22 @@ router.post('/bulk', async (req, res) => {
         const next = current.clone().add(week, 'week').day(days[dayIndex]);
         next.set({ hour, minute, second: 0, millisecond: 0 });
         const scheduledForUTC = next.clone().utc().toDate();
+        
+        // Convert to the format expected by the individual scheduling endpoint
+        let mainContent = content;
+        let threadTweets = [];
+        let threadMediaArr = [];
+        
+        if (isThread && threadParts && Array.isArray(threadParts)) {
+          mainContent = threadParts[0] || content;
+          threadTweets = threadParts.length > 1 ? threadParts.slice(1).map(content => ({ content })) : [];
+          threadMediaArr = Array(threadParts.length).fill([]);
+        }
+        
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, content, is_thread, thread_parts, media, scheduled_for, timezone, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
-          [userId, content, !!isThread, isThread ? JSON.stringify(threadParts) : null, JSON.stringify(media), scheduledForUTC, timezone]
+          `INSERT INTO scheduled_tweets (user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
+          [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
         );
         scheduled.push(rows[0]);
       } else if (frequency === 'custom' && Array.isArray(daysOfWeek)) {
@@ -69,10 +102,22 @@ router.post('/bulk', async (req, res) => {
         const next = current.clone().add(week, 'week').day(daysOfWeek[dayIndex]);
         next.set({ hour, minute, second: 0, millisecond: 0 });
         const scheduledForUTC = next.clone().utc().toDate();
+        
+        // Convert to the format expected by the individual scheduling endpoint
+        let mainContent = content;
+        let threadTweets = [];
+        let threadMediaArr = [];
+        
+        if (isThread && threadParts && Array.isArray(threadParts)) {
+          mainContent = threadParts[0] || content;
+          threadTweets = threadParts.length > 1 ? threadParts.slice(1).map(content => ({ content })) : [];
+          threadMediaArr = Array(threadParts.length).fill([]);
+        }
+        
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, content, is_thread, thread_parts, media, scheduled_for, timezone, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
-          [userId, content, !!isThread, isThread ? JSON.stringify(threadParts) : null, JSON.stringify(media), scheduledForUTC, timezone]
+          `INSERT INTO scheduled_tweets (user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
+          [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
         );
         scheduled.push(rows[0]);
       }
