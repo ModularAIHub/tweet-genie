@@ -28,7 +28,7 @@ export const authenticateToken = async (req, res, next) => {
         console.log('❌ No access token but refresh token found - attempting automatic refresh...');
         try {
           const refreshResponse = await axios.post(
-            `${process.env.PLATFORM_URL || 'http://localhost:3000'}/api/auth/refresh`,
+            `${process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api'}/auth/refresh`,
             {},
             {
               headers: {
@@ -112,7 +112,7 @@ export const authenticateToken = async (req, res, next) => {
         console.log('Token expired, attempting refresh...');
         try {
           const refreshResponse = await axios.post(
-            `${process.env.PLATFORM_URL || 'http://localhost:3000'}/api/auth/refresh`,
+            `${process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api'}/auth/refresh`,
             {},
             {
               headers: {
