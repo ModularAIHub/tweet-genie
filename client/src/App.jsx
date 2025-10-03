@@ -1,6 +1,7 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import { AccountProvider } from './contexts/AccountContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import Layout from './components/Layout';
 
@@ -17,17 +18,18 @@ import AuthCallback from './pages/AuthCallback';
 function App() {
   return (
     <AuthProvider>
-      <div className="min-h-screen bg-gray-50">
-        <Routes>
-          {/* Auth callback from platform */}
-          <Route path="/auth/callback" element={<AuthCallback />} />
-          
-          {/* Protected routes */}
-          <Route 
-            path="/*" 
-            element={
-              <ProtectedRoute>
-                <Layout>
+      <AccountProvider>
+        <div className="min-h-screen bg-gray-50">
+          <Routes>
+            {/* Auth callback from platform */}
+            <Route path="/auth/callback" element={<AuthCallback />} />
+            
+            {/* Protected routes */}
+            <Route 
+              path="/*" 
+              element={
+                <ProtectedRoute>
+                  <Layout>
                   <Routes>
                     <Route path="/" element={<Navigate to="/dashboard" replace />} />
                     <Route path="/dashboard" element={<Dashboard />} />
@@ -44,6 +46,7 @@ function App() {
           />
         </Routes>
       </div>
+      </AccountProvider>
     </AuthProvider>
   );
 }
