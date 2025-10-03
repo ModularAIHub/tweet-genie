@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useAccount } from '../contexts/AccountContext';
 import { credits } from '../utils/api';
+import AccountSwitcher from './AccountSwitcher';
 import {
   LayoutDashboard,
   Edit3,
@@ -18,6 +20,7 @@ import {
 
 const Layout = ({ children }) => {
   const { user, logout } = useAuth();
+  const { setSelectedAccount, accounts } = useAccount();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -157,6 +160,15 @@ const Layout = ({ children }) => {
             </button>
 
             <div className="flex items-center space-x-4">
+              {/* Account Switcher - only show if user has Twitter accounts */}
+              {accounts.length > 0 && (
+                <div className="hidden sm:block">
+                  <AccountSwitcher 
+                    onAccountChange={setSelectedAccount}
+                  />
+                </div>
+              )}
+              
               <div className="relative">
                 <button
                   onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}

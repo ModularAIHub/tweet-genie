@@ -227,6 +227,34 @@ export const authenticateToken = async (req, res, next) => {
       };
     }
 
+    // Patch: Query team membership and set teamId/teamMemberships
+    try {
+      // Check for team membership in team_members table
+      const teamMembershipResult = await pool.query(
+        `SELECT team_id, role, status FROM team_members WHERE user_id = $1 AND status = 'active'`,
+        [req.user.id]
+      );
+      if (teamMembershipResult.rows.length > 0) {
+        // User is in one or more teams
+  req.user.teamId = teamMembershipResult.rows[0].team_id;
+  req.user.team_id = teamMembershipResult.rows[0].team_id; // snake_case for frontend compatibility
+        req.user.teamMemberships = teamMembershipResult.rows.map(row => ({
+          teamId: row.team_id,
+          role: row.role,
+          status: row.status
+        }));
+        console.log('[AUTH PATCH] User teamId set:', req.user.teamId);
+        console.log('[AUTH PATCH] User teamMemberships:', req.user.teamMemberships);
+      } else {
+        req.user.teamId = undefined;
+        req.user.teamMemberships = [];
+        console.log('[AUTH PATCH] User has no active team memberships');
+      }
+    } catch (teamErr) {
+      console.error('[AUTH PATCH] Error querying team memberships:', teamErr);
+      req.user.teamId = undefined;
+      req.user.teamMemberships = [];
+    }
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
