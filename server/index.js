@@ -85,7 +85,7 @@ app.use('/api/pro-team', authenticateToken, proTeamRoutes);
       
       if (allowedOrigins.indexOf(origin) !== -1) {
         console.log('✅ Origin allowed:', origin);
-        return callback(null, true);
+        return callback(null, origin);
       } else {
         console.log('❌ CORS blocked origin:', origin);
         return callback(new Error('Not allowed by CORS'));
