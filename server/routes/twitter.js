@@ -822,6 +822,7 @@ router.get('/team-accounts', async (req, res) => {
     // Get Twitter accounts from team_accounts (OAuth2)
     const oauth2AccountsResult = await pool.query(`
       SELECT 
+        id,
         team_id,
         user_id,
         twitter_user_id,
@@ -841,7 +842,7 @@ router.get('/team-accounts', async (req, res) => {
     `, [teamId]);
 
     const oauth2Accounts = oauth2AccountsResult.rows.map(account => ({
-      id: `${account.team_id}_${account.twitter_user_id}`,
+      id: account.id,
       twitter_user_id: account.twitter_user_id,
       username: account.twitter_username,
       display_name: account.twitter_display_name,

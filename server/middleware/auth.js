@@ -291,12 +291,11 @@ export const validateTwitterConnection = async (req, res, next) => {
     const teamId = req.user?.teamId || req.user?.team_id || req.ssoUser?.teamId;
 
     if (selectedAccountId && teamId) {
-      // Try to get team account credentials
+      // Try to get team account credentials (OAuth2)
       const { rows } = await pool.query(
         'SELECT * FROM team_accounts WHERE id = $1 AND team_id = $2 AND active = true',
         [selectedAccountId, teamId]
       );
-      
       if (rows.length > 0) {
         twitterAuthData = rows[0];
         isTeamAccount = true;
