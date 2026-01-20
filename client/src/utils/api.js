@@ -135,6 +135,7 @@ export const auth = {
 // Twitter endpoints
 export const twitter = {
   getStatus: () => api.get('/api/twitter/status'),
+  getTeamAccounts: () => api.get('/api/twitter/team-accounts'),
   connect: () => api.get('/api/twitter/connect'),
   connectOAuth1: () => api.get('/api/twitter/connect-oauth1'),
   disconnect: () => api.post('/api/twitter/disconnect'),

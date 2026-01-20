@@ -118,19 +118,52 @@ export const useTweetComposer = () => {
   const fetchTwitterAccounts = async () => {
     try {
       setIsLoadingTwitterAccounts(true);
-      const response = await twitter.getStatus();
-      console.log('Twitter status response:', response.data);
-      
-      if (response.data.accounts && response.data.accounts.length > 0) {
-        setTwitterAccounts(response.data.accounts);
-        console.log('Twitter accounts loaded:', response.data.accounts);
+
+      const [personalRes, teamRes] = await Promise.all([
+        twitter.getStatus().catch((err) => {
+          console.error('Error fetching personal Twitter accounts:', err);
+          return { data: { accounts: [] } };
+        }),
+        twitter.getTeamAccounts().catch((err) => {
+          // Team endpoint is optional; swallow errors and fall back to personal only
+          console.warn('Team Twitter accounts unavailable:', err?.response?.status || err?.message || err);
+          return { data: { accounts: [] } };
+        })
+      ]);
+
+      const personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
+      const teamAccounts = Array.isArray(teamRes?.data?.accounts) ? teamRes.data.accounts : [];
+      const combinedAccounts = [...personalAccounts, ...teamAccounts];
+
+      setTwitterAccounts(combinedAccounts);
+
+      // Persist selected account so X-Selected-Account-Id header is set even without personal accounts
+      if (combinedAccounts.length > 0) {
+        const saved = localStorage.getItem('selectedTwitterAccount');
+        let toSelect = combinedAccounts[0];
+
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            const match = combinedAccounts.find((acc) => acc.id === parsed.id);
+            if (match) toSelect = match;
+          } catch (err) {
+            console.error('Failed to parse saved Twitter account selection:', err);
+          }
+        }
+
+        localStorage.setItem('selectedTwitterAccount', JSON.stringify({
+          id: toSelect.id,
+          username: toSelect.account_username || toSelect.username,
+          display_name: toSelect.account_display_name || toSelect.display_name,
+        }));
       } else {
-        console.log('No Twitter accounts found');
-        setTwitterAccounts([]);
+        localStorage.removeItem('selectedTwitterAccount');
       }
     } catch (error) {
       console.error('Error fetching Twitter accounts:', error);
       setTwitterAccounts([]);
+      localStorage.removeItem('selectedTwitterAccount');
     } finally {
       setIsLoadingTwitterAccounts(false);
     }
