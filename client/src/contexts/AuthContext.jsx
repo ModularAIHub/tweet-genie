@@ -26,12 +26,11 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    // Check auth status every 12 minutes to ensure tokens are fresh
-    // (tokens expire at 15 minutes, so this gives buffer for refresh)
+    // Check auth status every 14 minutes to ensure tokens are fresh
+    // (tokens expire at 15 minutes, so this gives 1 minute buffer for refresh)
     const interval = setInterval(() => {
-      console.log('Periodic auth check and refresh...');
       refreshTokenIfNeeded();
-    }, 12 * 60 * 1000); // 12 minutes
+    }, 14 * 60 * 1000); // 14 minutes
 
     return () => clearInterval(interval);
   }, [isAuthenticated]);
@@ -39,7 +38,6 @@ export const AuthProvider = ({ children }) => {
   // Proactive token refresh function
   const refreshTokenIfNeeded = async () => {
     try {
-      console.log('Attempting proactive token refresh...');
       // Fetch CSRF token
       let csrfToken = null;
       try {
@@ -56,11 +54,8 @@ export const AuthProvider = ({ children }) => {
       });
 
       if (response.ok) {
-        console.log('Token refreshed proactively');
         // Validate the new token
         await checkAuthStatus();
-      } else {
-        console.log('Proactive refresh failed, will let interceptor handle it');
       }
     } catch (error) {
       console.error('Proactive token refresh error:', error);
@@ -105,7 +100,6 @@ export const AuthProvider = ({ children }) => {
         console.log('Non-401 error during auth check, keeping current state');
       }
     } finally {
-      console.log('Auth check completed');
       setIsLoading(false);
     }
   };

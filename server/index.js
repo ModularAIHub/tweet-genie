@@ -64,36 +64,29 @@ if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
   );
 }
 
-console.log('📍 Allowed CORS origins:', allowedOrigins);
-console.log('🌍 NODE_ENV:', process.env.NODE_ENV);
-
 // Simplified CORS for development
 if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
-  console.log('� Development mode - allowing all localhost origins');
   app.use(cors({
     origin: true, // Allow all origins in development
     credentials: true
   }));
 app.use('/api/pro-team', authenticateToken, proTeamRoutes);
 } else {
+  // Production CORS
   app.use(cors({
     origin: function (origin, callback) {
       // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
       
-      console.log('🔍 Production - checking origin:', origin);
-      
       if (allowedOrigins.indexOf(origin) !== -1) {
-        console.log('✅ Origin allowed:', origin);
         return callback(null, origin);
       } else {
-        console.log('❌ CORS blocked origin:', origin);
         return callback(new Error('Not allowed by CORS'));
       }
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-CSRF-Token', 'X-Selected-Account-Id'],
     exposedHeaders: ['Set-Cookie']
   }));
 }

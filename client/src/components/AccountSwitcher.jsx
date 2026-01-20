@@ -1,65 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { ChevronDown, User, Check, Twitter } from 'lucide-react';
+import { useAccount } from '../contexts/AccountContext';
 
-const AccountSwitcher = ({ onAccountChange, currentAccountId }) => {
-  const [accounts, setAccounts] = useState([]);
-  const [loading, setLoading] = useState(true);
+const AccountSwitcher = () => {
+  const { accounts, selectedAccount, setSelectedAccount: updateSelectedAccount, loading } = useAccount();
   const [isOpen, setIsOpen] = useState(false);
-  const [selectedAccount, setSelectedAccount] = useState(null);
-
-  useEffect(() => {
-    fetchTeamAccounts();
-  }, []);
-
-  useEffect(() => {
-    if (accounts.length > 0 && !selectedAccount) {
-      // Auto-select first account if none selected
-      const firstAccount = accounts[0];
-      setSelectedAccount(firstAccount);
-      onAccountChange?.(firstAccount);
-    }
-  }, [accounts, selectedAccount, onAccountChange]);
-
-  useEffect(() => {
-    if (currentAccountId && accounts.length > 0) {
-      const account = accounts.find(acc => acc.id === currentAccountId);
-      if (account) {
-        setSelectedAccount(account);
-      }
-    }
-  }, [currentAccountId, accounts]);
-
-  const fetchTeamAccounts = async () => {
-    try {
-      const response = await fetch('/api/twitter/team-accounts', {
-        credentials: 'include'
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setAccounts(data.accounts || []);
-      } else {
-        console.error('Failed to fetch team accounts:', response.statusText);
-        setAccounts([]);
-      }
-    } catch (error) {
-      console.error('Error fetching team accounts:', error);
-      setAccounts([]);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleAccountSelect = (account) => {
-    setSelectedAccount(account);
+    updateSelectedAccount(account);
     setIsOpen(false);
-    onAccountChange?.(account);
-    
-    // Store selection in localStorage for persistence
-    localStorage.setItem('selectedTwitterAccount', JSON.stringify({
-      id: account.id,
-      username: account.username
-    }));
   };
 
   if (loading) {
@@ -114,17 +63,17 @@ const AccountSwitcher = ({ onAccountChange, currentAccountId }) => {
         <div className="relative">
           <img 
             src={selectedAccount?.profile_image_url || '/default-avatar.png'} 
-            alt={selectedAccount?.display_name || 'Account'}
+            alt={selectedAccount?.account_display_name || 'Account'}
             className="w-8 h-8 rounded-full"
           />
           <Twitter className="absolute -bottom-1 -right-1 h-4 w-4 text-blue-400 bg-white rounded-full p-0.5" />
         </div>
         <div className="flex-1 min-w-0 text-left">
           <p className="text-sm font-medium text-gray-900 truncate">
-            {selectedAccount?.display_name || 'Select Account'}
+            {selectedAccount?.account_display_name || selectedAccount?.nickname || 'Select Account'}
           </p>
           <p className="text-xs text-gray-500 truncate">
-            @{selectedAccount?.username || 'No account selected'}
+            @{selectedAccount?.account_username || 'No account selected'}
           </p>
         </div>
         <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -142,24 +91,19 @@ const AccountSwitcher = ({ onAccountChange, currentAccountId }) => {
                 <div className="relative">
                   <img 
                     src={account.profile_image_url || '/default-avatar.png'} 
-                    alt={account.display_name}
+                    alt={account.account_display_name}
                     className="w-8 h-8 rounded-full"
                   />
                   <Twitter className="absolute -bottom-1 -right-1 h-4 w-4 text-blue-400 bg-white rounded-full p-0.5" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-900 truncate">
-                    {account.display_name}
+                    {account.account_display_name || account.nickname}
                   </p>
                   <div className="flex items-center space-x-2">
                     <p className="text-xs text-gray-500 truncate">
-                      @{account.username}
+                      @{account.account_username}
                     </p>
-                    {!account.has_oauth1 && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                        Media upload disabled
-                      </span>
-                    )}
                   </div>
                 </div>
                 {selectedAccount?.id === account.id && (

@@ -27,18 +27,17 @@ router.get('/accounts', async (req, res) => {
             const result = await pool.query(`
                 SELECT 
                     id,
-                    platform,
-                    account_username,
-                    account_display_name,
-                    account_id,
-                    profile_image_url,
-                    created_at,
-                    last_used_at
-                FROM user_social_accounts 
+                    'twitter' as platform,
+                    twitter_username as account_username,
+                    twitter_display_name as account_display_name,
+                    twitter_user_id as account_id,
+                    twitter_profile_image_url as profile_image_url,
+                    updated_at as created_at,
+                    updated_at as last_used_at
+                FROM team_accounts 
                 WHERE team_id = $1 
-                AND platform = 'twitter' 
-                AND is_active = true
-                ORDER BY connection_order ASC, created_at ASC
+                AND active = true
+                ORDER BY updated_at DESC
             `, [teamId]);
             accounts = result.rows;
             console.log(`[DEBUG /api/team/accounts] Query result:`, accounts);

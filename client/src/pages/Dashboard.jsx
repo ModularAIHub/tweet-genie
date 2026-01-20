@@ -25,42 +25,13 @@ const Dashboard = () => {
   const { selectedAccount, accounts, loading: accountsLoading } = useAccount();
   const totalConnectedAccounts = accounts.length;
   const maxAccounts = 8;
-  // Debug logging for accounts
-  useEffect(() => {
-    console.log('[Dashboard] Accounts:', accounts);
-    console.log('[Dashboard] Selected Account:', selectedAccount);
-    console.log('[Dashboard] Accounts Loading:', accountsLoading);
-  }, [accounts, selectedAccount, accountsLoading]);
+
   const accountAPI = useAccountAwareAPI();
   
   const [loading, setLoading] = useState(true);
   const [analyticsData, setAnalyticsData] = useState(null);
   const [recentTweets, setRecentTweets] = useState([]);
   const [creditBalance, setCreditBalance] = useState(null);
-  const [userTeamStatus, setUserTeamStatus] = useState(null); // null = loading, true = in team, false = individual
-
-  // Check user's team status on component mount
-  useEffect(() => {
-    const checkUserTeamStatus = async () => {
-      try {
-        const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3002';
-        const response = await fetch(`${apiBaseUrl}/api/twitter/user/profile`, {
-          credentials: 'include'
-        });
-        if (response.ok) {
-          const userProfile = await response.json();
-          const isInTeam = userProfile.team_id || (userProfile.teamMemberships && userProfile.teamMemberships.length > 0);
-          setUserTeamStatus(isInTeam);
-        } else {
-          setUserTeamStatus(false); // Default to individual user
-        }
-      } catch (error) {
-        console.error('Error checking user team status:', error);
-        setUserTeamStatus(false); // Default to individual user
-      }
-    };
-    checkUserTeamStatus();
-  }, []);
 
   useEffect(() => {
     // For team users: wait for account selection
@@ -85,27 +56,40 @@ const Dashboard = () => {
       const isTeamUser = accounts.length > 0;
       
       const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
-        isTeamUser ? accountAPI.getAnalytics('30d') : analyticsAPI.getOverview({ days: 30 }),
-        isTeamUser ? accountAPI.getTweetHistory(1, 5) : tweets.list({ limit: 5 }),
+        isTeamUser ? accountAPI.getAnalytics('30d').catch(e => ({ error: true })) : analyticsAPI.getOverview({ days: 30 }),
+        isTeamUser ? accountAPI.getTweetHistory(1, 5).catch(e => ({ error: true })) : tweets.list({ limit: 5 }),
         credits.getBalance(), // Credits are user-level, not account-specific
       ]);
 
-      if (analyticsRes.status === 'fulfilled') {
+      if (analyticsRes.status === 'fulfilled' && analyticsRes.value && !analyticsRes.value.error) {
         if (isTeamUser) {
-          const analyticsResponse = await analyticsRes.value.json();
-          setAnalyticsData(analyticsResponse.data || analyticsResponse);
+          try {
+            const analyticsResponse = await analyticsRes.value.json();
+            setAnalyticsData(analyticsResponse.data || analyticsResponse);
+          } catch (e) {
+            setAnalyticsData(null);
+          }
         } else {
           setAnalyticsData(analyticsRes.value.data);
         }
+      } else {
+        setAnalyticsData(null);
       }
 
-      if (tweetsRes.status === 'fulfilled') {
+      if (tweetsRes.status === 'fulfilled' && tweetsRes.value && !tweetsRes.value.error) {
         if (isTeamUser) {
-          const tweetsResponse = await tweetsRes.value.json();
-          setRecentTweets(tweetsResponse.data?.tweets || tweetsResponse.tweets || []);
+          try {
+            const tweetsResponse = await tweetsRes.value.json();
+            setRecentTweets(tweetsResponse.data?.tweets || tweetsResponse.tweets || []);
+          } catch (e) {
+            console.log('Tweet history not available yet');
+            setRecentTweets([]);
+          }
         } else {
           setRecentTweets(tweetsRes.value.data.tweets || []);
         }
+      } else {
+        setRecentTweets([]);
       }
 
       if (creditsRes.status === 'fulfilled') {
