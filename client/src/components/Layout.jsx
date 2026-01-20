@@ -59,7 +59,7 @@ const Layout = ({ children }) => {
     }
   }, [user]);
 
-  // Refresh credits periodically (every 30 seconds)
+  // Refresh credits periodically (every 5 minutes)
   useEffect(() => {
     const interval = setInterval(async () => {
       if (user) {
@@ -70,7 +70,7 @@ const Layout = ({ children }) => {
           console.error('Failed to refresh credit balance:', error);
         }
       }
-    }, 30000); // 30 seconds
+    }, 5 * 60 * 1000); // 5 minutes
 
     return () => clearInterval(interval);
   }, [user]);
@@ -162,10 +162,8 @@ const Layout = ({ children }) => {
             <div className="flex items-center space-x-4">
               {/* Account Switcher - only show if user has Twitter accounts */}
               {accounts.length > 0 && (
-                <div className="hidden sm:block">
-                  <AccountSwitcher 
-                    onAccountChange={setSelectedAccount}
-                  />
+                <div>
+                  <AccountSwitcher />
                 </div>
               )}
               

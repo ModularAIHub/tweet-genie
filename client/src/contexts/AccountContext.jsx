@@ -1,10 +1,13 @@
+import React, { createContext, useContext, useState, useEffect } from 'react';
+
+// AccountContext.jsx
+
 // Helper to get current account ID
 export const getCurrentAccountId = (selectedAccount) => {
   if (!selectedAccount) return null;
   // For team accounts, id is always present
   return selectedAccount.id || selectedAccount.account_id || null;
 }
-import React, { createContext, useContext, useState, useEffect } from 'react';
 
 const AccountContext = createContext();
 
@@ -24,6 +27,7 @@ export const AccountProvider = ({ children }) => {
   const [csrfToken, setCsrfToken] = useState(null);
 
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+  console.log('[AccountContext] API Base URL:', apiBaseUrl);
 
   // Load persisted account selection on app start
   useEffect(() => {
@@ -39,20 +43,23 @@ export const AccountProvider = ({ children }) => {
     }
   }, []);
 
-  const updateSelectedAccount = (account) => {
+  const updateSelectedAccount = async (account) => {
     setSelectedAccount(account);
     if (account) {
       localStorage.setItem(
         'selectedTwitterAccount',
         JSON.stringify({
           id: account.id,
-          username: account.username,
-          display_name: account.display_name,
+          username: account.account_username || account.username,
+          display_name: account.account_display_name || account.display_name,
         }),
       );
+
     } else {
       localStorage.removeItem('selectedTwitterAccount');
     }
+  };
+
   // Step 0: Fetch CSRF token on mount
   useEffect(() => {
     const fetchCsrfToken = async () => {
@@ -78,13 +85,13 @@ export const AccountProvider = ({ children }) => {
         });
         if (userResponse.ok) {
           const userProfile = await userResponse.json();
-          const isInTeam = userProfile.team_id || (userProfile.teamMemberships && userProfile.teamMemberships.length > 0);
-          console.log('[AccountContext] setUserTeamStatus called with:', isInTeam ? true : false);
+          const isInTeam = userProfile.user?.team_id || (userProfile.user?.teamMemberships && userProfile.user.teamMemberships.length > 0);
           setUserTeamStatus(isInTeam ? true : false);
         } else {
           setUserTeamStatus(false);
         }
       } catch (error) {
+        console.error('[AccountContext] Error checking team status:', error);
         setUserTeamStatus(false);
       }
     };
@@ -93,8 +100,9 @@ export const AccountProvider = ({ children }) => {
 
   // Step 2: Only fetch accounts after team status is known
   useEffect(() => {
-    console.log('[AccountContext] accounts fetch effect running. userTeamStatus:', userTeamStatus);
-    if (userTeamStatus === null) return; // Wait for team status
+    if (userTeamStatus === null) {
+      return; // Wait for team status
+    }
     const fetchAccounts = async () => {
       setLoading(true);
       try {
@@ -105,16 +113,11 @@ export const AccountProvider = ({ children }) => {
         };
         if (userTeamStatus) {
           // Team mode: fetch team accounts
-          console.log('[AccountContext] Fetching team accounts from:', `${apiBaseUrl}/api/pro-team/social-accounts`);
           try {
-            const teamResponse = await fetch(`${apiBaseUrl}/api/pro-team/social-accounts`, fetchOptions);
-            console.log('[AccountContext] Team accounts fetch response:', teamResponse);
+            const teamResponse = await fetch(`${apiBaseUrl}/api/team/accounts`, fetchOptions);
             if (teamResponse.ok) {
               const teamData = await teamResponse.json();
-              console.log('[AccountContext] Team accounts fetch JSON:', teamData);
               accountsData = teamData.accounts || teamData.data || [];
-            } else {
-              console.warn('[AccountContext] Team accounts fetch failed with status:', teamResponse.status);
             }
           } catch (err) {
             console.error('[AccountContext] Error fetching team accounts:', err);
@@ -148,6 +151,12 @@ export const AccountProvider = ({ children }) => {
             }
           }
           setSelectedAccount(accountToSelect);
+          // Also save to localStorage
+          localStorage.setItem('selectedTwitterAccount', JSON.stringify({
+            id: accountToSelect.id,
+            username: accountToSelect.account_username,
+            display_name: accountToSelect.account_display_name,
+          }));
         } else {
           setSelectedAccount(null);
           localStorage.removeItem('selectedTwitterAccount');
@@ -160,9 +169,7 @@ export const AccountProvider = ({ children }) => {
       }
     };
     fetchAccounts();
-  }, [userTeamStatus, apiBaseUrl]);
-  };
-
+  }, [userTeamStatus, apiBaseUrl, csrfToken]);
 
   return (
     <AccountContext.Provider

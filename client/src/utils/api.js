@@ -16,7 +16,7 @@ const api = axios.create({
   withCredentials: true, // Important for cookies
 });
 
-// Request interceptor to attach JWT token
+// Request interceptor to attach JWT token and selected account ID
 api.interceptors.request.use(
   (config) => {
     // Get token from localStorage (or cookies if you prefer)
@@ -24,6 +24,20 @@ api.interceptors.request.use(
     if (token) {
       config.headers['Authorization'] = `Bearer ${token}`;
     }
+    
+    // Add selected account ID header for team account switching
+    const selectedAccount = localStorage.getItem('selectedTwitterAccount');
+    if (selectedAccount) {
+      try {
+        const account = JSON.parse(selectedAccount);
+        if (account.id) {
+          config.headers['X-Selected-Account-Id'] = account.id;
+        }
+      } catch (error) {
+        console.error('Failed to parse selected account:', error);
+      }
+    }
+    
     return config;
   },
   (error) => Promise.reject(error)
@@ -67,7 +81,6 @@ api.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        console.log('Token expired, attempting automatic refresh...');
         
         // Fetch CSRF token and send in header for refresh
         let csrfToken = null;
@@ -90,7 +103,6 @@ api.interceptors.response.use(
         // Retry the original request
         return api(originalRequest);
       } catch (refreshError) {
-        console.log('Token refresh failed:', refreshError.message);
         isRefreshing = false;
         processQueue(refreshError, null);
 
