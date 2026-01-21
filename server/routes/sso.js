@@ -25,7 +25,7 @@ router.get('/sso', validateSSOToken, (req, res) => {
                 teamName
             },
             process.env.JWT_SECRET,
-            { expiresIn: '1h' }
+            { expiresIn: '7d' }
         );
         
         // Set access token cookie for API authentication
@@ -33,7 +33,7 @@ router.get('/sso', validateSSOToken, (req, res) => {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             sameSite: 'lax',
-            maxAge: 60 * 60 * 1000 // 1 hour
+            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
         });
         
         // Log the successful SSO authentication

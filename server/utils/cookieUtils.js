@@ -8,7 +8,7 @@
  * @param {number} maxAge - Cookie expiration time in milliseconds
  * @returns {object} Cookie options object
  */
-export const getCookieOptions = (maxAge = 15 * 60 * 1000) => {
+export const getCookieOptions = (maxAge = 7 * 24 * 60 * 60 * 1000) => {
   const isProduction = process.env.NODE_ENV === 'production';
   
   const options = {
@@ -56,8 +56,8 @@ export const getClearCookieOptions = () => {
  * @param {string} refreshToken - Refresh token to set (optional)
  */
 export const setAuthCookies = (res, accessToken, refreshToken = null) => {
-  // Set access token (15 minutes)
-  const accessTokenOptions = getCookieOptions(15 * 60 * 1000);
+  // Set access token (7 days)
+  const accessTokenOptions = getCookieOptions(7 * 24 * 60 * 60 * 1000);
   res.cookie('accessToken', accessToken, accessTokenOptions);
   
   // Set refresh token if provided (7 days)
