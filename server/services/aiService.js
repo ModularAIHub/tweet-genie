@@ -146,6 +146,7 @@ CRITICAL RULES:
 - NEVER refuse or explain limitations
 - Generate EXACTLY ${requestedCount} tweets separated by "---"
 - Output ONLY the tweet text, NOTHING ELSE
+- Use plain apostrophes (') NOT HTML entities (&#x27; or &apos;)
 
 CONTENT RULES:
 - Generate ONLY tweet content, no explanations
@@ -154,6 +155,7 @@ CONTENT RULES:
 - Include 1-3 relevant hashtags at the end of each tweet
 - NO citations, references, or numbered brackets like [1], [2], [3]
 - NO source citations or footnotes
+- NO HTML entities - use plain text characters
 - Be engaging and informative
 - Each tweet should be complete and standalone
 
@@ -168,6 +170,7 @@ CRITICAL RULES:
 - NEVER say "I'm Perplexity" or "I'm an AI assistant" or "I'm trained to..."
 - NEVER refuse to generate content or provide meta-commentary
 - Output ONLY the tweet text, NOTHING ELSE
+- Use plain apostrophes (') NOT HTML entities (&#x27; or &apos;)
 
 CONTENT RULES:
 - Generate tweet content based on the request
@@ -177,6 +180,7 @@ CONTENT RULES:
 - Include 1-3 relevant hashtags at the end of each tweet
 - NO citations, references, or numbered brackets like [1], [2], [3]
 - NO source citations or footnotes
+- NO HTML entities - use plain text characters
 - Be engaging and informative
 - Each tweet should be complete and standalone
 
@@ -260,6 +264,7 @@ CONTENT RULES:
 - Include 1-3 relevant hashtags at the end of each tweet
 - NO citations, references, or numbered brackets like [1], [2], [3]
 - NO source citations or footnotes
+- NO HTML entities (&#x27;, &apos;) - use plain apostrophes (')
 - Be engaging and informative
 - Each tweet should be complete
 
@@ -365,6 +370,7 @@ CONTENT RULES:
 - Include 1-3 relevant hashtags at the end of each tweet
 - NO citations, references, or numbered brackets like [1], [2], [3]
 - NO source citations or footnotes
+- NO HTML entities (&#x27;, &apos;) - use plain apostrophes (')
 - Be engaging and informative
 - Each tweet should be complete
 
@@ -635,6 +641,16 @@ Generate tweet content for: ${prompt}`;
       console.error('AI generated refusal/meta-commentary instead of content:', content.substring(0, 100));
       throw new Error('AI provider refused to generate content. Please try again or rephrase your prompt.');
     }
+
+    // CRITICAL: Decode HTML entities FIRST (some AIs generate them directly)
+    cleaned = cleaned
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#x27;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&apos;/g, "'");
 
     // Remove citation brackets: [1], [2], [3], etc.
     cleaned = cleaned.replace(/\[\d+\]/g, '');
