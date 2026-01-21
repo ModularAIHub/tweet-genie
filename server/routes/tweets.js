@@ -491,19 +491,22 @@ router.get(['/history', '/'], async (req, res) => {
     const { page = 1, limit = 20, status } = req.query;
     const selectedAccountId = req.headers['x-selected-account-id'];
     const offset = (page - 1) * limit;
-    const params = [req.user.id];
     
     let query;
     let countQuery;
+    let queryParams = [req.user.id];
+    let countParams = [req.user.id];
 
     if (selectedAccountId) {
       // Team mode: join with team_accounts and filter by account_id
-      params.push(parseInt(selectedAccountId));
+      queryParams.push(parseInt(selectedAccountId));
+      countParams.push(parseInt(selectedAccountId));
       
       let whereClause = 'WHERE t.user_id = $1 AND t.account_id = $2';
       if (status) {
-        whereClause += ` AND t.status = $${params.length + 1}`;
-        params.push(status);
+        whereClause += ` AND t.status = $3`;
+        queryParams.push(status);
+        countParams.push(status);
       }
 
       query = `
@@ -522,19 +525,22 @@ router.get(['/history', '/'], async (req, res) => {
             WHEN t.source = 'external' THEN t.external_created_at
             ELSE t.created_at
           END DESC
-        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+        LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
       `;
 
       countQuery = `
         SELECT COUNT(*) FROM tweets t
         ${whereClause}
       `;
+
+      queryParams.push(limit, offset);
     } else {
       // Personal mode: join with twitter_auth, filter out team tweets
       let whereClause = 'WHERE t.user_id = $1 AND (t.account_id IS NULL OR t.account_id = 0)';
       if (status) {
-        whereClause += ` AND t.status = $${params.length + 1}`;
-        params.push(status);
+        whereClause += ` AND t.status = $2`;
+        queryParams.push(status);
+        countParams.push(status);
       }
 
       query = `
@@ -553,23 +559,19 @@ router.get(['/history', '/'], async (req, res) => {
             WHEN t.source = 'external' THEN t.external_created_at
             ELSE t.created_at
           END DESC
-        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+        LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
       `;
 
       countQuery = `
         SELECT COUNT(*) FROM tweets t
         ${whereClause}
       `;
+
+      queryParams.push(limit, offset);
     }
 
-    const { rows } = await pool.query(query, [...params, limit, offset]);
-
-    // Get total count (reuse params but remove limit/offset)
-    const countParams = params.slice(0, -2 * (params.length > 1 ? 0 : 1));
-    if (status) {
-      countParams.pop(); // Remove status param for proper count
-    }
-    const countResult = await pool.query(countQuery, params.slice(0, status ? -1 : undefined));
+    const { rows } = await pool.query(query, queryParams);
+    const countResult = await pool.query(countQuery, countParams);
 
     res.json({
       tweets: rows,
