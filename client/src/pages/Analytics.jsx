@@ -60,10 +60,16 @@ import {
   Pie,
   Cell
 } from 'recharts';
-import api from '../utils/api';
+import { useAccount } from '../contexts/AccountContext';
+import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
+import api, { analytics as analyticsAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 const Analytics = () => {
+    const { selectedAccount, accounts } = useAccount();
+    const accountAPI = useAccountAwareAPI();
+    const isTeamUser = accounts.length > 0;
+  
   const [analyticsData, setAnalyticsData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -77,8 +83,16 @@ const Analytics = () => {
   const fetchAnalytics = async () => {
     try {
       setError(null);
-      const response = await api.get(`/api/analytics/overview?days=${timeframe}`);
-      setAnalyticsData(response.data);
+      
+      // Use account-aware API for team users
+      if (isTeamUser && selectedAccount) {
+        const apiResponse = await accountAPI.getAnalytics(`${timeframe}d`);
+        const data = await apiResponse.json();
+        setAnalyticsData(data.data || data);
+      } else {
+        const response = await api.get(`/api/analytics/overview?days=${timeframe}`);
+        setAnalyticsData(response.data);
+      }
     } catch (error) {
       console.error('Failed to fetch analytics:', error);
       setError('Failed to load analytics data');
@@ -129,7 +143,7 @@ const Analytics = () => {
 
   useEffect(() => {
     fetchAnalytics();
-  }, [timeframe]);
+  }, [timeframe, selectedAccount]);
 
   if (loading) {
     return (

@@ -1,23 +1,42 @@
 import React, { useState, useEffect } from 'react';
 import { Calendar, Clock, Edit3, Trash2, Play, Pause } from 'lucide-react';
-import { scheduling } from '../utils/api';
+import { useAccount } from '../contexts/AccountContext';
+import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
+import { scheduling as schedulingAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
 
 const Scheduling = () => {
+    const { selectedAccount, accounts } = useAccount();
+    const accountAPI = useAccountAwareAPI();
+    const isTeamUser = accounts.length > 0;
+  
   const [scheduledTweets, setScheduledTweets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('pending');
 
   useEffect(() => {
     fetchScheduledTweets();
-  }, [filter]);
+  }, [filter, selectedAccount]);
 
   const fetchScheduledTweets = async () => {
     try {
       setLoading(true);
-      const response = await scheduling.list({ status: filter });
-      setScheduledTweets(response.data.scheduled_tweets || []);
+      
+      // Use account-aware API for team users
+      if (isTeamUser && selectedAccount) {
+        const apiResponse = await accountAPI.getScheduledTweets();
+        const data = await apiResponse.json();
+        let tweets = data.data?.scheduled_tweets || data.scheduled_tweets || [];
+        // Apply filter
+        if (filter !== 'all') {
+          tweets = tweets.filter(tweet => tweet.status === filter);
+        }
+        setScheduledTweets(tweets);
+      } else {
+        const response = await schedulingAPI.list({ status: filter });
+        setScheduledTweets(response.data.scheduled_tweets || []);
+      }
     } catch (error) {
       console.error('Failed to fetch scheduled tweets:', error);
       toast.error('Failed to load scheduled tweets');

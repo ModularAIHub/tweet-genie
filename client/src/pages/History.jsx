@@ -1,10 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { History as HistoryIcon, MessageCircle, Heart, Repeat2, ExternalLink, Calendar, Filter, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
-import { tweets } from '../utils/api';
+import { useAccount } from '../contexts/AccountContext';
+import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
+import { tweets as tweetsAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
 
 const History = () => {
+    const { selectedAccount, accounts } = useAccount();
+    const accountAPI = useAccountAwareAPI();
+    const isTeamUser = accounts.length > 0;
+  
   const [postedTweets, setPostedTweets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all'); // all, today, week, month
@@ -16,7 +22,7 @@ const History = () => {
 
   useEffect(() => {
     fetchPostedTweets();
-  }, [filter, sortBy, sourceFilter, statusFilter]);
+  }, [filter, sortBy, sourceFilter, statusFilter, selectedAccount]);
 
   const fetchPostedTweets = async () => {
     try {
@@ -55,7 +61,18 @@ const History = () => {
         }
       }
 
-      const response = await tweets.list(params);
+      // Use account-aware API for team users
+      let response;
+      if (isTeamUser && selectedAccount) {
+        const page = 1;
+        const limit = params.limit || 50;
+        const apiResponse = await accountAPI.getTweetHistory(page, limit);
+        const data = await apiResponse.json();
+        response = { data: { tweets: data.data?.tweets || data.tweets || [] } };
+      } else {
+        response = await tweetsAPI.list(params);
+      }
+      
       let fetchedTweets = response.data.tweets || [];
       
       // Apply source filter

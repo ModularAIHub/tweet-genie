@@ -26,12 +26,13 @@ const Dashboard = () => {
   const totalConnectedAccounts = accounts.length;
   const maxAccounts = 8;
 
-  const accountAPI = useAccountAwareAPI();
-  
   const [loading, setLoading] = useState(true);
   const [analyticsData, setAnalyticsData] = useState(null);
   const [recentTweets, setRecentTweets] = useState([]);
   const [creditBalance, setCreditBalance] = useState(null);
+  
+  // Get fresh accountAPI on every render to capture current selectedAccount
+  const accountAPI = useAccountAwareAPI();
 
   useEffect(() => {
     // For team users: wait for account selection
@@ -45,7 +46,7 @@ const Dashboard = () => {
         fetchDashboardData();
       }
     }
-  }, [selectedAccount, accountsLoading, accounts]);
+  }, [selectedAccount, accountsLoading, accounts.length]);
 
   const fetchDashboardData = async () => {
     try {
@@ -307,11 +308,6 @@ const Dashboard = () => {
     <>
       <TeamRedirectHandler />
       <div className="space-y-8">
-        {/* Debug: Show raw accounts array */}
-        <div className="card p-4 mb-4 bg-yellow-50 text-xs text-gray-800">
-          <strong>Debug: Raw Accounts Array</strong>
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(accounts, null, 2)}</pre>
-        </div>
         {/* Social Accounts Section */}
         {socialAccountsSection}
 
