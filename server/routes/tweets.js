@@ -490,7 +490,9 @@ router.get(['/history', '/'], async (req, res) => {
 
     const { page = 1, limit = 20, status } = req.query;
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const offset = (page - 1) * limit;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const parsedLimit = parseInt(limit);
+    const parsedOffset = parseInt(offset);
     
     let query;
     let countQuery;
@@ -533,7 +535,7 @@ router.get(['/history', '/'], async (req, res) => {
         ${whereClause}
       `;
 
-      queryParams.push(limit, offset);
+      queryParams.push(parsedLimit, parsedOffset);
     } else {
       // Personal mode: join with twitter_auth, filter out team tweets
       let whereClause = 'WHERE t.user_id = $1 AND (t.account_id IS NULL OR t.account_id = 0)';
@@ -567,7 +569,7 @@ router.get(['/history', '/'], async (req, res) => {
         ${whereClause}
       `;
 
-      queryParams.push(limit, offset);
+      queryParams.push(parsedLimit, parsedOffset);
     }
 
     const { rows } = await pool.query(query, queryParams);
