@@ -55,50 +55,63 @@ const Dashboard = () => {
       // For individual users, use original API calls
       const isTeamUser = accounts.length > 0;
       
-      const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
-        isTeamUser ? accountAPI.getAnalytics('30d').catch(e => ({ error: true })) : analyticsAPI.getOverview({ days: 30 }),
-        isTeamUser ? accountAPI.getTweetHistory(1, 5).catch(e => ({ error: true })) : tweets.list({ limit: 5 }),
-        credits.getBalance(), // Credits are user-level, not account-specific
-      ]);
+      try {
+        const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
+          isTeamUser ? accountAPI.getAnalytics('30d').catch(e => ({ error: true })) : analyticsAPI.getOverview({ days: 30 }),
+          isTeamUser ? accountAPI.getTweetHistory(1, 5).catch(e => ({ error: true })) : tweets.list({ limit: 5 }).catch(e => ({ error: true })),
+          credits.getBalance().catch(e => ({ error: true })), // Credits are user-level, not account-specific
+        ]);
 
-      if (analyticsRes.status === 'fulfilled' && analyticsRes.value && !analyticsRes.value.error) {
-        if (isTeamUser) {
-          try {
-            const analyticsResponse = await analyticsRes.value.json();
-            setAnalyticsData(analyticsResponse.data || analyticsResponse);
-          } catch (e) {
-            setAnalyticsData(null);
+        if (analyticsRes.status === 'fulfilled' && analyticsRes.value && !analyticsRes.value.error) {
+          if (isTeamUser) {
+            try {
+              const analyticsResponse = await analyticsRes.value.json();
+              setAnalyticsData(analyticsResponse.data || analyticsResponse);
+            } catch (e) {
+              setAnalyticsData(null);
+            }
+          } else {
+            setAnalyticsData(analyticsRes.value.data);
           }
         } else {
-          setAnalyticsData(analyticsRes.value.data);
+          setAnalyticsData(null);
         }
-      } else {
+
+        if (tweetsRes.status === 'fulfilled' && tweetsRes.value && !tweetsRes.value.error) {
+          if (isTeamUser) {
+            try {
+              const tweetsResponse = await tweetsRes.value.json();
+              setRecentTweets(tweetsResponse.data?.tweets || tweetsResponse.tweets || []);
+            } catch (e) {
+              console.log('Tweet history not available yet');
+              setRecentTweets([]);
+            }
+          } else {
+            try {
+              setRecentTweets(tweetsRes.value.data.tweets || []);
+            } catch (e) {
+              console.log('Tweet history parsing failed');
+              setRecentTweets([]);
+            }
+          }
+        } else {
+          console.log('Tweet history fetch failed');
+          setRecentTweets([]);
+        }
+
+        if (creditsRes.status === 'fulfilled' && creditsRes.value && !creditsRes.value.error) {
+          setCreditBalance(creditsRes.value.data);
+        } else {
+          setCreditBalance(null);
+        }
+      } catch (error) {
+        console.error('Dashboard data fetch error:', error);
+        // Don't throw - allow dashboard to display even if fetches fail
         setAnalyticsData(null);
-      }
-
-      if (tweetsRes.status === 'fulfilled' && tweetsRes.value && !tweetsRes.value.error) {
-        if (isTeamUser) {
-          try {
-            const tweetsResponse = await tweetsRes.value.json();
-            setRecentTweets(tweetsResponse.data?.tweets || tweetsResponse.tweets || []);
-          } catch (e) {
-            console.log('Tweet history not available yet');
-            setRecentTweets([]);
-          }
-        } else {
-          setRecentTweets(tweetsRes.value.data.tweets || []);
-        }
-      } else {
         setRecentTweets([]);
+        setCreditBalance(null);
       }
 
-      if (creditsRes.status === 'fulfilled') {
-        setCreditBalance(creditsRes.value.data);
-      }
-
-    } catch (error) {
-      console.error('Dashboard data fetch error:', error);
-      toast.error('Failed to load dashboard data');
     } finally {
       setLoading(false);
     }
