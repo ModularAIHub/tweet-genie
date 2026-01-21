@@ -6,18 +6,24 @@ router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
   try {
     const { items } = req.body; // [{ text, isThread, threadParts, images }]
     const userId = req.user.id;
+    const twitterAccount = req.twitterAccount;
+    
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'No items to save' });
     }
+    
+    // Only set account_id for team accounts
+    const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
+    
     const saved = [];
     for (const item of items) {
       // Save as draft (status = 'draft')
       const { text, isThread, threadParts } = item;
       const { rows } = await pool.query(
-        `INSERT INTO tweets (user_id, content, is_thread, thread_parts, status, created_at)
-         VALUES ($1, $2, $3, $4, 'draft', NOW())
+        `INSERT INTO tweets (user_id, account_id, content, is_thread, thread_parts, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, 'draft', NOW())
          RETURNING *`,
-        [userId, text, !!isThread, isThread ? JSON.stringify(threadParts) : null]
+        [userId, accountId, text, !!isThread, isThread ? JSON.stringify(threadParts) : null]
       );
       saved.push(rows[0]);
     }
@@ -45,6 +51,15 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
     const { content, media, thread, threadMedia } = req.body;
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
+
+    console.log('[POST /tweets] Tweet request:', { 
+      userId, 
+      accountId: twitterAccount?.id,
+      hasContent: !!content,
+      hasThread: !!thread,
+      hasMedia: !!media,
+      threadLength: thread?.length
+    });
 
     // Tweet posting is FREE - no credit calculation needed
 
@@ -252,15 +267,21 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
       // Store tweet in database
       const mainContent = thread && thread.length > 0 ? thread[0] : content;
+      
+      // Only set account_id for team accounts (isTeamAccount = true)
+      // Personal accounts (isTeamAccount = false or undefined) will have NULL account_id
+      const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
+      
       const { rows } = await pool.query(
         `INSERT INTO tweets (
-          user_id, tweet_id, content, 
+          user_id, account_id, tweet_id, content, 
           media_urls, thread_tweets, credits_used, 
           impressions, likes, retweets, replies, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, 'posted')
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0, 'posted')
         RETURNING *`,
         [
           userId,
+          accountId,  // NULL for personal accounts, integer ID for team accounts
           tweetResponse.data.id,
           mainContent,
           JSON.stringify(media || []),
@@ -450,45 +471,105 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
   }
 });
 
-// Get user's tweets
-router.get('/', async (req, res) => {
+// Get user's tweets - alias as /history for backwards compatibility
+router.get(['/history', '/'], async (req, res) => {
   try {
-    const { page = 1, limit = 20, status } = req.query;
-    const offset = (page - 1) * limit;
+    console.log('[GET /tweets/history] Request received', {
+      user: req.user,
+      query: req.query,
+      headers: {
+        'x-selected-account-id': req.headers['x-selected-account-id'],
+        authorization: req.headers.authorization ? 'present' : 'missing'
+      }
+    });
 
-    let whereClause = 'WHERE t.user_id = $1';
-    const params = [req.user.id];
-
-    if (status) {
-      whereClause += ' AND t.status = $2';
-      params.push(status);
+    if (!req.user || !req.user.id) {
+      console.error('[GET /tweets/history] No user ID found in request');
+      return res.status(401).json({ error: 'Authentication required' });
     }
 
-    const { rows } = await pool.query(
-      `SELECT t.*, 
-              ta.twitter_username as username, 
-              ta.twitter_display_name as display_name,
-              CASE 
-                WHEN t.source = 'external' THEN t.external_created_at
-                ELSE t.created_at
-              END as display_created_at
-       FROM tweets t
-       JOIN twitter_auth ta ON t.user_id = ta.user_id
-       ${whereClause}
-       ORDER BY 
-         CASE 
-           WHEN t.source = 'external' THEN t.external_created_at
-           ELSE t.created_at
-         END DESC
-       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, limit, offset]
-    );
+    const { page = 1, limit = 20, status } = req.query;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const offset = (page - 1) * limit;
+    const params = [req.user.id];
+    
+    let query;
+    let countQuery;
 
-    // Get total count
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM tweets t ${whereClause}`,
-      params
-    );
+    if (selectedAccountId) {
+      // Team mode: join with team_accounts and filter by account_id
+      params.push(parseInt(selectedAccountId));
+      
+      let whereClause = 'WHERE t.user_id = $1 AND t.account_id = $2';
+      if (status) {
+        whereClause += ` AND t.status = $${params.length + 1}`;
+        params.push(status);
+      }
+
+      query = `
+        SELECT t.*, 
+                ta.twitter_username as username, 
+                ta.twitter_display_name as display_name,
+                CASE 
+                  WHEN t.source = 'external' THEN t.external_created_at
+                  ELSE t.created_at
+                END as display_created_at
+        FROM tweets t
+        LEFT JOIN team_accounts ta ON t.account_id = ta.id
+        ${whereClause}
+        ORDER BY 
+          CASE 
+            WHEN t.source = 'external' THEN t.external_created_at
+            ELSE t.created_at
+          END DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `;
+
+      countQuery = `
+        SELECT COUNT(*) FROM tweets t
+        ${whereClause}
+      `;
+    } else {
+      // Personal mode: join with twitter_auth, filter out team tweets
+      let whereClause = 'WHERE t.user_id = $1 AND (t.account_id IS NULL OR t.account_id = 0)';
+      if (status) {
+        whereClause += ` AND t.status = $${params.length + 1}`;
+        params.push(status);
+      }
+
+      query = `
+        SELECT t.*, 
+                ta.username, 
+                ta.display_name,
+                CASE 
+                  WHEN t.source = 'external' THEN t.external_created_at
+                  ELSE t.created_at
+                END as display_created_at
+        FROM tweets t
+        LEFT JOIN twitter_auth ta ON t.user_id = ta.user_id
+        ${whereClause}
+        ORDER BY 
+          CASE 
+            WHEN t.source = 'external' THEN t.external_created_at
+            ELSE t.created_at
+          END DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `;
+
+      countQuery = `
+        SELECT COUNT(*) FROM tweets t
+        ${whereClause}
+      `;
+    }
+
+    const { rows } = await pool.query(query, [...params, limit, offset]);
+
+    // Get total count (reuse params but remove limit/offset)
+    const countParams = params.slice(0, -2 * (params.length > 1 ? 0 : 1));
+    if (status) {
+      countParams.pop(); // Remove status param for proper count
+    }
+    const countResult = await pool.query(countQuery, params.slice(0, status ? -1 : undefined));
 
     res.json({
       tweets: rows,
@@ -500,9 +581,11 @@ router.get('/', async (req, res) => {
       }
     });
 
+    console.log(`[GET /tweets/history] Successfully returned ${rows.length} tweets`);
+
   } catch (error) {
-    console.error('Get tweets error:', error);
-    res.status(500).json({ error: 'Failed to fetch tweets' });
+    console.error('[GET /tweets/history] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch tweets', details: error.message });
   }
 });
 

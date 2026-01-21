@@ -1,5 +1,8 @@
 import { useAccount } from '../contexts/AccountContext';
 
+// Use the same API base URL as the rest of the app
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+
 /**
  * Hook to make API calls account-aware
  * This ensures all data fetching uses the currently selected Twitter account
@@ -16,21 +19,23 @@ export const useAccountAwareAPI = () => {
   const fetchForCurrentAccount = async (endpoint, options = {}) => {
     const accountId = getCurrentAccountId();
     
-    if (!accountId) {
-      throw new Error('No Twitter account selected');
-    }
+    // Build full URL using API base URL, not window.location.origin
+    const url = new URL(endpoint, API_BASE_URL);
 
-    // Add account ID to query parameters or headers
-    const url = new URL(endpoint, window.location.origin);
-    url.searchParams.set('account_id', accountId);
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+
+    // Only add account ID header if we have one (team users)
+    if (accountId) {
+      headers['X-Selected-Account-Id'] = accountId;
+    }
 
     return fetch(url.toString(), {
       credentials: 'include',
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      }
+      headers,
     });
   };
 
@@ -44,23 +49,23 @@ export const useAccountAwareAPI = () => {
   const postForCurrentAccount = async (endpoint, data = {}, options = {}) => {
     const accountId = getCurrentAccountId();
     
-    if (!accountId) {
-      throw new Error('No Twitter account selected');
-    }
+    // Include account ID in the data payload only if we have one
+    const payload = accountId ? { ...data, account_id: accountId } : data;
 
-    // Include account ID in the data payload
-    const payload = {
-      ...data,
-      account_id: accountId
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers,
     };
+
+    // Only add account ID header if we have one (team users)
+    if (accountId) {
+      headers['X-Selected-Account-Id'] = accountId;
+    }
 
     return fetch(endpoint, {
       method: 'POST',
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
+      headers,
       body: JSON.stringify(payload),
       ...options
     });

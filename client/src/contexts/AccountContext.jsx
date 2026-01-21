@@ -123,16 +123,9 @@ export const AccountProvider = ({ children }) => {
             console.error('[AccountContext] Error fetching team accounts:', err);
           }
         } else {
-          // Individual mode: fetch individual accounts
-          const individualResponse = await fetch(`${apiBaseUrl}/api/twitter/accounts`, fetchOptions);
-          if (individualResponse.ok) {
-            const individualData = await individualResponse.json();
-            if (individualData.success && individualData.data) {
-              accountsData = Array.isArray(individualData.data)
-                ? individualData.data
-                : [individualData.data];
-            }
-          }
+          // Individual mode: no team accounts, set empty array
+          console.log('[AccountContext] Individual user - no team accounts');
+          accountsData = [];
         }
         setAccounts(accountsData);
         // Restore selection from localStorage, or pick first account
@@ -158,6 +151,7 @@ export const AccountProvider = ({ children }) => {
             display_name: accountToSelect.account_display_name,
           }));
         } else {
+          // No team accounts (individual user) - clear selection
           setSelectedAccount(null);
           localStorage.removeItem('selectedTwitterAccount');
         }

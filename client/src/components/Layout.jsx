@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useAccount } from '../contexts/AccountContext';
 import { credits } from '../utils/api';
 import AccountSwitcher from './AccountSwitcher';
+import TwitterTokenStatus from './TwitterTokenStatus';
 import {
   LayoutDashboard,
   Edit3,
@@ -20,7 +21,7 @@ import {
 
 const Layout = ({ children }) => {
   const { user, logout } = useAuth();
-  const { setSelectedAccount, accounts } = useAccount();
+  const { setSelectedAccount, accounts, selectedAccount } = useAccount();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -77,6 +78,9 @@ const Layout = ({ children }) => {
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
+      {/* Twitter Token Status Monitor */}
+      <TwitterTokenStatus />
+      
       {/* Mobile sidebar backdrop */}
       {isSidebarOpen && (
         <div
@@ -162,8 +166,14 @@ const Layout = ({ children }) => {
             <div className="flex items-center space-x-4">
               {/* Account Switcher - only show if user has Twitter accounts */}
               {accounts.length > 0 && (
-                <div>
+                <div className="flex items-center space-x-3">
                   <AccountSwitcher />
+                  {selectedAccount && (
+                    <div className="hidden sm:flex flex-col leading-tight text-xs text-gray-600">
+                      <span className="font-semibold text-gray-800">Viewing as</span>
+                      <span>@{selectedAccount.account_username || selectedAccount.username}</span>
+                    </div>
+                  )}
                 </div>
               )}
               

@@ -10,10 +10,34 @@ const Scheduling = () => {
     const { selectedAccount, accounts } = useAccount();
     const accountAPI = useAccountAwareAPI();
     const isTeamUser = accounts.length > 0;
+  const currentAccountId = selectedAccount?.id;
   
   const [scheduledTweets, setScheduledTweets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('pending');
+
+  // Load saved filter per account when account changes
+  useEffect(() => {
+    if (!currentAccountId) return;
+    const saved = localStorage.getItem(`schedulingFilter:${currentAccountId}`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setFilter(parsed.filter || 'pending');
+      } catch (err) {
+        console.error('Failed to parse saved scheduling filter', err);
+        setFilter('pending');
+      }
+    } else {
+      setFilter('pending');
+    }
+  }, [currentAccountId]);
+
+  // Persist filter per account
+  useEffect(() => {
+    if (!currentAccountId) return;
+    localStorage.setItem(`schedulingFilter:${currentAccountId}`, JSON.stringify({ filter }));
+  }, [filter, currentAccountId]);
 
   useEffect(() => {
     fetchScheduledTweets();

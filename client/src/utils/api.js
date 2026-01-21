@@ -65,6 +65,18 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
+    // Check for Twitter token expiration specifically
+    if (error.response?.data?.code === 'TWITTER_TOKEN_EXPIRED') {
+      console.error('⚠️ Twitter token expired:', error.response.data);
+      const { toast } = await import('react-hot-toast');
+      toast.error(
+        error.response.data.error || 'Your Twitter connection expired. Please reconnect your Twitter account.',
+        { duration: 8000, id: 'twitter-expired' }
+      );
+      // Don't retry these requests
+      return Promise.reject(error);
+    }
+
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
         // If refresh is already in progress, queue this request

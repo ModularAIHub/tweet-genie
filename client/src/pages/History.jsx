@@ -10,6 +10,7 @@ const History = () => {
     const { selectedAccount, accounts } = useAccount();
     const accountAPI = useAccountAwareAPI();
     const isTeamUser = accounts.length > 0;
+  const currentAccountId = selectedAccount?.id;
   
   const [postedTweets, setPostedTweets] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -19,6 +20,36 @@ const History = () => {
   const [sortBy, setSortBy] = useState('newest'); // newest, oldest, most_likes, most_retweets
   const [deletingTweets, setDeletingTweets] = useState(new Set()); // Track which tweets are being deleted
   const [expandedThreads, setExpandedThreads] = useState(new Set()); // Track which threads are expanded
+
+  // Load saved filters when account changes (per-account persistence)
+  useEffect(() => {
+    if (!currentAccountId) return;
+    const saved = localStorage.getItem(`historyFilters:${currentAccountId}`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setFilter(parsed.filter || 'all');
+        setSourceFilter(parsed.sourceFilter || 'all');
+        setStatusFilter(parsed.statusFilter || 'all');
+        setSortBy(parsed.sortBy || 'newest');
+      } catch (err) {
+        console.error('Failed to parse saved history filters', err);
+      }
+    } else {
+      // reset to defaults when no saved filters
+      setFilter('all');
+      setSourceFilter('all');
+      setStatusFilter('all');
+      setSortBy('newest');
+    }
+  }, [currentAccountId]);
+
+  // Persist filters per account when they change
+  useEffect(() => {
+    if (!currentAccountId) return;
+    const payload = { filter, sourceFilter, statusFilter, sortBy };
+    localStorage.setItem(`historyFilters:${currentAccountId}`, JSON.stringify(payload));
+  }, [filter, sourceFilter, statusFilter, sortBy, currentAccountId]);
 
   useEffect(() => {
     fetchPostedTweets();
@@ -66,8 +97,27 @@ const History = () => {
       if (isTeamUser && selectedAccount) {
         const page = 1;
         const limit = params.limit || 50;
+        console.log('[History] Calling getTweetHistory with page:', page, 'limit:', limit);
         const apiResponse = await accountAPI.getTweetHistory(page, limit);
+        console.log('[History] API Response status:', apiResponse.status, 'content-type:', apiResponse.headers.get('content-type'));
+        
+        // Check if response is ok
+        if (!apiResponse.ok) {
+          const text = await apiResponse.text();
+          console.error('[History] API Error Response:', text.substring(0, 500));
+          throw new Error(`API returned ${apiResponse.status}: ${text.substring(0, 100)}`);
+        }
+        
+        // Check if response is JSON
+        const contentType = apiResponse.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          const text = await apiResponse.text();
+          console.error('[History] Non-JSON Response:', text.substring(0, 500));
+          throw new Error(`Expected JSON but got ${contentType}: ${text.substring(0, 100)}`);
+        }
+        
         const data = await apiResponse.json();
+        console.log('[History] Parsed JSON data:', data);
         response = { data: { tweets: data.data?.tweets || data.tweets || [] } };
       } else {
         response = await tweetsAPI.list(params);
@@ -194,11 +244,11 @@ const History = () => {
       // Attempt to delete from Twitter first
       if (tweet.tweet_id) {
         console.log(`Deleting tweet ${tweet.tweet_id} from Twitter...`);
-        await tweets.delete(tweet.id); // This should handle both Twitter deletion and DB removal
+        await tweetsAPI.delete(tweet.id); // This should handle both Twitter deletion and DB removal
       } else {
         // If no tweet_id, just remove from database
         console.log(`Removing tweet ${tweet.id} from history (no Twitter ID)...`);
-        await tweets.delete(tweet.id);
+        await tweetsAPI.delete(tweet.id);
       }
       
       // Remove from local state
