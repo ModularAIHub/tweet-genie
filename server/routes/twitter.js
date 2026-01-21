@@ -872,4 +872,57 @@ router.get('/team-accounts', async (req, res) => {
   }
 });
 
+// GET /api/twitter/token-status - Check Twitter token expiration status
+router.get('/token-status', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+    const teamId = req.user?.teamId || req.user?.team_id;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    
+    let tokenData = null;
+    
+    // Check team account first if selected
+    if (selectedAccountId && teamId) {
+      const { rows: teamRows } = await pool.query(
+        'SELECT token_expires_at FROM team_accounts WHERE id = $1 AND team_id = $2',
+        [selectedAccountId, teamId]
+      );
+      if (teamRows.length > 0) {
+        tokenData = teamRows[0];
+      }
+    }
+    
+    // Fall back to personal account
+    if (!tokenData) {
+      const { rows: personalRows } = await pool.query(
+        'SELECT token_expires_at FROM twitter_auth WHERE user_id = $1',
+        [userId]
+      );
+      if (personalRows.length > 0) {
+        tokenData = personalRows[0];
+      }
+    }
+    
+    if (!tokenData || !tokenData.token_expires_at) {
+      return res.json({ connected: false });
+    }
+    
+    const now = new Date();
+    const expiresAt = new Date(tokenData.token_expires_at);
+    const minutesUntilExpiry = Math.floor((expiresAt - now) / (60 * 1000));
+    
+    res.json({
+      connected: true,
+      expiresAt: expiresAt.toISOString(),
+      minutesUntilExpiry,
+      isExpired: expiresAt <= now,
+      needsRefresh: minutesUntilExpiry < 10
+    });
+  } catch (error) {
+    console.error('Failed to check token status:', error);
+    res.status(500).json({ error: 'Failed to check token status' });
+  }
+});
+
 export default router;
+

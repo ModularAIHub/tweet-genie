@@ -10,8 +10,9 @@ router.get('/overview', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { days = 30 } = req.query;
+    const accountId = req.headers['x-selected-account-id'];
 
-    console.log('📊 Fetching analytics overview for user:', userId, 'days:', days);
+    console.log('📊 Fetching analytics overview for user:', userId, 'account:', accountId, 'days:', days);
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
@@ -46,8 +47,9 @@ router.get('/overview', authenticateToken, async (req, res) => {
        FROM tweets 
        WHERE user_id = $1 
        AND (created_at >= $2 OR external_created_at >= $2) 
-       AND status = 'posted'`,
-      [userId, startDate]
+       AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}`,
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get daily metrics for chart
@@ -73,10 +75,11 @@ router.get('/overview', authenticateToken, async (req, res) => {
        WHERE user_id = $1 
        AND (created_at >= $2 OR external_created_at >= $2) 
        AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY DATE(COALESCE(external_created_at, created_at))
        ORDER BY date DESC
        LIMIT 30`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get all tweets for analytics (not just top performing)
@@ -98,8 +101,9 @@ router.get('/overview', authenticateToken, async (req, res) => {
        WHERE user_id = $1 
        AND (created_at >= $2 OR external_created_at >= $2) 
        AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        ORDER BY created_at DESC`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get hourly engagement patterns
@@ -114,9 +118,10 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(AVG(likes + retweets + replies), 0) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY EXTRACT(HOUR FROM created_at)
        ORDER BY avg_engagement DESC`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get content type performance
@@ -131,8 +136,9 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(AVG(likes + retweets + replies), 0) as avg_total_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted' AND content IS NOT NULL
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY CASE WHEN content IS NOT NULL AND array_length(string_to_array(content, '---'), 1) > 1 THEN 'thread' ELSE 'single' END`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get growth metrics (compare with previous period)
@@ -147,8 +153,9 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(SUM(retweets), 0) as prev_total_retweets,
         COALESCE(SUM(replies), 0) as prev_total_replies
        FROM tweets 
-       WHERE user_id = $1 AND created_at >= $2 AND created_at < $3 AND status = 'posted'`,
-      [userId, previousStartDate, startDate]
+       WHERE user_id = $1 AND created_at >= $2 AND created_at < $3 AND status = 'posted'
+       ${accountId ? 'AND account_id = $4' : ''}`,
+      accountId ? [userId, previousStartDate, startDate, accountId] : [userId, previousStartDate, startDate]
     );
 
     console.log('✅ Analytics overview data fetched successfully');
@@ -438,6 +445,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { days = 30 } = req.query;
+    const accountId = req.headers['x-selected-account-id'];
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
@@ -469,9 +477,10 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         ELSE 0 END as avg_engagement_rate
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY hashtag_usage, content_type, content_length
        ORDER BY avg_total_engagement DESC`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get best performing times
@@ -487,11 +496,12 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         ELSE 0 END as avg_engagement_rate
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY EXTRACT(DOW FROM created_at), EXTRACT(HOUR FROM created_at)
        HAVING COUNT(*) >= 2
        ORDER BY avg_engagement DESC
        LIMIT 20`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get content performance insights
@@ -504,6 +514,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         AVG(likes + retweets + replies) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY CASE WHEN content LIKE '%#%' THEN 'with_hashtags' ELSE 'without_hashtags' END
        
        UNION ALL
@@ -516,8 +527,9 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         AVG(likes + retweets + replies) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY CASE WHEN array_length(string_to_array(content, '---'), 1) > 1 THEN 'threads' ELSE 'single_tweets' END`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     res.json({
@@ -537,6 +549,7 @@ router.get('/audience', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { days = 30 } = req.query;
+    const accountId = req.headers['x-selected-account-id'];
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - parseInt(days));
@@ -554,9 +567,10 @@ router.get('/audience', authenticateToken, async (req, res) => {
         MIN(impressions) as min_impressions
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY DATE(created_at)
        ORDER BY date DESC`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     // Get engagement distribution
@@ -576,9 +590,10 @@ router.get('/audience', authenticateToken, async (req, res) => {
         AVG(impressions) as avg_impressions
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
+       ${accountId ? 'AND account_id = $3' : ''}
        GROUP BY reach_category
        ORDER BY avg_impressions DESC`,
-      [userId, startDate]
+      accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
     res.json({

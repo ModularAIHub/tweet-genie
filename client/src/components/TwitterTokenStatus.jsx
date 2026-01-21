@@ -1,0 +1,115 @@
+import React, { useState, useEffect } from 'react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
+import toast from 'react-hot-toast';
+
+/**
+ * Component to monitor Twitter token expiry and show warnings
+ * Checks token status periodically and warns users before expiration
+ */
+const TwitterTokenStatus = () => {
+  const [tokenStatus, setTokenStatus] = useState(null);
+  const [showWarning, setShowWarning] = useState(false);
+
+  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+
+  useEffect(() => {
+    const checkTokenStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/twitter/token-status`, {
+          credentials: 'include'
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setTokenStatus(data);
+          
+          // Show warning if token expires in less than 30 minutes
+          if (data.minutesUntilExpiry < 30 && data.minutesUntilExpiry > 0) {
+            setShowWarning(true);
+            
+            // Show toast notification once
+            toast.error(
+              `⏰ Your Twitter connection will expire in ${data.minutesUntilExpiry} minutes. The system will automatically refresh it.`,
+              { 
+                duration: 10000,
+                id: 'token-expiring'
+              }
+            );
+          } else if (data.minutesUntilExpiry <= 0) {
+            setShowWarning(true);
+            toast.error(
+              '⚠️ Your Twitter connection has expired. Please reconnect your Twitter account.',
+              { 
+                duration: Infinity,
+                id: 'token-expired'
+              }
+            );
+          } else {
+            setShowWarning(false);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to check token status:', error);
+      }
+    };
+
+    // Check immediately
+    checkTokenStatus();
+
+    // Check every 5 minutes
+    const interval = setInterval(checkTokenStatus, 5 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!showWarning || !tokenStatus) {
+    return null;
+  }
+
+  const isExpired = tokenStatus.minutesUntilExpiry <= 0;
+
+  return (
+    <div className={`fixed top-20 right-4 max-w-md p-4 rounded-lg shadow-lg z-50 ${
+      isExpired ? 'bg-red-100 border border-red-400' : 'bg-yellow-100 border border-yellow-400'
+    }`}>
+      <div className="flex items-start gap-3">
+        {isExpired ? (
+          <AlertTriangle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+        ) : (
+          <RefreshCw className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0 animate-spin" />
+        )}
+        <div className="flex-1">
+          <h4 className={`font-semibold ${isExpired ? 'text-red-900' : 'text-yellow-900'}`}>
+            {isExpired ? 'Twitter Connection Expired' : 'Token Expiring Soon'}
+          </h4>
+          <p className={`text-sm mt-1 ${isExpired ? 'text-red-800' : 'text-yellow-800'}`}>
+            {isExpired ? (
+              <>
+                Your Twitter connection has expired. Please{' '}
+                <a href="/settings" className="underline font-semibold">
+                  reconnect your Twitter account
+                </a>{' '}
+                to continue posting.
+              </>
+            ) : (
+              <>
+                Your Twitter token will expire in {tokenStatus.minutesUntilExpiry} minutes.
+                The system is attempting to refresh it automatically. No action needed.
+              </>
+            )}
+          </p>
+        </div>
+        <button
+          onClick={() => setShowWarning(false)}
+          className={`text-sm font-medium ${
+            isExpired ? 'text-red-600 hover:text-red-800' : 'text-yellow-600 hover:text-yellow-800'
+          }`}
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default TwitterTokenStatus;

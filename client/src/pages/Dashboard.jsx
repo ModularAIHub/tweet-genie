@@ -105,32 +105,22 @@ const Dashboard = () => {
     }
   };
 
-  if (accountsLoading) {
+  if (accountsLoading || loading) {
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center">
           <LoadingSpinner size="lg" />
-          <p className="mt-4 text-gray-600">Loading accounts...</p>
+          <p className="mt-4 text-gray-600">Loading...</p>
         </div>
       </div>
     );
   }
 
-  if (accounts.length === 0) {
-    // Show loading while checking team status
-    if (userTeamStatus === null) {
-      console.log('[Dashboard] userTeamStatus is null, loading...');
-      return (
-        <div className="flex items-center justify-center min-h-96">
-          <div className="text-center">
-            <LoadingSpinner size="lg" />
-            <p className="mt-4 text-gray-600">Loading...</p>
-          </div>
-        </div>
-      );
-    }
-    // If no accounts, show connection options
-    console.log('[Dashboard] No accounts found, showing connection options. userTeamStatus:', userTeamStatus);
+  // For individual users (no team accounts), check if they have any data
+  // If they have data, show it. If not, they need to connect Twitter.
+  if (accounts.length === 0 && !analyticsData && recentTweets.length === 0 && creditBalance === null) {
+    // Individual user with no Twitter connection
+    console.log('[Dashboard] No accounts and no data - user needs to connect Twitter.');
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center max-w-md">
@@ -205,15 +195,15 @@ const Dashboard = () => {
               <div key={key} className="card flex items-center space-x-4 p-4">
                 <img
                   src={account.profile_image_url || account.twitter_profile_image_url || 'https://abs.twimg.com/sticky/default_profile_images/default_profile_400x400.png'}
-                  alt={account.username || account.twitter_username}
+                  alt={account.account_username || account.username || account.twitter_username}
                   className="h-12 w-12 rounded-full border"
                 />
                 <div>
                   <div className="font-semibold text-gray-900">
-                    @{account.username || account.twitter_username}
+                    @{account.account_username || account.username || account.twitter_username}
                   </div>
                   <div className="text-sm text-gray-600">
-                    {account.display_name || account.twitter_display_name}
+                    {account.account_display_name || account.display_name || account.twitter_display_name || account.nickname}
                   </div>
                   <div className="text-xs text-gray-500 mt-1">
                     Connected
