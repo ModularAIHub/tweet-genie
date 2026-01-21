@@ -100,8 +100,12 @@ class AIService {
         console.log(`Attempting content generation with ${provider.name}...`);
         const result = await provider.method(sanitizedPrompt, style, requestedCount);
         console.log(`✅ Content generated successfully with ${provider.name}`);
+        
+        // Clean up AI output - remove citations and artifacts
+        const cleanedContent = this.cleanAIOutput(result);
+        
         return {
-          content: result,
+          content: cleanedContent,
           provider: provider.name,
           keyType: provider.keyType,
           success: true
@@ -584,6 +588,35 @@ Generate tweet content for: ${prompt}`;
   }
 
 
+
+  // Clean AI output by removing citations and artifacts
+  cleanAIOutput(content) {
+    if (!content || typeof content !== 'string') {
+      return content;
+    }
+
+    let cleaned = content;
+
+    // Remove citation brackets: [1], [2], [3], etc.
+    cleaned = cleaned.replace(/\[\d+\]/g, '');
+    
+    // Remove citation parentheses: (1), (2), etc.
+    cleaned = cleaned.replace(/\(\d+\)/g, '');
+    
+    // Remove source citations at end
+    cleaned = cleaned.replace(/\s*sources?:\s*.*$/gi, '');
+    
+    // Remove "Here's a tweet:" or similar prefixes
+    cleaned = cleaned.replace(/^(Here's a tweet:|Here's|Tweet:|Here are \d+ tweets?:|Caption:)\s*/gi, '');
+    
+    // Remove numbered prefixes like "1. " at start of lines
+    cleaned = cleaned.replace(/^\d+\.\s+/gm, '');
+    
+    // Clean up excessive whitespace
+    cleaned = cleaned.replace(/\s{3,}/g, '  ').trim();
+
+    return cleaned;
+  }
 
   // Generate a tweet or thread for a prompt, returning { text, isThread, threadParts }
   async generateTweetOrThread(prompt, options = {}) {
