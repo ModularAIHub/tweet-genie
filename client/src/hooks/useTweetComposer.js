@@ -119,35 +119,42 @@ export const useTweetComposer = () => {
     try {
       setIsLoadingTwitterAccounts(true);
 
-      const [personalRes, teamRes] = await Promise.all([
-        twitter.getStatus().catch((err) => {
-          console.error('Error fetching personal Twitter accounts:', err);
-          return { data: { accounts: [] } };
-        }),
-        twitter.getTeamAccounts().catch((err) => {
-          // Team endpoint is optional; swallow errors and fall back to personal only
-          console.warn('Team Twitter accounts unavailable:', err?.response?.status || err?.message || err);
-          return { data: { accounts: [] } };
-        })
-      ]);
+      // Add timeout to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-      const personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
-      const teamAccounts = Array.isArray(teamRes?.data?.accounts) ? teamRes.data.accounts : [];
-      const combinedAccounts = [...personalAccounts, ...teamAccounts];
+      try {
+        const [personalRes, teamRes] = await Promise.all([
+          twitter.getStatus().catch((err) => {
+            console.error('Error fetching personal Twitter accounts:', err);
+            return { data: { accounts: [] } };
+          }),
+          twitter.getTeamAccounts().catch((err) => {
+            // Team endpoint is optional; swallow errors and fall back to personal only
+            console.warn('Team Twitter accounts unavailable:', err?.response?.status || err?.message || err);
+            return { data: { accounts: [] } };
+          })
+        ]);
 
-      setTwitterAccounts(combinedAccounts);
+        clearTimeout(timeoutId);
 
-      // Persist selected account so X-Selected-Account-Id header is set even without personal accounts
-      if (combinedAccounts.length > 0) {
-        const saved = localStorage.getItem('selectedTwitterAccount');
-        let toSelect = combinedAccounts[0];
+        const personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
+        const teamAccounts = Array.isArray(teamRes?.data?.accounts) ? teamRes.data.accounts : [];
+        const combinedAccounts = [...personalAccounts, ...teamAccounts];
 
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            const match = combinedAccounts.find((acc) => acc.id === parsed.id);
-            if (match) toSelect = match;
-          } catch (err) {
+        setTwitterAccounts(combinedAccounts);
+
+        // Persist selected account so X-Selected-Account-Id header is set even without personal accounts
+        if (combinedAccounts.length > 0) {
+          const saved = localStorage.getItem('selectedTwitterAccount');
+          let toSelect = combinedAccounts[0];
+
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              const match = combinedAccounts.find((acc) => acc.id === parsed.id);
+              if (match) toSelect = match;
+            } catch (err) {
             console.error('Failed to parse saved Twitter account selection:', err);
           }
         }
@@ -158,6 +165,11 @@ export const useTweetComposer = () => {
           display_name: toSelect.account_display_name || toSelect.display_name,
         }));
       } else {
+        localStorage.removeItem('selectedTwitterAccount');
+      }
+      } catch (timeoutError) {
+        console.error('Timeout or error fetching Twitter accounts:', timeoutError);
+        setTwitterAccounts([]);
         localStorage.removeItem('selectedTwitterAccount');
       }
     } catch (error) {
