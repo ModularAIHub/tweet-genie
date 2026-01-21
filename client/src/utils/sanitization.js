@@ -268,7 +268,9 @@ export const validateTweetContent = (content) => {
     return result;
   }
 
-  const sanitized = sanitizeUserInput(content);
+  const sanitized = sanitizeUserInput(content, {
+    encodeHTML: false // Tweets are plain text
+  });
 
   // Length validation
   if (sanitized.length === 0) {

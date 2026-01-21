@@ -66,7 +66,8 @@ export const sanitizeInput = (input, options = {}) => {
     maxLength = 5000,
     allowHTML = false,
     stripTags = true,
-    preventInjection = true
+    preventInjection = true,
+    encodeHTML = false // Don't encode by default (tweets are plain text)
   } = options;
 
   let sanitized = input.trim();
@@ -119,13 +120,21 @@ export const sanitizeInput = (input, options = {}) => {
     sanitized = sanitized.replace(/<[^>]*>/g, '');
   }
 
-  // 5. Encode special characters
-  sanitized = sanitized
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
+  // 5. Encode special characters (only if encodeHTML is true)
+  // For tweets and AI content, we don't want HTML encoding
+  if (encodeHTML) {
+    sanitized = sanitized
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;');
+  } else {
+    // Just remove dangerous tags without encoding
+    sanitized = sanitized
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '');
+  }
 
   return sanitized.trim();
 };
