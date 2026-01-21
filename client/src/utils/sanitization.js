@@ -62,7 +62,8 @@ export const sanitizeUserInput = (input, options = {}) => {
     allowHashtags = true,
     allowMentions = true,
     allowUrls = true,
-    preserveSpacing = false // New option to preserve normal spacing
+    preserveSpacing = false, // New option to preserve normal spacing
+    encodeHTML = false // New option - only encode HTML when needed (e.g., for display in HTML context)
   } = options;
 
   let sanitized = input;
@@ -80,13 +81,21 @@ export const sanitizeUserInput = (input, options = {}) => {
     sanitized = sanitized.replace(pattern, '');
   });
 
-  // 4. Encode HTML entities
-  sanitized = sanitized
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
+  // 4. Encode HTML entities (only if encodeHTML is true)
+  // For tweet content, we DON'T want HTML encoding (tweets are plain text)
+  if (encodeHTML) {
+    sanitized = sanitized
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;');
+  } else {
+    // For plain text (tweets), just remove dangerous HTML tags
+    sanitized = sanitized
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '');
+  }
 
   // 5. Check for suspicious keywords and log warnings (but don't replace, just remove the actual malicious code)
   SUSPICIOUS_KEYWORDS.forEach(keyword => {
@@ -169,6 +178,26 @@ export const sanitizeAIContent = (content, options = {}) => {
     .replace(/\*Disclaimer:.*/gi, '')
     .replace(/^\d+\.\s+/gm, ''); // Remove numbered list prefixes like "1. "
 
+  // 3. Detect and remove AI refusal/meta-commentary garbage
+  // These are common patterns when AI refuses or explains instead of generating content
+  const refusalPatterns = [
+    /I appreciate the detailed instructions, but.*/gi,
+    /I need to clarify my role.*/gi,
+    /I'm (Perplexity|Claude|ChatGPT|an AI|a language model).*/gi,
+    /I cannot (generate|create|write).*/gi,
+    /I'm not designed to.*/gi,
+    /I don't feel comfortable.*/gi,
+    /As an AI (assistant|model).*/gi,
+    /I apologize, but I (can't|cannot).*/gi,
+    /I'm (sorry|unable) to.*/gi,
+    /trained to synthesize information.*/gi,
+    /search assistant trained.*/gi
+  ];
+
+  refusalPatterns.forEach(pattern => {
+    sanitized = sanitized.replace(pattern, '');
+  });
+
   // 3. Clean up markdown if not allowed
   if (!allowMarkdown) {
     sanitized = sanitized
@@ -178,25 +207,35 @@ export const sanitizeAIContent = (content, options = {}) => {
       .replace(/#{1,6}\s/g, '');
   }
 
-  // 4. Only do minimal HTML encoding (don't use sanitizeUserInput which is too aggressive)
-  // Just encode the truly dangerous patterns
+  // 4. Decode HTML entities (in case AI or sanitization added them)
+  // Tweets are plain text, not HTML, so decode everything
+  sanitized = sanitized
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'");
+
+  // 5. Only remove truly dangerous executable patterns (but don't encode)
+  // Just strip them out since tweets are plain text
   sanitized = sanitized
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
     .replace(/on\w+\s*=\s*["'][^"']*["']/gi, '')
     .replace(/javascript:/gi, '')
     .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '');
 
-  // 5. Clean up excessive whitespace
+  // 6. Clean up excessive whitespace
   sanitized = sanitized
     .replace(/\s{3,}/g, '  ')
     .trim();
 
-  // 6. Limit length
+  // 7. Limit length
   if (sanitized.length > maxLength) {
     sanitized = sanitized.substring(0, maxLength);
   }
 
-  // 7. Validate content quality
+  // 8. Validate content quality
   if (sanitized.length < 10) {
     console.warn('AI generated content too short:', sanitized);
   }

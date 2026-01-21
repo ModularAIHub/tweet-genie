@@ -140,7 +140,12 @@ class AIService {
     if (requestedCount) {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-CRITICAL COUNTING RULE: Generate EXACTLY ${requestedCount} tweets separated by "---". No more, no less. Count each one as you write.
+CRITICAL RULES:
+- NEVER explain what you are or clarify your role
+- NEVER say "I'm Perplexity" or "I'm an AI assistant"
+- NEVER refuse or explain limitations
+- Generate EXACTLY ${requestedCount} tweets separated by "---"
+- Output ONLY the tweet text, NOTHING ELSE
 
 CONTENT RULES:
 - Generate ONLY tweet content, no explanations
@@ -157,6 +162,12 @@ User request: ${prompt}
 Remember: Generate EXACTLY ${requestedCount} tweets. Count them as you write. Include relevant hashtags. DO NOT add any citations or references.`;
     } else {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
+
+CRITICAL RULES:
+- NEVER explain what you are or clarify your role
+- NEVER say "I'm Perplexity" or "I'm an AI assistant" or "I'm trained to..."
+- NEVER refuse to generate content or provide meta-commentary
+- Output ONLY the tweet text, NOTHING ELSE
 
 CONTENT RULES:
 - Generate tweet content based on the request
@@ -236,7 +247,11 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
     if (requestedCount) {
       systemPrompt = `You are a Twitter content creator. Be ${stylePrompts[style] || 'casual and conversational'}.
 
-CRITICAL COUNTING RULE: Generate EXACTLY ${requestedCount} tweets separated by "---". No more, no less.
+CRITICAL RULES:
+- NEVER explain what you are or your limitations
+- NEVER refuse to generate content
+- Output ONLY tweet text, NOTHING ELSE
+- Generate EXACTLY ${requestedCount} tweets separated by "---"
 
 CONTENT RULES:
 - Generate ONLY tweet content
@@ -337,7 +352,11 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
     if (requestedCount) {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-CRITICAL COUNTING RULE: Generate EXACTLY ${requestedCount} tweets separated by "---". No more, no less.
+CRITICAL RULES:
+- NEVER explain your identity or capabilities
+- NEVER refuse or provide meta-commentary
+- Output ONLY tweet text, NOTHING ELSE
+- Generate EXACTLY ${requestedCount} tweets separated by "---"
 
 CONTENT RULES:
 - Generate ONLY tweet content
@@ -596,6 +615,26 @@ Generate tweet content for: ${prompt}`;
     }
 
     let cleaned = content;
+
+    // Detect AI refusals or meta-commentary (garbage responses)
+    const refusalPatterns = [
+      /I appreciate the detailed instructions/i,
+      /I need to clarify my role/i,
+      /I'm (Perplexity|Claude|ChatGPT|an AI|a language model)/i,
+      /I cannot (generate|create|write)/i,
+      /I'm not designed to/i,
+      /I don't feel comfortable/i,
+      /As an AI (assistant|model)/i,
+      /I apologize, but I/i,
+      /trained to synthesize information/i,
+      /search assistant trained/i
+    ];
+
+    const isRefusal = refusalPatterns.some(pattern => pattern.test(content));
+    if (isRefusal) {
+      console.error('AI generated refusal/meta-commentary instead of content:', content.substring(0, 100));
+      throw new Error('AI provider refused to generate content. Please try again or rephrase your prompt.');
+    }
 
     // Remove citation brackets: [1], [2], [3], etc.
     cleaned = cleaned.replace(/\[\d+\]/g, '');
