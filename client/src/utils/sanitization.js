@@ -88,12 +88,16 @@ export const sanitizeUserInput = (input, options = {}) => {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#x27;');
 
-  // 5. Check for suspicious keywords and log warnings
+  // 5. Check for suspicious keywords and log warnings (but don't replace, just remove the actual malicious code)
   SUSPICIOUS_KEYWORDS.forEach(keyword => {
     if (sanitized.toLowerCase().includes(keyword.toLowerCase())) {
       console.warn(`Suspicious keyword detected in input: ${keyword}`);
-      // Remove the suspicious content
-      sanitized = sanitized.replace(new RegExp(keyword, 'gi'), '[REMOVED]');
+      // Only remove if it's actually in executable context, not just mentioned
+      // Don't replace with [REMOVED] - that creates garbage text
+      const executablePattern = new RegExp(`${keyword}\s*[=(]`, 'gi');
+      if (executablePattern.test(sanitized)) {
+        sanitized = sanitized.replace(executablePattern, '');
+      }
     }
   });
 
@@ -146,34 +150,53 @@ export const sanitizeAIContent = (content, options = {}) => {
 
   let sanitized = content;
 
-  // 1. Basic safety sanitization
-  sanitized = sanitizeUserInput(sanitized, {
-    maxLength,
-    allowNewlines: preserveFormatting,
-    allowEmojis: true,
-    allowHashtags: true,
-    allowMentions: true,
-    allowUrls: true
-  });
+  // 1. Remove citation numbers and references that AI sometimes adds
+  // Remove [1], [2], [3], etc. anywhere in the text
+  sanitized = sanitized.replace(/\[\d+\]/g, '');
+  
+  // Remove citation patterns like (1), (2), etc.
+  sanitized = sanitized.replace(/\(\d+\)/g, '');
+  
+  // Remove source citations at the end like "Source: [1]" or "Sources: [1][2]"
+  sanitized = sanitized.replace(/\s*sources?:\s*\[?\d+\]?.*$/gi, '');
 
-  // 2. AI-specific cleaning
-  // Remove AI artifacts
+  // 2. Remove AI conversational prefixes and artifacts
   sanitized = sanitized
-    .replace(/^(AI:|Assistant:|Bot:)/gi, '') // Remove AI prefixes
-    .replace(/\[AI_GENERATED\]/gi, '') // Remove AI markers
-    .replace(/\*\*Note:\*\*.*/gi, '') // Remove AI notes
-    .replace(/\*Disclaimer:.*/gi, ''); // Remove disclaimers
+    .replace(/^(Here's a tweet:|Here's|Tweet:|AI:|Assistant:|Bot:)\s*/gi, '')
+    .replace(/^(Here are \d+ tweets?:|Caption:)\s*/gi, '')
+    .replace(/\[AI_GENERATED\]/gi, '')
+    .replace(/\*\*Note:\*\*.*/gi, '')
+    .replace(/\*Disclaimer:.*/gi, '')
+    .replace(/^\d+\.\s+/gm, ''); // Remove numbered list prefixes like "1. "
 
-  // 3. Clean up common AI formatting issues
+  // 3. Clean up markdown if not allowed
   if (!allowMarkdown) {
     sanitized = sanitized
-      .replace(/\*\*(.*?)\*\*/g, '$1') // Remove bold markdown
-      .replace(/\*(.*?)\*/g, '$1') // Remove italic markdown
-      .replace(/`(.*?)`/g, '$1') // Remove code markdown
-      .replace(/#{1,6}\s/g, ''); // Remove heading markdown
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/`(.*?)`/g, '$1')
+      .replace(/#{1,6}\s/g, '');
   }
 
-  // 4. Validate content quality
+  // 4. Only do minimal HTML encoding (don't use sanitizeUserInput which is too aggressive)
+  // Just encode the truly dangerous patterns
+  sanitized = sanitized
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/on\w+\s*=\s*["'][^"']*["']/gi, '')
+    .replace(/javascript:/gi, '')
+    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '');
+
+  // 5. Clean up excessive whitespace
+  sanitized = sanitized
+    .replace(/\s{3,}/g, '  ')
+    .trim();
+
+  // 6. Limit length
+  if (sanitized.length > maxLength) {
+    sanitized = sanitized.substring(0, maxLength);
+  }
+
+  // 7. Validate content quality
   if (sanitized.length < 10) {
     console.warn('AI generated content too short:', sanitized);
   }
