@@ -520,7 +520,10 @@ export const useTweetComposer = () => {
   };
 
   const handleAIGenerate = async () => {
-    let sanitizedPrompt = sanitizeUserInput(aiPrompt.trim(), { maxLength: 1000 });
+    let sanitizedPrompt = sanitizeUserInput(aiPrompt.trim(), { 
+      maxLength: 1000,
+      encodeHTML: false // Don't HTML-encode prompts
+    });
 
     if (!sanitizedPrompt) {
       toast.error('Please enter a valid prompt');
@@ -758,7 +761,11 @@ export const useTweetComposer = () => {
 
   // Thread handlers
   const handleThreadTweetChange = (index, value) => {
-    const sanitizedValue = value === '---' ? value : sanitizeUserInput(value, { maxLength: 300 });
+    // Don't HTML-encode tweets (they're plain text, not HTML)
+    const sanitizedValue = value === '---' ? value : sanitizeUserInput(value, { 
+      maxLength: 300,
+      encodeHTML: false // Keep apostrophes as ', not &#x27;
+    });
     const newTweets = [...threadTweets];
     newTweets[index] = sanitizedValue;
     setThreadTweets(newTweets);
