@@ -36,13 +36,12 @@ const Dashboard = () => {
 
   useEffect(() => {
     // For team users: wait for account selection
-    // For individual users: fetch data immediately
+    // For individual users: fetch data immediately (even if selectedAccount is null)
     if (!accountsLoading) {
-      if (accounts.length > 0 && selectedAccount) {
-        // Team user with selected account
-        fetchDashboardData();
-      } else if (accounts.length === 0) {
-        // Individual user - fetch data immediately
+      // Fetch if:
+      // 1. Team user with selected account, OR
+      // 2. Individual user (accounts.length === 0) regardless of selectedAccount state
+      if ((accounts.length > 0 && selectedAccount) || accounts.length === 0) {
         fetchDashboardData();
       }
     }
