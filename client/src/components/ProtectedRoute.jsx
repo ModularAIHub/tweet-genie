@@ -28,6 +28,22 @@ export const ProtectedRoute = ({ children }) => {
   }
 
   if (!isAuthenticated) {
+    // Check if we recently redirected to prevent loops
+    const hasRedirectedRecently = sessionStorage.getItem('auth_redirect_time');
+    const now = Date.now();
+    
+    if (hasRedirectedRecently && (now - parseInt(hasRedirectedRecently)) < 30000) {
+      // Don't redirect again, show error instead
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-red-600 font-semibold">Authentication Error</p>
+            <p className="mt-2 text-gray-600">Unable to authenticate. Please try again later.</p>
+          </div>
+        </div>
+      );
+    }
+    
     // Use the centralized redirect logic from AuthContext
     redirectToLogin();
     

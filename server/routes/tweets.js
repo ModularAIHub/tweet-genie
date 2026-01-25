@@ -473,6 +473,10 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
 
 // Get user's tweets - alias as /history for backwards compatibility
 router.get(['/history', '/'], async (req, res) => {
+  let sqlQuery = ''; // Declare outside try block for error logging
+  let countQuery = '';
+  let queryParams = [];
+  
   try {
     console.log('[GET /tweets/history] Request received', {
       user: req.user,
@@ -494,9 +498,7 @@ router.get(['/history', '/'], async (req, res) => {
     const parsedLimit = parseInt(limit);
     const parsedOffset = parseInt(offset);
     
-    let query;
-    let countQuery;
-    let queryParams = [req.user.id];
+    queryParams = [req.user.id];
     let countParams = [req.user.id];
 
     if (selectedAccountId) {
@@ -511,7 +513,7 @@ router.get(['/history', '/'], async (req, res) => {
         countParams.push(status);
       }
 
-      query = `
+      sqlQuery = `
         SELECT t.*, 
                 ta.twitter_username as username, 
                 ta.twitter_display_name as display_name,
@@ -545,10 +547,10 @@ router.get(['/history', '/'], async (req, res) => {
         countParams.push(status);
       }
 
-      query = `
+      sqlQuery = `
         SELECT t.*, 
-                ta.username, 
-                ta.display_name,
+                ta.twitter_username as username, 
+                ta.twitter_display_name as display_name,
                 CASE 
                   WHEN t.source = 'external' THEN t.external_created_at
                   ELSE t.created_at
@@ -572,7 +574,7 @@ router.get(['/history', '/'], async (req, res) => {
       queryParams.push(parsedLimit, parsedOffset);
     }
 
-    const { rows } = await pool.query(query, queryParams);
+    const { rows } = await pool.query(sqlQuery, queryParams);
     const countResult = await pool.query(countQuery, countParams);
 
     res.json({
@@ -589,7 +591,14 @@ router.get(['/history', '/'], async (req, res) => {
 
   } catch (error) {
     console.error('[GET /tweets/history] Error:', error);
-    res.status(500).json({ error: 'Failed to fetch tweets', details: error.message });
+    console.error('[GET /tweets/history] Error stack:', error.stack);
+    console.error('[GET /tweets/history] SQL query was:', sqlQuery);
+    console.error('[GET /tweets/history] Query params were:', queryParams);
+    res.status(500).json({ 
+      error: 'Failed to fetch tweets', 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined 
+    });
   }
 });
 

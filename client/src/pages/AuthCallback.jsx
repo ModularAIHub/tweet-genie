@@ -26,6 +26,9 @@ const AuthCallback = () => {
           });
 
           if (response.ok) {
+            // Clear the redirect timestamp to allow future auth checks
+            sessionStorage.removeItem('auth_redirect_time');
+            
             // Refresh auth status
             await checkAuthStatus();
             

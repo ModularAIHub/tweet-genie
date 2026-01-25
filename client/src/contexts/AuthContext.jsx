@@ -16,9 +16,20 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  
+  // Get API base URL from environment
+  const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
   // Check authentication status on mount
   useEffect(() => {
+    // Don't check auth if we're on the secure-login callback page
+    // (the page will set cookies and redirect)
+    const currentPath = window.location.pathname;
+    if (currentPath.includes('/secure-login') || currentPath.includes('/auth/callback')) {
+      console.log('Skipping auth check on callback page');
+      return;
+    }
+    
     checkAuthStatus();
   }, []);
 
@@ -41,13 +52,13 @@ export const AuthProvider = ({ children }) => {
       // Fetch CSRF token
       let csrfToken = null;
       try {
-        const csrfRes = await fetch('/api/csrf-token', { credentials: 'include' });
+        const csrfRes = await fetch(`${apiBaseUrl}/api/csrf-token`, { credentials: 'include' });
         const data = await csrfRes.json();
         csrfToken = data.csrfToken;
       } catch (err) {
         console.error('Failed to fetch CSRF token for proactive refresh:', err);
       }
-      const response = await fetch('/api/auth/refresh', {
+      const response = await fetch(`${apiBaseUrl}/api/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
         headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {}
@@ -105,6 +116,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const redirectToLogin = () => {
+    // Set timestamp to prevent redirect loops
+    sessionStorage.setItem('auth_redirect_time', Date.now().toString());
     const currentUrl = encodeURIComponent(window.location.href);
     const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
     window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;

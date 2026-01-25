@@ -97,14 +97,14 @@ api.interceptors.response.use(
         // Fetch CSRF token and send in header for refresh
         let csrfToken = null;
         try {
-          const csrfRes = await api.get('/csrf-token');
+          const csrfRes = await api.get('/api/csrf-token');
           csrfToken = csrfRes.data.csrfToken;
         } catch (err) {
           console.error('Failed to fetch CSRF token for refresh:', err);
         }
-        const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
-        const refreshResponse = await axios.post(`${platformUrl}/api/auth/refresh`, {}, {
-          withCredentials: true,
+        
+        // Use tweet-genie's own refresh endpoint instead of platform's
+        const refreshResponse = await api.post('/api/auth/refresh', {}, {
           headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {}
         });
 
@@ -120,9 +120,20 @@ api.interceptors.response.use(
 
         // Only redirect if we're not already on a callback or login-related page
         const currentPath = window.location.pathname;
+        const hasRedirectedRecently = sessionStorage.getItem('auth_redirect_time');
+        const now = Date.now();
+        
+        // Prevent redirect loop - only redirect once every 30 seconds
+        if (hasRedirectedRecently && (now - parseInt(hasRedirectedRecently)) < 30000) {
+          console.log('Skipping redirect to prevent loop (redirected recently)');
+          return Promise.reject(refreshError);
+        }
+        
         if (!currentPath.includes('/auth/callback') && 
-            !currentPath.includes('/login')) {
+            !currentPath.includes('/login') &&
+            !currentPath.includes('/secure-login')) {
           console.log('Redirecting to platform for re-authentication');
+          sessionStorage.setItem('auth_redirect_time', now.toString());
           const currentUrl = encodeURIComponent(window.location.href);
           const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
           window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
