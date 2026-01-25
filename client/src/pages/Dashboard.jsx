@@ -30,6 +30,7 @@ const Dashboard = () => {
   const [analyticsData, setAnalyticsData] = useState(null);
   const [recentTweets, setRecentTweets] = useState([]);
   const [creditBalance, setCreditBalance] = useState(null);
+  const [hasAttemptedFetch, setHasAttemptedFetch] = useState(false);
   
   // Get fresh accountAPI on every render to capture current selectedAccount
   const accountAPI = useAccountAwareAPI();
@@ -50,6 +51,7 @@ const Dashboard = () => {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
+      setHasAttemptedFetch(true);
       
       // For team users, use account-aware API calls
       // For individual users, use original API calls
@@ -130,8 +132,8 @@ const Dashboard = () => {
 
   // For individual users (no team accounts), check if they have any data
   // If they have data, show it. If not, they need to connect Twitter.
-  if (accounts.length === 0 && !analyticsData && recentTweets.length === 0 && creditBalance === null) {
-    // Individual user with no Twitter connection
+  if (accounts.length === 0 && hasAttemptedFetch && !analyticsData && recentTweets.length === 0) {
+    // Individual user with no Twitter connection (only show after fetch attempt)
     console.log('[Dashboard] No accounts and no data - user needs to connect Twitter.');
     return (
       <div className="flex items-center justify-center min-h-96">
@@ -143,7 +145,7 @@ const Dashboard = () => {
           </p>
           <div className="grid grid-cols-2 gap-4 mb-6">
             <a
-              href="http://localhost:5173/team"
+              href={`${import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173'}/team`}
               className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               <Twitter className="h-4 w-4 mr-2" />
@@ -229,7 +231,8 @@ const Dashboard = () => {
     );
   }
 
-  if (!selectedAccount) {
+  // Show loading spinner only while AccountContext is loading
+  if (accountsLoading) {
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center">
@@ -240,6 +243,8 @@ const Dashboard = () => {
     );
   }
 
+  // For individual users with no Twitter account, show dashboard with connect prompt
+  // selectedAccount will be null, but that's ok - we'll show a message to connect
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-96">

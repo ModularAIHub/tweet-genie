@@ -23,75 +23,20 @@ export const authenticateToken = async (req, res, next) => {
     }
 
     if (!token) {
-      // Check if we have a refresh token to get a new access token
-      if (req.cookies?.refreshToken) {
-        console.log('❌ No access token but refresh token found - attempting automatic refresh...');
-        try {
-          const refreshResponse = await axios.post(
-            `${process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api'}/auth/refresh`,
-            {},
-            {
-              headers: {
-                'Cookie': `refreshToken=${req.cookies.refreshToken}`
-              },
-              withCredentials: true
-            }
-          );
-          // Extract new access token from response cookies
-          const setCookieHeader = refreshResponse.headers['set-cookie'];
-          if (setCookieHeader) {
-            const accessTokenCookie = setCookieHeader.find(cookie => 
-              cookie.startsWith('accessToken=')
-            );
-            if (accessTokenCookie) {
-              const newToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
-              console.log('✅ New access token obtained from refresh token');
-              // Set the new token in response cookies for future requests
-              res.cookie('accessToken', newToken, {
-                httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                sameSite: 'none', // must be 'none' for cross-domain
-                domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-                maxAge: 15 * 60 * 1000 // 15 minutes
-              });
-              // Use the new token and continue with authentication
-              token = newToken;
-            } else {
-              throw new Error('No access token in refresh response');
-            }
-          } else {
-            throw new Error('No cookies in refresh response');
-          }
-        } catch (refreshError) {
-          console.log('❌ Refresh token failed:', refreshError.message);
-          // Clear refreshToken cookie to prevent infinite loop
-          res.clearCookie('refreshToken', {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'none',
-            domain: process.env.COOKIE_DOMAIN || '.suitegenie.in'
-          });
-          // Fallback to login redirect if refresh fails
-          if (req.headers.accept && req.headers.accept.includes('text/html')) {
-            const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
-            const platformLoginUrl = `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`;
-            console.log('Redirecting to platform login after refresh failure:', platformLoginUrl);
-            return res.redirect(platformLoginUrl);
-          }
-          return res.status(401).json({ error: 'Authentication required' });
-        }
-      } else {
-        // No tokens at all - redirect to login
-        if (req.headers.accept && req.headers.accept.includes('text/html')) {
-          const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
-          const platformLoginUrl = `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`;
-          console.log('❌ No tokens - redirecting to platform login:', platformLoginUrl);
-          return res.redirect(platformLoginUrl);
-        }
-        // For API requests, return 401
+      // No access token - let the client handle refresh via /api/auth/refresh endpoint
+      console.log('❌ No access token found');
+      
+      // For API requests, return 401 and let client-side interceptor handle refresh
+      if (!req.headers.accept || !req.headers.accept.includes('text/html')) {
         console.log('No tokens - returning 401 for API request');
-        return res.status(401).json({ error: 'Access token required' });
+        return res.status(401).json({ error: 'Access token required', code: 'NO_TOKEN' });
       }
+      
+      // For web requests, redirect to platform login
+      const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
+      const platformLoginUrl = `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`;
+      console.log('❌ No tokens - redirecting to platform login:', platformLoginUrl);
+      return res.redirect(platformLoginUrl);
     }
 
     console.log('Verifying JWT token...');
@@ -107,71 +52,21 @@ export const authenticateToken = async (req, res, next) => {
       console.log('JWT_SECRET configured:', !!process.env.JWT_SECRET);
       console.log('JWT_SECRET length:', process.env.JWT_SECRET ? process.env.JWT_SECRET.length : 0);
       
-      // If token expired, try to refresh it
-      if (jwtError.name === 'TokenExpiredError' && req.cookies?.refreshToken) {
-        console.log('Token expired, attempting refresh...');
-        try {
-          const refreshResponse = await axios.post(
-            `${process.env.NEW_PLATFORM_API_URL || 'http://localhost:3000/api'}/auth/refresh`,
-            {},
-            {
-              headers: {
-                'Cookie': `refreshToken=${req.cookies.refreshToken}`
-              },
-              withCredentials: true
-            }
-          );
-          // Extract new access token from response cookies
-          const setCookieHeader = refreshResponse.headers['set-cookie'];
-          if (setCookieHeader) {
-            const accessTokenCookie = setCookieHeader.find(cookie => 
-              cookie.startsWith('accessToken=')
-            );
-            if (accessTokenCookie) {
-              const newToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
-              console.log('Token refreshed successfully');
-              // Verify the new token
-              decoded = jwt.verify(newToken, process.env.JWT_SECRET);
-              console.log('New token verified for user:', decoded.userId);
-              // Set the new token in response cookies for future requests
-              res.cookie('accessToken', newToken, {
-                httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                sameSite: 'none', // must be 'none' for cross-domain
-                domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-                maxAge: 15 * 60 * 1000 // 15 minutes
-              });
-              // Use the new token for subsequent platform requests
-              token = newToken;
-            } else {
-              throw new Error('No access token in refresh response');
-            }
-          } else {
-            throw new Error('No cookies in refresh response');
-          }
-        } catch (refreshError) {
-          console.log('Token refresh failed:', refreshError.message);
-          // Redirect to login if refresh fails
-          if (req.headers.accept && req.headers.accept.includes('text/html')) {
-            const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
-            const platformLoginUrl = `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`;
-            console.log('Redirecting to platform login after refresh failure:', platformLoginUrl);
-            return res.redirect(platformLoginUrl);
-          }
-          return res.status(401).json({ error: 'Authentication failed' });
-        }
-      } else {
-        // If JWT is invalid or no refresh token, redirect to login for web requests
-        if (req.headers.accept && req.headers.accept.includes('text/html')) {
-          const currentUrl = `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
-          const platformLoginUrl = `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(currentUrl)}`;
-          console.log('JWT invalid - redirecting to login:', platformLoginUrl);
-          return res.redirect(platformLoginUrl);
-        }
-        
-        // For API requests, return 401
-        return res.status(401).json({ error: 'Invalid token' });
+      // If token expired, return 401 and let client-side handle refresh
+      if (jwtError.name === 'TokenExpiredError') {
+        console.log('Token expired - returning 401 for client to handle refresh');
+        return res.status(401).json({ 
+          error: 'Token expired', 
+          code: 'TOKEN_EXPIRED' 
+        });
       }
+      
+      // For other JWT errors (invalid signature, etc.)
+      console.log('JWT invalid - returning 401');
+      return res.status(401).json({ 
+        error: 'Invalid token',
+        code: 'INVALID_TOKEN'
+      });
     }
     
     // Get user details from platform

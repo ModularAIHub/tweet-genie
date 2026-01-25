@@ -138,22 +138,43 @@ router.post('/refresh', async (req, res) => {
     const refreshToken = req.cookies?.refreshToken;
     
     if (!refreshToken) {
-      return res.status(401).json({ error: 'Refresh token required' });
+      return res.status(401).json({ error: 'Refresh token required', code: 'NO_REFRESH_TOKEN' });
     }
 
     console.log('Attempting to refresh token via Platform...');
     
-    // Forward refresh request to Platform
+    // Forward refresh request to Platform with proper cookie format
     const refreshResponse = await axios.post(
       `${process.env.PLATFORM_URL || 'http://localhost:3000'}/api/auth/refresh`,
       {},
       {
         headers: {
-          'Cookie': `refreshToken=${refreshToken}`
+          'Cookie': `refreshToken=${refreshToken}`,
+          'Content-Type': 'application/json'
         },
-        withCredentials: true
+        withCredentials: true,
+        validateStatus: (status) => status < 500 // Don't throw on 4xx errors
       }
     );
+
+    // Check if refresh failed
+    if (refreshResponse.status !== 200) {
+      console.error('Platform refresh failed:', refreshResponse.status, refreshResponse.data);
+      // Clear invalid refresh token
+      const isProduction = process.env.NODE_ENV === 'production';
+      const cookieDomain = process.env.COOKIE_DOMAIN || '.suitegenie.in';
+      res.clearCookie('refreshToken', {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
+        ...(isProduction ? { domain: cookieDomain } : {})
+      });
+      return res.status(401).json({ 
+        error: 'Token refresh failed', 
+        code: 'REFRESH_FAILED',
+        details: refreshResponse.data 
+      });
+    }
 
     // Extract new tokens from Platform response
     const setCookieHeader = refreshResponse.headers['set-cookie'];
@@ -172,7 +193,7 @@ router.post('/refresh', async (req, res) => {
         httpOnly: true,
         secure: isProduction,
         sameSite: isProduction ? 'none' : 'lax',
-        maxAge: 15 * 60 * 1000,
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days to match platform
         ...(isProduction ? { domain: cookieDomain } : {})
       };
       const refreshTokenOptions = {
@@ -202,7 +223,15 @@ router.post('/refresh', async (req, res) => {
     }
   } catch (error) {
     console.error('Token refresh error:', error.message);
-    res.status(401).json({ error: 'Token refresh failed' });
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+    }
+    res.status(401).json({ 
+      error: 'Token refresh failed', 
+      code: 'REFRESH_ERROR',
+      details: error.message 
+    });
   }
 });
 
