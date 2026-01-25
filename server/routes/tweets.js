@@ -502,11 +502,20 @@ router.get(['/history', '/'], async (req, res) => {
     let countParams = [req.user.id];
 
     if (selectedAccountId) {
-      // Team mode: join with team_accounts and filter by account_id
+      // Team mode: show all tweets for the selected team account
+      // visible to any active team member (admin/owner/member). Do NOT filter by poster user.
+      // Restrict visibility by ensuring the selected account belongs to one of the user's teams.
       queryParams.push(parseInt(selectedAccountId));
       countParams.push(parseInt(selectedAccountId));
-      
-      let whereClause = 'WHERE t.user_id = $1 AND t.account_id = $2';
+
+      // whereClause:
+      // - ta.team_id is one of the teams the current user belongs to
+      // - t.account_id equals selected account
+      // Note: keep status filter if provided
+      let whereClause = `WHERE ta.team_id IN (
+                          SELECT team_id FROM team_members 
+                          WHERE user_id = $1 AND status = 'active'
+                        ) AND t.account_id = $2`;
       if (status) {
         whereClause += ` AND t.status = $3`;
         queryParams.push(status);
@@ -534,6 +543,7 @@ router.get(['/history', '/'], async (req, res) => {
 
       countQuery = `
         SELECT COUNT(*) FROM tweets t
+        LEFT JOIN team_accounts ta ON t.account_id = ta.id
         ${whereClause}
       `;
 
