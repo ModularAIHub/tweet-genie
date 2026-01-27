@@ -145,7 +145,7 @@ const Dashboard = () => {
           </p>
           <div className="grid grid-cols-2 gap-4 mb-6">
             <a
-              href={`${import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173'}/team`}
+              href={`${import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in'}/team`}
               className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               <Twitter className="h-4 w-4 mr-2" />

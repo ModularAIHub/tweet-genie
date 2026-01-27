@@ -77,7 +77,13 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Only attempt token refresh for 401 errors on protected routes
+    // Exclude auth endpoints, csrf token, and already retried requests
+    if (error.response?.status === 401 && 
+        !originalRequest._retry && 
+        !originalRequest.url.includes('/api/auth/refresh') &&
+        !originalRequest.url.includes('/api/auth/login') &&
+        !originalRequest.url.includes('/api/csrf-token')) {
       if (isRefreshing) {
         // If refresh is already in progress, queue this request
         return new Promise((resolve, reject) => {
@@ -123,9 +129,9 @@ api.interceptors.response.use(
         const hasRedirectedRecently = sessionStorage.getItem('auth_redirect_time');
         const now = Date.now();
         
-        // Prevent redirect loop - only redirect once every 30 seconds
-        if (hasRedirectedRecently && (now - parseInt(hasRedirectedRecently)) < 30000) {
-          console.log('Skipping redirect to prevent loop (redirected recently)');
+        // Prevent redirect loop - only redirect once every 2 seconds
+        if (hasRedirectedRecently && (now - parseInt(hasRedirectedRecently)) < 2000) {
+          console.log('Skipping redirect to prevent loop');
           return Promise.reject(refreshError);
         }
         
@@ -135,7 +141,7 @@ api.interceptors.response.use(
           console.log('Redirecting to platform for re-authentication');
           sessionStorage.setItem('auth_redirect_time', now.toString());
           const currentUrl = encodeURIComponent(window.location.href);
-          const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
+          const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in';
           window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
         }
 
