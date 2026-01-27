@@ -117,9 +117,19 @@ export const AuthProvider = ({ children }) => {
 
   const redirectToLogin = () => {
     // Set timestamp to prevent redirect loops
-    sessionStorage.setItem('auth_redirect_time', Date.now().toString());
+    const now = Date.now();
+    const lastRedirect = sessionStorage.getItem('auth_redirect_time');
+    
+    // Only limit if it's been less than 2 seconds (to allow immediate correction)
+    if (lastRedirect && (now - parseInt(lastRedirect)) < 2000) {
+      console.warn('Redirect loop suspected, skipping');
+      return;
+    }
+
+    sessionStorage.setItem('auth_redirect_time', now.toString());
     const currentUrl = encodeURIComponent(window.location.href);
-    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
+    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in';
+    console.log('Redirecting to login at:', `${platformUrl}/login`);
     window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
   };
 
@@ -148,9 +158,10 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(false);
     toast.success('Logged out successfully');
     
-    // Redirect to main platform root (not login)
-    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173';
-    window.location.href = platformUrl;
+    // Redirect to main platform login
+    const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in';
+    const currentUrl = encodeURIComponent(window.location.origin);
+    window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
   };
 
   const value = {
