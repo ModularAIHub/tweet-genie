@@ -21,7 +21,7 @@ import teamRoutes from './routes/team.js';
 
 // Middleware imports
 import { authenticateToken } from './middleware/auth.js';
-import { errorHandler } from './middleware/errorHandler.js';
+// import { errorHandler } from './middleware/errorHandler.js';
 
 // Service imports
 // import { scheduledTweetService } from './services/scheduledTweetService.js';
@@ -46,50 +46,39 @@ app.use(helmet({
   },
 }));
 
-// CORS configuration with both production and development origins
+// --- CORS: must be first middleware! ---
 const allowedOrigins = [
   'https://suitegenie.in',
   'https://tweet.suitegenie.in',
   'https://api.suitegenie.in',
   'https://tweetapi.suitegenie.in',
 ];
-
-// Add development origins if in development mode
-if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
-  allowedOrigins.push(
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:3000',
-    'http://localhost:3002'
-  );
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  try {
+    const { hostname } = new URL(origin);
+    return (
+      allowedOrigins.includes(origin) ||
+      hostname === 'suitegenie.in' ||
+      hostname.endsWith('.suitegenie.in')
+    );
+  } catch {
+    return false;
+  }
 }
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (isAllowedOrigin(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
-// Simplified CORS for development
-if (process.env.NODE_ENV === 'development' || !process.env.NODE_ENV) {
-  app.use(cors({
-    origin: true, // Allow all origins in development
-    credentials: true
-  }));
-app.use('/api/pro-team', authenticateToken, proTeamRoutes);
-} else {
-  // Production CORS
-  app.use(cors({
-    origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
-      
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        return callback(null, origin);
-      } else {
-        return callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-CSRF-Token', 'X-Selected-Account-Id'],
-    exposedHeaders: ['Set-Cookie']
-  }));
-}
 app.set('trust proxy', 1);
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
@@ -149,16 +138,16 @@ app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
 
 // Error handling
-app.use((err, req, res, next) => {
-  // Add CORS headers even on errors
-  const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-  }
-  // Delegate to the original error handler
-  errorHandler(err, req, res, next);
-});
+// app.use((err, req, res, next) => {
+//   // Add CORS headers even on errors
+//   const origin = req.headers.origin;
+//   if (origin && allowedOrigins.includes(origin)) {
+//     res.setHeader('Access-Control-Allow-Origin', origin);
+//     res.setHeader('Access-Control-Allow-Credentials', 'true');
+//   }
+//   // Delegate to the original error handler
+//   errorHandler(err, req, res, next);
+// });
 
 
 // Start BullMQ worker for scheduled tweets
