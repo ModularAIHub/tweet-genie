@@ -63,17 +63,50 @@ class ScheduledTweetService {
   // For BullMQ worker: process a scheduled tweet by its ID
   async processSingleScheduledTweetById(scheduledTweetId) {
     // Fetch the scheduled tweet and related info
+    // First, get the scheduled tweet row
     const { rows } = await pool.query(
-      `SELECT st.*, ta.access_token, ta.twitter_username
-         FROM scheduled_tweets st
-         JOIN twitter_auth ta ON st.user_id = ta.user_id
-         WHERE st.id = $1`,
+      `SELECT * FROM scheduled_tweets WHERE id = $1`,
       [scheduledTweetId]
     );
     if (!rows.length) {
       throw new Error(`Scheduled tweet not found: ${scheduledTweetId}`);
     }
-    await this.processSingleScheduledTweet(rows[0]);
+    const scheduledTweet = rows[0];
+
+    let accountRow = null;
+    let accountType = 'personal';
+    // If account_id is present, it's a team account
+    if (scheduledTweet.account_id) {
+      // Team account
+      const teamAccountRes = await pool.query(
+        `SELECT * FROM team_accounts WHERE id = $1 AND active = true`,
+        [scheduledTweet.account_id]
+      );
+      if (!teamAccountRes.rows.length) {
+        throw new Error(`Team account not found or inactive: ${scheduledTweet.account_id}`);
+      }
+      accountRow = teamAccountRes.rows[0];
+      accountType = 'team';
+    } else {
+      // Personal account
+      const personalRes = await pool.query(
+        `SELECT * FROM twitter_auth WHERE user_id = $1`,
+        [scheduledTweet.user_id]
+      );
+      if (!personalRes.rows.length) {
+        throw new Error(`Personal twitter_auth not found for user: ${scheduledTweet.user_id}`);
+      }
+      accountRow = personalRes.rows[0];
+    }
+
+    // Attach credentials to scheduledTweet for posting
+    scheduledTweet.access_token = accountRow.access_token;
+    scheduledTweet.twitter_username = accountRow.twitter_username || accountRow.username;
+    scheduledTweet.oauth1_access_token = accountRow.oauth1_access_token;
+    scheduledTweet.oauth1_access_token_secret = accountRow.oauth1_access_token_secret;
+    scheduledTweet.isTeamAccount = accountType === 'team';
+
+    await this.processSingleScheduledTweet(scheduledTweet);
   }
   async processScheduledTweets() {
     try {
