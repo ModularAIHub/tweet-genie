@@ -81,8 +81,8 @@ app.use((req, res, next) => {
 
 app.set('trust proxy', 1);
 app.use(cookieParser());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 // Health check
 app.get('/health', (req, res) => {
@@ -137,17 +137,24 @@ app.use('/api/image-generation', authenticateToken, imageGenerationRoutes);
 app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
 
-// Error handling
-// app.use((err, req, res, next) => {
-//   // Add CORS headers even on errors
-//   const origin = req.headers.origin;
-//   if (origin && allowedOrigins.includes(origin)) {
-//     res.setHeader('Access-Control-Allow-Origin', origin);
-//     res.setHeader('Access-Control-Allow-Credentials', 'true');
-//   }
-//   // Delegate to the original error handler
-//   errorHandler(err, req, res, next);
-// });
+
+// Global error handler to always set CORS headers, even for body parser errors (e.g., 413)
+app.use((err, req, res, next) => {
+  const origin = req.headers.origin;
+  if (isAllowedOrigin(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  }
+  // Handle body too large error
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request entity too large', details: err.message });
+  }
+  // Default to 500
+  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+});
 
 
 // Start BullMQ worker for scheduled tweets
