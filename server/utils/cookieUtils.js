@@ -8,14 +8,15 @@
  * @param {number} maxAge - Cookie expiration time in milliseconds
  * @returns {object} Cookie options object
  */
-export const getCookieOptions = (maxAge = 7 * 24 * 60 * 60 * 1000) => {
+export const getCookieOptions = (maxAge = 30 * 24 * 60 * 60 * 1000) => {
   const isProduction = process.env.NODE_ENV === 'production';
   
   const options = {
     httpOnly: true,
     secure: isProduction,
     sameSite: isProduction ? 'none' : 'lax',
-    maxAge
+    maxAge,
+    path: '/' // Ensure cookie is available for all paths
   };
   
   // Set domain based on environment
@@ -38,7 +39,8 @@ export const getClearCookieOptions = () => {
   const options = {
     httpOnly: true,
     secure: isProduction,
-    sameSite: isProduction ? 'none' : 'lax'
+    sameSite: isProduction ? 'none' : 'lax',
+    path: '/' // Match the path used when setting cookies
   };
   
   // Set domain based on environment

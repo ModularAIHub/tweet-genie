@@ -33,9 +33,11 @@ router.post('/bulk', async (req, res) => {
       if (isThread && threadParts && Array.isArray(threadParts)) {
         // threadParts should be an array of strings
         threadParts = threadParts.filter(part => part && part.trim().length > 0);
+        console.log(`📝 Scheduling thread with ${threadParts.length} parts:`, threadParts.map((p, i) => `Part ${i + 1}: ${p.substring(0, 50)}...`));
       } else if (isThread && content && content.includes('---')) {
         // Fallback: split content by --- if threadParts not provided
         threadParts = content.split('---').map(part => part.trim()).filter(Boolean);
+        console.log(`📝 Scheduling thread (split by ---) with ${threadParts.length} parts:`, threadParts.map((p, i) => `Part ${i + 1}: ${p.substring(0, 50)}...`));
       }
       if (frequency === 'daily') {
         const dayOffset = Math.floor(scheduledCount / postsPerDay);
@@ -62,6 +64,17 @@ router.post('/bulk', async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
           [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
         );
+        
+        console.log(`✅ [Daily] Scheduled ID ${rows[0].id}: "${mainContent.substring(0, 40)}..." with ${threadTweets.length} thread tweets`);
+        
+        // Add to BullMQ queue with delay
+        const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
+        await scheduledTweetQueue.add(
+          'scheduled-tweet',
+          { scheduledTweetId: rows[0].id },
+          { delay }
+        );
+        
         scheduled.push(rows[0]);
       } else if (frequency === 'thrice_weekly' || frequency === 'four_times_weekly') {
         const days = frequency === 'thrice_weekly' ? [1, 3, 5] : [0, 2, 4, 6];
@@ -91,6 +104,15 @@ router.post('/bulk', async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
           [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
         );
+        
+        // Add to BullMQ queue with delay
+        const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
+        await scheduledTweetQueue.add(
+          'scheduled-tweet',
+          { scheduledTweetId: rows[0].id },
+          { delay }
+        );
+        
         scheduled.push(rows[0]);
       } else if (frequency === 'custom' && Array.isArray(daysOfWeek)) {
         const week = Math.floor(scheduledCount / (daysOfWeek.length * postsPerDay));
@@ -119,6 +141,15 @@ router.post('/bulk', async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
           [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
         );
+        
+        // Add to BullMQ queue with delay
+        const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
+        await scheduledTweetQueue.add(
+          'scheduled-tweet',
+          { scheduledTweetId: rows[0].id },
+          { delay }
+        );
+        
         scheduled.push(rows[0]);
       }
       scheduledCount++;

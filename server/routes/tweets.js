@@ -502,52 +502,94 @@ router.get(['/history', '/'], async (req, res) => {
     let countParams = [req.user.id];
 
     if (selectedAccountId) {
-      // Team mode: show all tweets for the selected team account
-      // visible to any active team member (admin/owner/member). Do NOT filter by poster user.
-      // Restrict visibility by ensuring the selected account belongs to one of the user's teams.
-      queryParams.push(parseInt(selectedAccountId));
-      countParams.push(parseInt(selectedAccountId));
+      console.log('[GET /tweets/history] Selected account ID:', selectedAccountId);
+      
+      // First check if this is a team account the user has access to
+      const teamCheckResult = await pool.query(`
+        SELECT ta.id, ta.team_id 
+        FROM team_accounts ta
+        INNER JOIN team_members tm ON ta.team_id = tm.team_id
+        WHERE ta.id::TEXT = $1 AND tm.user_id = $2 AND tm.status = 'active'
+      `, [selectedAccountId, req.user.id]);
+      
+      console.log('[GET /tweets/history] Team account check result:', teamCheckResult.rows);
+      
+      if (teamCheckResult.rows.length > 0) {
+        // Team mode: show all tweets for the selected team account
+        queryParams.push(selectedAccountId);
+        countParams.push(selectedAccountId);
 
-      // whereClause:
-      // - ta.team_id is one of the teams the current user belongs to
-      // - t.account_id equals selected account
-      // Note: keep status filter if provided
-      let whereClause = `WHERE ta.team_id IN (
-                          SELECT team_id FROM team_members 
-                          WHERE user_id = $1 AND status = 'active'
-                        ) AND t.account_id = $2`;
-      if (status) {
-        whereClause += ` AND t.status = $3`;
-        queryParams.push(status);
-        countParams.push(status);
+        let whereClause = `WHERE t.account_id::TEXT = $2`;
+        if (status) {
+          whereClause += ` AND t.status = $3`;
+          queryParams.push(status);
+          countParams.push(status);
+        }
+
+        sqlQuery = `
+          SELECT t.*, 
+                  ta.twitter_username as username, 
+                  ta.twitter_display_name as display_name,
+                  CASE 
+                    WHEN t.source = 'external' THEN t.external_created_at
+                    ELSE t.created_at
+                  END as display_created_at
+          FROM tweets t
+          LEFT JOIN team_accounts ta ON t.account_id::TEXT = ta.id::TEXT
+          ${whereClause}
+          ORDER BY 
+            CASE 
+              WHEN t.source = 'external' THEN t.external_created_at
+              ELSE t.created_at
+            END DESC
+          LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
+        `;
+
+        countQuery = `
+          SELECT COUNT(*) FROM tweets t
+          ${whereClause}
+        `;
+
+        queryParams.push(parsedLimit, parsedOffset);
+      } else {
+        // Not a team account or user doesn't have access - treat as personal account
+        console.log('[GET /tweets/history] Not a team account, treating as personal');
+        queryParams = [req.user.id];
+        countParams = [req.user.id];
+        
+        let whereClause = 'WHERE t.user_id = $1 AND (t.account_id IS NULL OR t.account_id = 0)';
+        if (status) {
+          whereClause += ` AND t.status = $2`;
+          queryParams.push(status);
+          countParams.push(status);
+        }
+
+        sqlQuery = `
+          SELECT t.*, 
+                  ta.twitter_username as username, 
+                  ta.twitter_display_name as display_name,
+                  CASE 
+                    WHEN t.source = 'external' THEN t.external_created_at
+                    ELSE t.created_at
+                  END as display_created_at
+          FROM tweets t
+          LEFT JOIN twitter_auth ta ON t.user_id = ta.user_id
+          ${whereClause}
+          ORDER BY 
+            CASE 
+              WHEN t.source = 'external' THEN t.external_created_at
+              ELSE t.created_at
+            END DESC
+          LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
+        `;
+
+        countQuery = `
+          SELECT COUNT(*) FROM tweets t
+          ${whereClause}
+        `;
+
+        queryParams.push(parsedLimit, parsedOffset);
       }
-
-      sqlQuery = `
-        SELECT t.*, 
-                ta.twitter_username as username, 
-                ta.twitter_display_name as display_name,
-                CASE 
-                  WHEN t.source = 'external' THEN t.external_created_at
-                  ELSE t.created_at
-                END as display_created_at
-        FROM tweets t
-        LEFT JOIN team_accounts ta ON t.account_id = ta.id
-        ${whereClause}
-        ORDER BY 
-          CASE 
-            WHEN t.source = 'external' THEN t.external_created_at
-            ELSE t.created_at
-          END DESC
-        LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
-      `;
-
-      countQuery = `
-        SELECT COUNT(*) FROM tweets t
-        LEFT JOIN team_accounts ta ON t.account_id = ta.id
-        ${whereClause}
-      `;
-
-      queryParams.push(parsedLimit, parsedOffset);
     } else {
       // Personal mode: join with twitter_auth, filter out team tweets
       let whereClause = 'WHERE t.user_id = $1 AND (t.account_id IS NULL OR t.account_id = 0)';

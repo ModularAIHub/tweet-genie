@@ -21,7 +21,25 @@ const TwitterTokenStatus = () => {
         
         if (response.ok) {
           const data = await response.json();
+          console.log('[TwitterTokenStatus] Token status response:', data);
           setTokenStatus(data);
+          
+          // If no connection at all, don't show warning (user needs to connect first)
+          if (!data.connected) {
+            setShowWarning(false);
+            toast.dismiss('token-expiring');
+            toast.dismiss('token-expired');
+            return;
+          }
+          
+          // OAuth 1.0a tokens don't expire, so don't show warnings
+          if (data.isOAuth1) {
+            console.log('[TwitterTokenStatus] OAuth 1.0a detected - hiding warnings');
+            setShowWarning(false);
+            toast.dismiss('token-expiring');
+            toast.dismiss('token-expired');
+            return;
+          }
           
           // Show warning if token expires in less than 30 minutes
           if (data.minutesUntilExpiry < 30 && data.minutesUntilExpiry > 0) {
@@ -35,7 +53,7 @@ const TwitterTokenStatus = () => {
                 id: 'token-expiring'
               }
             );
-          } else if (data.minutesUntilExpiry <= 0) {
+          } else if (data.minutesUntilExpiry <= 0 && !data.isOAuth1) {
             setShowWarning(true);
             toast.error(
               '⚠️ Your Twitter connection has expired. Please reconnect your Twitter account.',
@@ -46,6 +64,8 @@ const TwitterTokenStatus = () => {
             );
           } else {
             setShowWarning(false);
+            toast.dismiss('token-expiring');
+            toast.dismiss('token-expired');
           }
         }
       } catch (error) {

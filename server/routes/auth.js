@@ -50,7 +50,8 @@ router.get('/callback', async (req, res) => {
       secure: true,
       sameSite: 'none',
       domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: '/'
     });
 
     // Set refresh token if available
@@ -61,7 +62,8 @@ router.get('/callback', async (req, res) => {
         secure: true,
         sameSite: 'none',
         domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        path: '/'
       });
     } else {
       console.log('No refresh token provided in callback');
@@ -96,7 +98,8 @@ router.post('/callback', async (req, res) => {
       secure: true,
       sameSite: 'none',
       domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-      maxAge: 15 * 60 * 1000 // 15 minutes - matches Platform
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: '/'
     });
 
     // Set refresh token if available
@@ -106,7 +109,8 @@ router.post('/callback', async (req, res) => {
         secure: true,
         sameSite: 'none',
         domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days - matches Platform
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        path: '/'
       });
     }
 
@@ -193,14 +197,16 @@ router.post('/refresh', async (req, res) => {
         httpOnly: true,
         secure: isProduction,
         sameSite: isProduction ? 'none' : 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days to match platform
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        path: '/',
         ...(isProduction ? { domain: cookieDomain } : {})
       };
       const refreshTokenOptions = {
         httpOnly: true,
         secure: isProduction,
         sameSite: isProduction ? 'none' : 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        path: '/',
         ...(isProduction ? { domain: cookieDomain } : {})
       };
 

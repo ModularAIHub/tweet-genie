@@ -577,7 +577,7 @@ const History = () => {
                     {tweet.media_urls && tweet.media_urls.length > 0 && (
                       <div className="mb-4">
                         <div className="flex items-center text-sm text-gray-500">
-                          <span>📷 {tweet.media_urls.length} media file(s) attached</span>
+                          <span>📷 {tweet.media_urls.filter(url => url && url !== null).length} media file(s) attached</span>
                         </div>
                       </div>
                     )}
