@@ -602,11 +602,23 @@ router.get(['/history', '/'], async (req, res) => {
   } catch (error) {
     console.error('[GET /tweets/history] Error:', error);
     console.error('[GET /tweets/history] Error stack:', error.stack);
+    console.error('[GET /tweets/history] Error code:', error.code);
     console.error('[GET /tweets/history] SQL query was:', sqlQuery);
     console.error('[GET /tweets/history] Query params were:', queryParams);
+    
+    // Check for database connection errors
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT') {
+      return res.status(503).json({ 
+        error: 'Database connection failed', 
+        details: 'Unable to connect to the database. Please try again later.',
+        code: error.code
+      });
+    }
+    
     res.status(500).json({ 
       error: 'Failed to fetch tweets', 
       details: error.message,
+      code: error.code,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined 
     });
   }
