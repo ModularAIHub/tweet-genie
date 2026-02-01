@@ -132,32 +132,46 @@ const BulkGeneration = () => {
         const item = toSchedule[i];
         let media = [];
         if (item.isThread && Array.isArray(item.threadParts)) {
-          // For threads, collect images for each part
+          // For threads, collect images for each part (only non-null images)
           for (let j = 0; j < item.threadParts.length; j++) {
             if (item.images && item.images[j]) {
               const img = item.images[j];
-              if (img instanceof File) {
-                // Convert to base64
+              // Handle array of images (multiple images per tweet)
+              if (Array.isArray(img)) {
+                for (const file of img) {
+                  if (file instanceof File) {
+                    // eslint-disable-next-line no-await-in-loop
+                    media.push(await fileToBase64(file));
+                  } else if (typeof file === 'string') {
+                    media.push(file);
+                  }
+                }
+              } else if (img instanceof File) {
                 // eslint-disable-next-line no-await-in-loop
                 media.push(await fileToBase64(img));
               } else if (typeof img === 'string') {
                 media.push(img);
-              } else {
-                media.push(null);
               }
-            } else {
-              media.push(null);
             }
           }
         } else {
-          // Single tweet
+          // Single tweet - handle array of images
           if (item.images && item.images[0]) {
-            const img = item.images[0];
-            if (img instanceof File) {
+            const imgs = item.images[0];
+            if (Array.isArray(imgs)) {
+              for (const img of imgs) {
+                if (img instanceof File) {
+                  // eslint-disable-next-line no-await-in-loop
+                  media.push(await fileToBase64(img));
+                } else if (typeof img === 'string') {
+                  media.push(img);
+                }
+              }
+            } else if (imgs instanceof File) {
               // eslint-disable-next-line no-await-in-loop
-              media.push(await fileToBase64(img));
-            } else if (typeof img === 'string') {
-              media.push(img);
+              media.push(await fileToBase64(imgs));
+            } else if (typeof imgs === 'string') {
+              media.push(imgs);
             }
           }
         }
@@ -289,7 +303,23 @@ const handleImageUpload = (outputIdx, partIdx, files) => {
     const updated = { ...prev };
     if (updated[outputIdx]) {
       const newImages = [...(updated[outputIdx].images || [])];
-      newImages[partIdx] = files[0] || null;
+      // Convert FileList to array and support multiple images (up to 4)
+      const fileArray = Array.from(files).slice(0, 4);
+      newImages[partIdx] = fileArray.length > 0 ? fileArray : null;
+      updated[outputIdx] = { ...updated[outputIdx], images: newImages };
+    }
+    return updated;
+  });
+};
+
+const removeImage = (outputIdx, partIdx, imageIdx) => {
+  setOutputs((prev) => {
+    const updated = { ...prev };
+    if (updated[outputIdx] && updated[outputIdx].images[partIdx]) {
+      const newImagesForPart = [...updated[outputIdx].images[partIdx]];
+      newImagesForPart.splice(imageIdx, 1);
+      const newImages = [...updated[outputIdx].images];
+      newImages[partIdx] = newImagesForPart.length > 0 ? newImagesForPart : null;
       updated[outputIdx] = { ...updated[outputIdx], images: newImages };
     }
     return updated;
@@ -614,23 +644,41 @@ const handleGenerate = async () => {
                                     }}
                                     rows={4}
                                   />
-                                  <div className="flex items-center space-x-4 mt-1">
-                                    <input
-                                      type="file"
-                                      accept="image/*"
-                                      onChange={e => handleImageUpload(Number(idx), tIdx, e.target.files)}
-                                      disabled={loading}
-                                    />
-                                    {output.images[tIdx] && (
-                                      <span className="text-xs text-green-600">{output.images[tIdx].name}</span>
-                                    )}
-                                    {output.images[tIdx] && (
-                                      <img
-                                        src={URL.createObjectURL(output.images[tIdx])}
-                                        alt="preview"
-                                        className="h-10 w-10 object-cover rounded border ml-2 cursor-pointer"
-                                        onClick={() => setImageModal({ open: true, src: URL.createObjectURL(output.images[tIdx]) })}
+                                  <div className="flex flex-col space-y-2 mt-1">
+                                    <div className="flex items-center space-x-2">
+                                      <input
+                                        type="file"
+                                        accept="image/*"
+                                        multiple
+                                        onChange={e => handleImageUpload(Number(idx), tIdx, e.target.files)}
+                                        disabled={loading}
+                                        className="text-sm"
                                       />
+                                      <span className="text-xs text-gray-500">
+                                        {output.images[tIdx] && Array.isArray(output.images[tIdx]) 
+                                          ? `${output.images[tIdx].length} image${output.images[tIdx].length > 1 ? 's' : ''}`
+                                          : 'No images'}
+                                      </span>
+                                    </div>
+                                    {output.images[tIdx] && Array.isArray(output.images[tIdx]) && (
+                                      <div className="flex flex-wrap gap-2">
+                                        {output.images[tIdx].map((img, imgIdx) => (
+                                          <div key={imgIdx} className="relative group">
+                                            <img
+                                              src={URL.createObjectURL(img)}
+                                              alt={`preview ${imgIdx + 1}`}
+                                              className="h-20 w-20 object-cover rounded border cursor-pointer hover:opacity-75 transition"
+                                              onClick={() => setImageModal({ open: true, src: URL.createObjectURL(img) })}
+                                            />
+                                            <button
+                                              onClick={() => removeImage(Number(idx), tIdx, imgIdx)}
+                                              className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition"
+                                            >
+                                              ×
+                                            </button>
+                                          </div>
+                                        ))}
+                                      </div>
                                     )}
                                   </div>
                                 </div>
@@ -645,23 +693,41 @@ const handleGenerate = async () => {
                                 onChange={e => updateText(Number(idx), e.target.value)}
                                 rows={Math.max(4, output.text.split('\n').length)}
                               />
-                              <div className="flex items-center space-x-2 mt-1">
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  onChange={e => handleImageUpload(Number(idx), 0, e.target.files)}
-                                  disabled={loading}
-                                />
-                                {output.images[0] && (
-                                  <span className="text-xs text-green-600">{output.images[0].name}</span>
-                                )}
-                                {output.images[0] && (
-                                  <img
-                                    src={URL.createObjectURL(output.images[0])}
-                                    alt="preview"
-                                    className="h-8 w-8 object-cover rounded border ml-2 cursor-pointer"
-                                    onClick={() => setImageModal({ open: true, src: URL.createObjectURL(output.images[0]) })}
+                              <div className="flex flex-col space-y-2 mt-1">
+                                <div className="flex items-center space-x-2">
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    multiple
+                                    onChange={e => handleImageUpload(Number(idx), 0, e.target.files)}
+                                    disabled={loading}
+                                    className="text-sm"
                                   />
+                                  <span className="text-xs text-gray-500">
+                                    {output.images[0] && Array.isArray(output.images[0]) 
+                                      ? `${output.images[0].length} image${output.images[0].length > 1 ? 's' : ''}`
+                                      : 'No images'}
+                                  </span>
+                                </div>
+                                {output.images[0] && Array.isArray(output.images[0]) && (
+                                  <div className="flex flex-wrap gap-2">
+                                    {output.images[0].map((img, imgIdx) => (
+                                      <div key={imgIdx} className="relative group">
+                                        <img
+                                          src={URL.createObjectURL(img)}
+                                          alt={`preview ${imgIdx + 1}`}
+                                          className="h-20 w-20 object-cover rounded border cursor-pointer hover:opacity-75 transition"
+                                          onClick={() => setImageModal({ open: true, src: URL.createObjectURL(img) })}
+                                        />
+                                        <button
+                                          onClick={() => removeImage(Number(idx), 0, imgIdx)}
+                                          className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
                             </div>

@@ -652,6 +652,25 @@ Generate tweet content for: ${prompt}`;
       .replace(/&#39;/g, "'")
       .replace(/&apos;/g, "'");
 
+    // Remove markdown formatting (bold, italic, headers)
+    // Bold: **text** or __text__
+    cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+    cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
+    
+    // Italic: *text* or _text_ (but not underscores in URLs or middle of words)
+    cleaned = cleaned.replace(/\*([^*\s][^*]*[^*\s])\*/g, '$1');
+    cleaned = cleaned.replace(/(?<!\w)_([^_\s][^_]*[^_\s])_(?!\w)/g, '$1');
+    
+    // Headers: # text, ## text, etc.
+    cleaned = cleaned.replace(/^#{1,6}\s+(.+)$/gm, '$1');
+    
+    // Strikethrough: ~~text~~
+    cleaned = cleaned.replace(/~~([^~]+)~~/g, '$1');
+    
+    // Code blocks: `code` or ```code```
+    cleaned = cleaned.replace(/```[^`]*```/g, '');
+    cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
+
     // Remove citation brackets: [1], [2], [3], etc.
     cleaned = cleaned.replace(/\[\d+\]/g, '');
     

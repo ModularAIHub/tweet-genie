@@ -60,7 +60,9 @@ function isAllowedOrigin(origin) {
     return (
       allowedOrigins.includes(origin) ||
       hostname === 'suitegenie.in' ||
-      hostname.endsWith('.suitegenie.in')
+      hostname.endsWith('.suitegenie.in') ||
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1'
     );
   } catch {
     return false;
@@ -159,6 +161,8 @@ app.use((err, req, res, next) => {
 
 // Start BullMQ worker for scheduled tweets
 import './workers/scheduledTweetWorker.js';
+// Sync orphaned scheduled tweets on startup
+import './workers/startupScheduledTweetSync.js';
 
 app.listen(PORT, () => {
   console.log(`Tweet Genie server running on port ${PORT}`);

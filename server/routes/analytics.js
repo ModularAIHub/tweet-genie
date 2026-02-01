@@ -48,7 +48,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
        WHERE user_id = $1 
        AND (created_at >= $2 OR external_created_at >= $2) 
        AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}`,
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
 
@@ -75,7 +75,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
        WHERE user_id = $1 
        AND (created_at >= $2 OR external_created_at >= $2) 
        AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY DATE(COALESCE(external_created_at, created_at))
        ORDER BY date DESC
        LIMIT 30`,
@@ -101,7 +101,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
        WHERE user_id = $1 
        AND (created_at >= $2 OR external_created_at >= $2) 
        AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        ORDER BY created_at DESC`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
@@ -118,7 +118,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(AVG(likes + retweets + replies), 0) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY EXTRACT(HOUR FROM created_at)
        ORDER BY avg_engagement DESC`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]
@@ -136,7 +136,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(AVG(likes + retweets + replies), 0) as avg_total_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted' AND content IS NOT NULL
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY CASE WHEN content IS NOT NULL AND array_length(string_to_array(content, '---'), 1) > 1 THEN 'thread' ELSE 'single' END`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
@@ -154,7 +154,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(SUM(replies), 0) as prev_total_replies
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND created_at < $3 AND status = 'posted'
-       ${accountId ? 'AND account_id = $4' : ''}`,
+       ${accountId ? 'AND account_id::TEXT = $4' : ''}`,
       accountId ? [userId, previousStartDate, startDate, accountId] : [userId, previousStartDate, startDate]
     );
 
@@ -477,7 +477,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         ELSE 0 END as avg_engagement_rate
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY hashtag_usage, content_type, content_length
        ORDER BY avg_total_engagement DESC`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]
@@ -496,7 +496,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         ELSE 0 END as avg_engagement_rate
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY EXTRACT(DOW FROM created_at), EXTRACT(HOUR FROM created_at)
        HAVING COUNT(*) >= 2
        ORDER BY avg_engagement DESC
@@ -514,7 +514,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         AVG(likes + retweets + replies) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY CASE WHEN content LIKE '%#%' THEN 'with_hashtags' ELSE 'without_hashtags' END
        
        UNION ALL
@@ -527,7 +527,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         AVG(likes + retweets + replies) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY CASE WHEN array_length(string_to_array(content, '---'), 1) > 1 THEN 'threads' ELSE 'single_tweets' END`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]
     );
@@ -567,7 +567,7 @@ router.get('/audience', authenticateToken, async (req, res) => {
         MIN(impressions) as min_impressions
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY DATE(created_at)
        ORDER BY date DESC`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]
@@ -590,7 +590,7 @@ router.get('/audience', authenticateToken, async (req, res) => {
         AVG(impressions) as avg_impressions
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id = $3' : ''}
+       ${accountId ? 'AND account_id::TEXT = $3' : ''}
        GROUP BY reach_category
        ORDER BY avg_impressions DESC`,
       accountId ? [userId, startDate, accountId] : [userId, startDate]

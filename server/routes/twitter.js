@@ -879,6 +879,8 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     const teamId = req.user?.teamId || req.user?.team_id;
     const selectedAccountId = req.headers['x-selected-account-id'];
     
+    console.log('[token-status] Checking for user:', userId, 'team:', teamId, 'account:', selectedAccountId);
+    
     let tokenData = null;
     
     // Check team account first if selected
@@ -889,6 +891,10 @@ router.get('/token-status', authenticateToken, async (req, res) => {
       );
       if (teamRows.length > 0) {
         tokenData = teamRows[0];
+        console.log('[token-status] Team account found:', { 
+          hasOAuth1: !!tokenData.oauth1_access_token,
+          expiresAt: tokenData.token_expires_at 
+        });
       }
     }
     
@@ -900,15 +906,21 @@ router.get('/token-status', authenticateToken, async (req, res) => {
       );
       if (personalRows.length > 0) {
         tokenData = personalRows[0];
+        console.log('[token-status] Personal account found:', { 
+          hasOAuth1: !!tokenData.oauth1_access_token,
+          expiresAt: tokenData.token_expires_at 
+        });
       }
     }
     
     if (!tokenData) {
+      console.log('[token-status] No token data found - not connected');
       return res.json({ connected: false });
     }
     
     // OAuth 1.0a tokens don't expire, so if present, account is always connected
     if (tokenData.oauth1_access_token) {
+      console.log('[token-status] OAuth 1.0a token present - returning non-expiring status');
       return res.json({
         connected: true,
         expiresAt: null,
@@ -921,12 +933,18 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     
     // Check OAuth 2.0 token expiration
     if (!tokenData.token_expires_at) {
+      console.log('[token-status] No token_expires_at found - not connected');
       return res.json({ connected: false });
     }
     
     const now = new Date();
     const expiresAt = new Date(tokenData.token_expires_at);
     const minutesUntilExpiry = Math.floor((expiresAt - now) / (60 * 1000));
+    
+    console.log('[token-status] OAuth 2.0 status:', {
+      isExpired: expiresAt <= now,
+      minutesUntilExpiry
+    });
     
     res.json({
       connected: true,

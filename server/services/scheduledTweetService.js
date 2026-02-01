@@ -4,6 +4,33 @@ import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 
+// Helper function to strip markdown formatting
+function stripMarkdown(text) {
+  if (!text) return text;
+  
+  let cleaned = text;
+  
+  // Remove bold: **text** or __text__
+  cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+  cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
+  
+  // Remove italic: *text* or _text_ (but not underscores in URLs or middle of words)
+  cleaned = cleaned.replace(/\*([^*\s][^*]*[^*\s])\*/g, '$1');
+  cleaned = cleaned.replace(/(?<!\w)_([^_\s][^_]*[^_\s])_(?!\w)/g, '$1');
+  
+  // Remove headers: # text, ## text, etc.
+  cleaned = cleaned.replace(/^#{1,6}\s+(.+)$/gm, '$1');
+  
+  // Remove strikethrough: ~~text~~
+  cleaned = cleaned.replace(/~~([^~]+)~~/g, '$1');
+  
+  // Remove code blocks: `code` or ```code```
+  cleaned = cleaned.replace(/```[^`]*```/g, '');
+  cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
+  
+  return cleaned.trim();
+}
+
 class ScheduledTweetService {
   /**
    * Schedule a tweet or thread for future posting.
@@ -187,53 +214,101 @@ class ScheduledTweetService {
 
       // Post main tweet with media IDs if present, decode HTML entities ONCE
       // Log for debugging encoding issues
-      console.log('[Thread Unicode Debug] Posting main tweet:', scheduledTweet.content);
+      const cleanContent = stripMarkdown(scheduledTweet.content);
+      console.log('[Thread Unicode Debug] Posting main tweet:', cleanContent);
       const tweetData = {
-        text: decodeHTMLEntities(scheduledTweet.content),
+        text: decodeHTMLEntities(cleanContent),
         ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
       };
 
       const tweetResponse = await twitterClient.v2.tweet(tweetData);
+      console.log(`✅ Main tweet posted successfully: ${tweetResponse.data.id}`);
 
       // Handle thread if present
+      let threadSuccess = true;
+      let threadError = null;
       if (scheduledTweet.thread_tweets && scheduledTweet.thread_tweets.length > 0) {
         let previousTweetId = tweetResponse.data.id;
         for (let i = 0; i < scheduledTweet.thread_tweets.length; i++) {
-          const threadTweet = scheduledTweet.thread_tweets[i];
-          // Log for debugging encoding issues
-          console.log('[Thread Unicode Debug] Posting thread tweet:', threadTweet.content);
-          let threadMediaIds = Array.isArray(threadMediaArr) && threadMediaArr[i + 1] ? threadMediaArr[i + 1] : [];
-          // threadMediaArr[0] is for main tweet, [1] for first thread tweet, etc.
-          const threadTweetData = {
-            text: decodeHTMLEntities(threadTweet.content),
-            reply: { in_reply_to_tweet_id: previousTweetId },
-            ...(Array.isArray(threadMediaIds) && threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
-          };
-          const threadResponse = await twitterClient.v2.tweet(threadTweetData);
-          previousTweetId = threadResponse.data.id;
+          try {
+            // Add delay between thread tweets to avoid rate limiting (2 seconds)
+            if (i > 0) {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
+            const threadTweet = scheduledTweet.thread_tweets[i];
+            // Log for debugging encoding issues
+            const cleanThreadContent = stripMarkdown(threadTweet.content);
+            console.log(`[Thread ${i + 1}/${scheduledTweet.thread_tweets.length}] Posting:`, cleanThreadContent);
+            let threadMediaIds = Array.isArray(threadMediaArr) && threadMediaArr[i + 1] ? threadMediaArr[i + 1] : [];
+            // threadMediaArr[0] is for main tweet, [1] for first thread tweet, etc.
+            const threadTweetData = {
+              text: decodeHTMLEntities(cleanThreadContent),
+              reply: { in_reply_to_tweet_id: previousTweetId },
+              ...(Array.isArray(threadMediaIds) && threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
+            };
+            const threadResponse = await twitterClient.v2.tweet(threadTweetData);
+            previousTweetId = threadResponse.data.id;
+            console.log(`✅ Thread tweet ${i + 1} posted successfully: ${threadResponse.data.id}`);
+          } catch (threadErr) {
+            console.error(`❌ Error posting thread tweet ${i + 1}:`, threadErr);
+            threadSuccess = false;
+            threadError = threadErr;
+            
+            // Check if it's a 403 duplicate error
+            if (threadErr.code === 403 || (threadErr.data && threadErr.data.status === 403)) {
+              console.error('⚠️ Thread failed with 403 - likely duplicate content. Main tweet was posted successfully.');
+            }
+            break; // Stop posting remaining thread tweets
+          }
         }
       }
 
-      // Update tweet with actual Twitter ID
+      // Insert into tweets table for history tracking
+      const tweetInsertQuery = `
+        INSERT INTO tweets (
+          user_id, content, tweet_id, status, posted_at, 
+          source, account_id, created_at, updated_at
+        ) VALUES ($1, $2, $3, 'posted', CURRENT_TIMESTAMP, 'scheduled', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id
+      `;
+      
+      const accountId = scheduledTweet.account_id || null;
+      const { rows: insertedTweet } = await pool.query(tweetInsertQuery, [
+        scheduledTweet.user_id,
+        cleanContent,
+        tweetResponse.data.id,
+        accountId
+      ]);
+      
+      console.log(`Inserted tweet into history with ID: ${insertedTweet[0].id}`);
+
+      // Mark scheduled tweet as completed or partially completed
+      const finalStatus = threadSuccess ? 'completed' : 'partially_completed';
+      const errorMsg = threadSuccess ? null : `Main tweet posted, but thread failed: ${threadError?.message || 'Unknown error'}`;
+      
       await pool.query(
-        `UPDATE tweets SET 
-          tweet_id = $1, 
-          status = 'posted', 
-          posted_at = CURRENT_TIMESTAMP 
-         WHERE id = $2`,
-        [tweetResponse.data.id, scheduledTweet.tweet_id]
+        'UPDATE scheduled_tweets SET status = $1, posted_at = CURRENT_TIMESTAMP, error_message = $2 WHERE id = $3',
+        [finalStatus, errorMsg, scheduledTweet.id]
       );
 
-      // Mark scheduled tweet as completed
-      await pool.query(
-        'UPDATE scheduled_tweets SET status = $1, posted_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['completed', scheduledTweet.id]
-      );
-
-      console.log(`Successfully posted scheduled tweet: ${scheduledTweet.id}`);
+      if (threadSuccess) {
+        console.log(`✅ Successfully posted scheduled tweet and thread: ${scheduledTweet.id}`);
+      } else {
+        console.log(`⚠️ Main tweet posted but thread failed: ${scheduledTweet.id}`);
+      }
 
     } catch (error) {
       console.error(`Error posting scheduled tweet ${scheduledTweet.id}:`, error);
+      
+      // Log detailed error information
+      if (error.code === 403) {
+        console.error('❌ Twitter 403 Error - This is usually caused by:');
+        console.error('   - Duplicate content (same tweet posted recently)');
+        console.error('   - Rate limit exceeded');
+        console.error('   - Tweet violates Twitter rules');
+        console.error('   Full error:', JSON.stringify(error, null, 2));
+      }
 
       // Mark as failed and optionally refund credits
       await pool.query(

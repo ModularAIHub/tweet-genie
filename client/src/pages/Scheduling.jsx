@@ -177,7 +177,7 @@ const Scheduling = () => {
                   {scheduledTweet.media_urls && scheduledTweet.media_urls.length > 0 && (
                     <div className="mt-3">
                       <div className="flex items-center text-sm text-gray-500">
-                        <span>📷 {scheduledTweet.media_urls.length} media file(s) attached</span>
+                        <span>📷 {scheduledTweet.media_urls.filter(url => url && url !== null).length} media file(s) attached</span>
                       </div>
                     </div>
                   )}
