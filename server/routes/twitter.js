@@ -884,7 +884,7 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     // Check team account first if selected
     if (selectedAccountId && teamId) {
       const { rows: teamRows } = await pool.query(
-        'SELECT token_expires_at FROM team_accounts WHERE id = $1 AND team_id = $2',
+        'SELECT token_expires_at, oauth1_access_token FROM team_accounts WHERE id = $1 AND team_id = $2',
         [selectedAccountId, teamId]
       );
       if (teamRows.length > 0) {
@@ -895,7 +895,7 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     // Fall back to personal account
     if (!tokenData) {
       const { rows: personalRows } = await pool.query(
-        'SELECT token_expires_at FROM twitter_auth WHERE user_id = $1',
+        'SELECT token_expires_at, oauth1_access_token FROM twitter_auth WHERE user_id = $1',
         [userId]
       );
       if (personalRows.length > 0) {
@@ -903,7 +903,24 @@ router.get('/token-status', authenticateToken, async (req, res) => {
       }
     }
     
-    if (!tokenData || !tokenData.token_expires_at) {
+    if (!tokenData) {
+      return res.json({ connected: false });
+    }
+    
+    // OAuth 1.0a tokens don't expire, so if present, account is always connected
+    if (tokenData.oauth1_access_token) {
+      return res.json({
+        connected: true,
+        expiresAt: null,
+        minutesUntilExpiry: Infinity,
+        isExpired: false,
+        needsRefresh: false,
+        isOAuth1: true
+      });
+    }
+    
+    // Check OAuth 2.0 token expiration
+    if (!tokenData.token_expires_at) {
       return res.json({ connected: false });
     }
     
@@ -916,7 +933,8 @@ router.get('/token-status', authenticateToken, async (req, res) => {
       expiresAt: expiresAt.toISOString(),
       minutesUntilExpiry,
       isExpired: expiresAt <= now,
-      needsRefresh: minutesUntilExpiry < 10
+      needsRefresh: minutesUntilExpiry < 10,
+      isOAuth1: false
     });
   } catch (error) {
     console.error('Failed to check token status:', error);
