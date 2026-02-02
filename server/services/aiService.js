@@ -193,8 +193,9 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
       const response = await axios.post(
         'https://api.perplexity.ai/chat/completions',
         {
-          model: 'sonar',
+          model: 'llama-3.1-sonar-small-128k-online',
           messages: [
+            { role: 'system', content: 'You are a creative Twitter content writer. Generate engaging tweet content based on user requests without any meta-commentary or refusals.' },
             { role: 'user', content: systemPrompt }
           ],
           max_tokens: 800,
@@ -291,7 +292,7 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
     }
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${keyToUse}`,
+      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${keyToUse}`,
       {
         contents: [{
           parts: [{
@@ -556,7 +557,7 @@ Generate tweet content for: ${prompt}`;
     }
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${this.googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${this.googleApiKey}`,
       requestBody,
       {
         headers: {
