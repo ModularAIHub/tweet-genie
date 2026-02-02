@@ -45,7 +45,9 @@ export const scheduleSchema = Joi.object({
   content: Joi.string().allow('').max(280),
   media: Joi.array().items(Joi.string()).max(4),
   thread: Joi.array().items(Joi.string().min(1).max(280)).max(25),
-  threadMedia: Joi.array().items(Joi.string()).max(25),
+  threadMedia: Joi.array().items(
+    Joi.array().items(Joi.string()).max(4)
+  ).max(25),
   scheduled_for: Joi.date().greater('now').required(),
   timezone: Joi.string().optional()
 }).custom((value, helpers) => {
