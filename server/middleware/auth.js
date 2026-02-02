@@ -77,8 +77,8 @@ export const authenticateToken = async (req, res, next) => {
       const response = await axios.get(`${process.env.PLATFORM_URL || 'http://localhost:3000'}/api/auth/me`, {
         headers: {
           'Authorization': `Bearer ${token}`
-          // Removed X-API-Key as Platform doesn't use it
-        }
+        },
+        timeout: 5000 // 5 second timeout
       });
 
       console.log('Platform response status:', response.status);
@@ -95,6 +95,19 @@ export const authenticateToken = async (req, res, next) => {
       console.log('Status:', platformError.response?.status);
       console.log('Data:', platformError.response?.data);
       console.log('Message:', platformError.message);
+      
+      // If timeout or network error, fallback to JWT data
+      if (platformError.code === 'ECONNABORTED' || platformError.code === 'ETIMEDOUT') {
+        console.warn('Platform timeout - using JWT fallback data');
+        req.user = {
+          id: decoded.userId,
+          email: decoded.email,
+          name: decoded.name || '',
+          team_id: null,
+          teamMemberships: []
+        };
+        return next();
+      }
       
       // For API requests, use fallback user data from JWT token
       if (!req.headers.accept || !req.headers.accept.includes('text/html')) {
