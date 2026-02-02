@@ -90,9 +90,9 @@ export const AccountProvider = ({ children }) => {
     
     const checkUserTeamStatus = async () => {
       try {
-        // Set timeout to prevent blocking
+        // Set timeout to prevent blocking (increased to 10 seconds)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
         
         const userResponse = await fetch(`${apiBaseUrl}/api/twitter/user/profile`, {
           credentials: 'include',
@@ -105,16 +105,18 @@ export const AccountProvider = ({ children }) => {
           const userProfile = await userResponse.json();
           const isInTeam = userProfile.user?.team_id || (userProfile.user?.teamMemberships && userProfile.user.teamMemberships.length > 0);
           const teamStatus = isInTeam ? true : false;
+          console.log('[AccountContext] Team status determined:', teamStatus);
           setUserTeamStatus(teamStatus);
           // Cache the result
           sessionStorage.setItem('userTeamStatus', JSON.stringify(teamStatus));
         } else {
+          console.warn('[AccountContext] User profile fetch failed with status:', userResponse.status);
           setUserTeamStatus(false);
           sessionStorage.setItem('userTeamStatus', JSON.stringify(false));
         }
       } catch (error) {
         if (error.name === 'AbortError') {
-          console.warn('[AccountContext] Team status check timed out - assuming individual user');
+          console.warn('[AccountContext] Team status check timed out after 10s - assuming individual user');
         } else {
           console.error('[AccountContext] Error checking team status:', error);
         }
