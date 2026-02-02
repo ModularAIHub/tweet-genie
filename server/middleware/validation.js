@@ -42,15 +42,26 @@ export const aiGenerateSchema = Joi.object({
 
 // Schedule validation (accepts content/media for single, or thread/threadMedia for thread)
 export const scheduleSchema = Joi.object({
-  content: Joi.string().allow('').max(280),
-  media: Joi.array().items(Joi.string()).max(4),
-  thread: Joi.array().items(Joi.string().min(1).max(280)).max(25),
+  content: Joi.string().allow('').max(280).optional(),
+  media: Joi.array().items(Joi.string()).max(4).optional().allow(null),
+  thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
   threadMedia: Joi.array().items(
     Joi.array().items(Joi.string()).max(4)
-  ).max(25),
-  scheduled_for: Joi.date().greater('now').required(),
+  ).max(25).optional(),
+  scheduled_for: Joi.alternatives().try(
+    Joi.date().iso(),
+    Joi.string().isoDate()
+  ).required(),
   timezone: Joi.string().optional()
 }).custom((value, helpers) => {
+  // Validate scheduled_for is in the future (allow 10 second grace period for timezone/clock differences)
+  const scheduledTime = new Date(value.scheduled_for);
+  const now = new Date();
+  if (scheduledTime.getTime() <= now.getTime() - 10000) {
+    return helpers.error('any.custom', { message: 'Scheduled time must be in the future' });
+  }
+  
+  // Validate at least one content type exists
   const hasContent = typeof value.content === 'string' && value.content.trim().length > 0;
   const hasMedia = Array.isArray(value.media) && value.media.length > 0;
   const hasThread = Array.isArray(value.thread) && value.thread.length > 0 && value.thread.some(t => t && t.trim().length > 0);
