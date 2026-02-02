@@ -3,9 +3,9 @@
 -- Purpose: Enable approval workflow for scheduled tweets (Editor needs approval before posting)
 
 -- Add team_id and approval fields to scheduled_tweets table
-ALTER TABLE scheduled_tweets ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id) ON DELETE CASCADE;
+ALTER TABLE scheduled_tweets ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES teams(id) ON DELETE CASCADE;
 ALTER TABLE scheduled_tweets ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT 'approved';
-ALTER TABLE scheduled_tweets ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id);
+ALTER TABLE scheduled_tweets ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id);
 ALTER TABLE scheduled_tweets ADD COLUMN IF NOT EXISTS approval_requested_at TIMESTAMP;
 ALTER TABLE scheduled_tweets ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
 

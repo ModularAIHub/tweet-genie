@@ -14,7 +14,7 @@ router.post('/bulk', async (req, res) => {
   try {
     const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
-    const teamId = req.headers['x-team-id'] ? parseInt(req.headers['x-team-id']) : null;
+    const teamId = req.headers['x-team-id'] || null;
     
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'No items to schedule' });
@@ -196,7 +196,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
   try {
   const { content, media = [], thread, threadMedia = [], scheduled_for, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
-    const teamId = req.headers['x-team-id'] ? parseInt(req.headers['x-team-id']) : null;
+    const teamId = req.headers['x-team-id'] || null;
 
     // Validate timezone
     if (!moment.tz.zone(timezone)) {
