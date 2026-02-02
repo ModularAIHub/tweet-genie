@@ -137,13 +137,14 @@ class ScheduledTweetService {
   }
   async processScheduledTweets() {
     try {
-      // Get tweets scheduled for now or earlier
+      // Get tweets scheduled for now or earlier that are approved
       const { rows: scheduledTweets } = await pool.query(
         `SELECT st.*, ta.access_token, ta.twitter_username
          FROM scheduled_tweets st
          JOIN twitter_auth ta ON st.user_id = ta.user_id
          WHERE st.status = 'pending' 
          AND st.scheduled_for <= NOW()
+         AND st.approval_status = 'approved'
          ORDER BY st.scheduled_for ASC
          LIMIT 10`
       );
@@ -169,8 +170,23 @@ class ScheduledTweetService {
         ['processing', scheduledTweet.id]
       );
 
+      // Validate access token exists
+      if (!scheduledTweet.access_token) {
+        throw new Error('No Twitter access token found. Please reconnect your Twitter account.');
+      }
+
       // Create Twitter client with OAuth 2.0
-      const twitterClient = new TwitterApi(scheduledTweet.access_token);
+      let twitterClient;
+      try {
+        twitterClient = new TwitterApi(scheduledTweet.access_token);
+        // Test the connection
+        await twitterClient.v2.me();
+      } catch (authError) {
+        if (authError.code === 401 || authError.status === 401) {
+          throw new Error('Twitter authentication failed (401). Token may be expired. Please reconnect your Twitter account.');
+        }
+        throw authError;
+      }
 
 
       // Use stored media IDs directly if present
@@ -269,7 +285,7 @@ class ScheduledTweetService {
         INSERT INTO tweets (
           user_id, content, tweet_id, status, posted_at, 
           source, account_id, created_at, updated_at
-        ) VALUES ($1, $2, $3, 'posted', CURRENT_TIMESTAMP, 'scheduled', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ) VALUES ($1, $2, $3, 'posted', CURRENT_TIMESTAMP, 'platform', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
       `;
       
@@ -299,21 +315,32 @@ class ScheduledTweetService {
       }
 
     } catch (error) {
-      console.error(`Error posting scheduled tweet ${scheduledTweet.id}:`, error);
+      console.error(`❌ Error posting scheduled tweet ${scheduledTweet.id}:`, error);
       
       // Log detailed error information
-      if (error.code === 403) {
+      let errorMessage = error.message || 'Unknown error';
+      if (error.code === 401 || error.status === 401) {
+        console.error('❌ Twitter 401 Error - Authentication failed');
+        console.error('   - Access token may be expired or invalid');
+        console.error('   - User needs to reconnect their Twitter account');
+        errorMessage = 'Twitter authentication failed (401). Please reconnect your Twitter account.';
+      } else if (error.code === 403) {
         console.error('❌ Twitter 403 Error - This is usually caused by:');
         console.error('   - Duplicate content (same tweet posted recently)');
         console.error('   - Rate limit exceeded');
         console.error('   - Tweet violates Twitter rules');
-        console.error('   Full error:', JSON.stringify(error, null, 2));
+        errorMessage = `Twitter error (403): ${error.message || 'Forbidden - likely duplicate or rate limit'}`;
+      } else if (error.code === 429) {
+        console.error('❌ Twitter 429 Error - Rate limit exceeded');
+        errorMessage = 'Twitter rate limit exceeded. Will retry later.';
       }
+      
+      console.error('   Full error:', JSON.stringify(error, null, 2));
 
-      // Mark as failed and optionally refund credits
+      // Mark as failed
       await pool.query(
         'UPDATE scheduled_tweets SET status = $1, error_message = $2 WHERE id = $3',
-        ['failed', error.message, scheduledTweet.id]
+        ['failed', errorMessage, scheduledTweet.id]
       );
 
       // Refund credits if the tweet failed to post

@@ -18,6 +18,7 @@ import providersRoutes from './routes/providers.js';
 import aiRoutes from './routes/ai.js';
 import imageGenerationRoutes from './routes/imageGeneration.js';
 import teamRoutes from './routes/team.js';
+import approvalRoutes from './routes/approval.js';
 
 // Middleware imports
 import { authenticateToken } from './middleware/auth.js';
@@ -138,6 +139,7 @@ app.use('/api/ai', authenticateToken, aiRoutes);
 app.use('/api/image-generation', authenticateToken, imageGenerationRoutes);
 app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
+app.use('/api/approval', authenticateToken, approvalRoutes);
 
 
 // Global error handler to always set CORS headers, even for body parser errors (e.g., 413)
