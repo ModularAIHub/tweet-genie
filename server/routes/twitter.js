@@ -785,16 +785,21 @@ router.get('/team-accounts', async (req, res) => {
       LIMIT 1
     `, [userId]);
 
+    console.log('[DEBUG] Team query result for user', userId, ':', teamResult.rows);
+
     if (teamResult.rows.length === 0) {
+      console.log('[DEBUG] User', userId, 'is not in any active team');
       return res.json({ accounts: [] }); // User not in any team
     }
 
     const teamId = teamResult.rows[0].team_id;
+    console.log('[DEBUG] User', userId, 'is in team', teamId);
 
     // Get Twitter accounts from user_social_accounts (OAuth1)
     const oauth1AccountsResult = await newPlatformPool.query(`
       SELECT 
         id,
+        user_id,
         account_id,
         account_username,
         account_display_name,
@@ -807,6 +812,9 @@ router.get('/team-accounts', async (req, res) => {
       ORDER BY created_at ASC
     `, [teamId]);
 
+    console.log('[DEBUG] OAuth1 accounts found:', oauth1AccountsResult.rows.length);
+    console.log('[DEBUG] OAuth1 accounts:', oauth1AccountsResult.rows);
+
     const oauth1Accounts = oauth1AccountsResult.rows.map(account => ({
       id: account.id,
       twitter_user_id: account.account_id,
@@ -816,6 +824,7 @@ router.get('/team-accounts', async (req, res) => {
       has_oauth1: account.has_oauth1,
       created_at: account.created_at,
       updated_at: account.updated_at,
+      connected_by_user_id: account.user_id,
       type: 'oauth1'
     }));
 
