@@ -265,30 +265,56 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         });
       }
 
-      // Store tweet in database
+      // Store tweet(s) in database
       const mainContent = thread && thread.length > 0 ? thread[0] : content;
       
       // Only set account_id for team accounts (isTeamAccount = true)
       // Personal accounts (isTeamAccount = false or undefined) will have NULL account_id
       const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
       
+      // Insert main tweet
       const { rows } = await pool.query(
         `INSERT INTO tweets (
           user_id, account_id, tweet_id, content, 
           media_urls, thread_tweets, credits_used, 
-          impressions, likes, retweets, replies, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0, 'posted')
+          impressions, likes, retweets, replies, status, source
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0, 'posted', 'platform')
         RETURNING *`,
         [
           userId,
           accountId,  // NULL for personal accounts, integer ID for team accounts
           tweetResponse.data.id,
           mainContent,
-          JSON.stringify(media || []),
+          JSON.stringify(thread && thread.length > 0 && threadMedia && threadMedia[0] ? threadMedia[0] : (media || [])),
           JSON.stringify(threadTweets),
           0  // No credits used for posting
         ]
       );
+      
+      // If this was a thread, insert each thread tweet as a separate record for history
+      if (threadTweets.length > 0) {
+        for (let i = 0; i < threadTweets.length; i++) {
+          const threadTweetContent = thread[i + 1]; // +1 because thread[0] is the main tweet
+          const threadTweetMediaUrls = threadMedia && threadMedia[i + 1] ? threadMedia[i + 1] : [];
+          
+          await pool.query(
+            `INSERT INTO tweets (
+              user_id, account_id, tweet_id, content, 
+              media_urls, credits_used, 
+              impressions, likes, retweets, replies, status, source
+            ) VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, 'posted', 'platform')`,
+            [
+              userId,
+              accountId,
+              threadTweets[i].id,
+              threadTweetContent,
+              JSON.stringify(threadTweetMediaUrls),
+              0
+            ]
+          );
+        }
+        console.log(`Inserted ${threadTweets.length} additional thread tweets into history`);
+      }
 
       res.json({
         success: true,
