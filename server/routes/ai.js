@@ -1,8 +1,8 @@
-
 import express from 'express';
 import { aiService } from '../services/aiService.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { creditService } from '../services/creditService.js';
+import { TeamCreditService } from '../services/teamCreditService.js';
 import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/sanitization.js';
 // import { bulkGenerate } from '../controllers/aiController.js';
 
@@ -106,6 +106,9 @@ router.post('/generate', authenticateToken, async (req, res) => {
     // Calculate estimated credits needed (1.2 credits per thread)
     const estimatedCreditsNeeded = estimatedThreadCount * 1.2;
 
+    // Get team context from header
+    const teamId = req.headers['x-team-id'] ? parseInt(req.headers['x-team-id']) : null;
+
     // Check and deduct credits before AI generation based on estimated count
     let token = req.cookies?.accessToken;
     if (!token) {
@@ -113,14 +116,35 @@ router.post('/generate', authenticateToken, async (req, res) => {
       token = authHeader && authHeader.split(' ')[1];
     }
     
-    const creditCheck = await creditService.checkAndDeductCredits(req.user.id, 'ai_text_generation', estimatedCreditsNeeded, token);
+    // Use TeamCreditService for context-aware credit deduction
+    const creditCheck = await TeamCreditService.checkCredits(req.user.id, teamId, estimatedCreditsNeeded);
     if (!creditCheck.success) {
       return res.status(402).json({
         success: false,
         error: 'Insufficient credits',
         creditsRequired: estimatedCreditsNeeded,
-        creditsAvailable: creditCheck.creditsAvailable || 0,
+        creditsAvailable: creditCheck.available || 0,
+        creditSource: creditCheck.source,
         estimatedThreads: estimatedThreadCount
+      });
+    }
+    
+    // Deduct estimated credits
+    const deductResult = await TeamCreditService.deductCredits(
+      req.user.id,
+      teamId,
+      estimatedCreditsNeeded,
+      'ai_text_generation',
+      token
+    );
+    
+    if (!deductResult.success) {
+      return res.status(402).json({
+        success: false,
+        error: deductResult.error || 'Failed to deduct credits',
+        creditsRequired: estimatedCreditsNeeded,
+        creditsAvailable: creditCheck.available || 0,
+        creditSource: creditCheck.source
       });
     }
 
@@ -167,31 +191,33 @@ router.post('/generate', authenticateToken, async (req, res) => {
     if (creditDifference > 0.01) { // Only adjust if difference is significant (> 1 cent)
       // Need to deduct more credits
       console.log(`Deducting additional ${creditDifference} credits (actual: ${threadCount}, estimated: ${estimatedThreadCount})`);
-      const additionalCreditCheck = await creditService.checkAndDeductCredits(
-        req.user.id, 
-        'ai_thread_adjustment', 
-        creditDifference, 
+      const additionalDeductResult = await TeamCreditService.deductCredits(
+        req.user.id,
+        teamId,
+        creditDifference,
+        'ai_thread_adjustment',
         token
       );
       
-      if (!additionalCreditCheck.success) {
+      if (!additionalDeductResult.success) {
         // Refund the initial credits since we can't complete the request
-        await creditService.refundCredits(req.user.id, 'ai_text_generation', estimatedCreditsNeeded);
+        await TeamCreditService.refundCredits(req.user.id, teamId, estimatedCreditsNeeded, 'ai_generation_failed');
         
         return res.status(402).json({
           success: false,
           error: 'Insufficient credits for actual thread count',
           creditsRequired: actualCreditsNeeded,
-          creditsAvailable: additionalCreditCheck.creditsAvailable || 0,
+          creditsAvailable: additionalDeductResult.remainingCredits || 0,
           threadCount: threadCount,
-          estimatedThreads: estimatedThreadCount
+          estimatedThreads: estimatedThreadCount,
+          creditSource: creditCheck.source
         });
       }
     } else if (creditDifference < -0.01) { // Only refund if difference is significant
       // Refund excess credits
       const refundAmount = Math.abs(creditDifference);
       console.log(`Refunding ${refundAmount} excess credits (actual: ${threadCount}, estimated: ${estimatedThreadCount})`);
-      await creditService.refundCredits(req.user.id, 'ai_thread_adjustment', refundAmount);
+      await TeamCreditService.refundCredits(req.user.id, teamId, refundAmount, 'ai_thread_adjustment');
     }
 
     console.log(`Final credits used: ${actualCreditsNeeded} for ${threadCount} threads (estimated: ${estimatedThreadCount})`);
@@ -222,6 +248,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
       threadCount: threadCount,
       estimatedThreads: estimatedThreadCount,
       creditsUsed: actualCreditsNeeded,
+      creditSource: creditCheck.source,
       generatedAt: new Date().toISOString(),
       scheduled: schedule ? true : false,
       scheduledResult

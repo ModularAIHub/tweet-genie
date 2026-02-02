@@ -14,12 +14,35 @@ router.post('/bulk', async (req, res) => {
   try {
     const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
+    const teamId = req.headers['x-team-id'] ? parseInt(req.headers['x-team-id']) : null;
+    
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'No items to schedule' });
     }
     if (!moment.tz.zone(timezone)) {
       return res.status(400).json({ error: 'Invalid timezone' });
     }
+    
+    // Check team role and determine approval status
+    let approvalStatus = 'approved';
+    let approvedBy = null;
+    if (teamId) {
+      const { rows: memberRows } = await pool.query(
+        'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = \\'active\\'',
+        [teamId, userId]
+      );
+      if (memberRows.length === 0) {
+        return res.status(403).json({ error: 'Not a member of this team' });
+      }
+      const userRole = memberRows[0].role;
+      if (userRole === 'editor') {
+        approvalStatus = 'pending_approval';
+      } else {
+        approvalStatus = 'approved';
+        approvedBy = userId;
+      }
+    }
+    
     const scheduled = [];
     let current = moment.tz(startDate, timezone);
     let scheduledCount = 0;
@@ -60,20 +83,22 @@ router.post('/bulk', async (req, res) => {
         }
         
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
-          [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
+          `INSERT INTO scheduled_tweets (user_id, team_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, $12) RETURNING *`,
+          [userId, teamId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
         );
         
         console.log(`✅ [Daily] Scheduled ID ${rows[0].id}: "${mainContent.substring(0, 40)}..." with ${threadTweets.length} thread tweets`);
         
-        // Add to BullMQ queue with delay
-        const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
-        await scheduledTweetQueue.add(
-          'scheduled-tweet',
-          { scheduledTweetId: rows[0].id },
-          { delay }
-        );
+        // Only add to queue if approved
+        if (approvalStatus === 'approved') {
+          const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
+          await scheduledTweetQueue.add(
+            'scheduled-tweet',
+            { scheduledTweetId: rows[0].id },
+            { delay }
+          );
+        }
         
         scheduled.push(rows[0]);
       } else if (frequency === 'thrice_weekly' || frequency === 'four_times_weekly') {
@@ -100,18 +125,20 @@ router.post('/bulk', async (req, res) => {
         }
         
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
-          [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
+          `INSERT INTO scheduled_tweets (user_id, team_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, $12) RETURNING *`,
+          [userId, teamId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
         );
         
-        // Add to BullMQ queue with delay
-        const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
-        await scheduledTweetQueue.add(
-          'scheduled-tweet',
-          { scheduledTweetId: rows[0].id },
-          { delay }
-        );
+        // Only add to queue if approved
+        if (approvalStatus === 'approved') {
+          const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
+          await scheduledTweetQueue.add(
+            'scheduled-tweet',
+            { scheduledTweetId: rows[0].id },
+            { delay }
+          );
+        }
         
         scheduled.push(rows[0]);
       } else if (frequency === 'custom' && Array.isArray(daysOfWeek)) {
@@ -137,24 +164,26 @@ router.post('/bulk', async (req, res) => {
         }
         
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING *`,
-          [userId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone]
+          `INSERT INTO scheduled_tweets (user_id, team_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, $12) RETURNING *`,
+          [userId, teamId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
         );
         
-        // Add to BullMQ queue with delay
-        const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
-        await scheduledTweetQueue.add(
-          'scheduled-tweet',
-          { scheduledTweetId: rows[0].id },
-          { delay }
-        );
+        // Only add to queue if approved
+        if (approvalStatus === 'approved') {
+          const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
+          await scheduledTweetQueue.add(
+            'scheduled-tweet',
+            { scheduledTweetId: rows[0].id },
+            { delay }
+          );
+        }
         
         scheduled.push(rows[0]);
       }
       scheduledCount++;
     }
-    res.json({ success: true, scheduled });
+    res.json({ success: true, scheduled, approval_status: approvalStatus });
   } catch (error) {
     console.error('Bulk schedule error:', error);
     res.status(500).json({ error: 'Failed to schedule bulk content' });
@@ -167,6 +196,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
   try {
   const { content, media = [], thread, threadMedia = [], scheduled_for, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
+    const teamId = req.headers['x-team-id'] ? parseInt(req.headers['x-team-id']) : null;
 
     // Validate timezone
     if (!moment.tz.zone(timezone)) {
@@ -182,6 +212,27 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       return res.status(400).json({ 
         error: 'Scheduled time must be at least 5 minutes in the future' 
       });
+    }
+
+    // Check team role and determine approval status
+    let approvalStatus = 'approved';
+    let approvedBy = null;
+    if (teamId) {
+      const { rows: memberRows } = await pool.query(
+        'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = \'active\'',
+        [teamId, userId]
+      );
+      if (memberRows.length === 0) {
+        return res.status(403).json({ error: 'Not a member of this team' });
+      }
+      const userRole = memberRows[0].role;
+      // Editors need approval, Owners and Admins are auto-approved
+      if (userRole === 'editor') {
+        approvalStatus = 'pending_approval';
+      } else {
+        approvalStatus = 'approved';
+        approvedBy = userId; // Auto-approved by themselves
+      }
     }
 
     // Check scheduling limits
@@ -239,23 +290,32 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     // Store per-tweet media for threads in thread_media column
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tweets (
-        user_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+        user_id, team_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, $12)
       RETURNING *`,
-      [userId, mainContent, JSON.stringify(media), JSON.stringify(media), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledTime, timezone]
+      [userId, teamId, mainContent, JSON.stringify(media), JSON.stringify(media), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledTime, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
     );
 
-    // Enqueue BullMQ job for scheduled tweet
-    const delay = Math.max(0, new Date(scheduledTime).getTime() - Date.now());
-    await scheduledTweetQueue.add(
-      'scheduled-tweet',
-      { scheduledTweetId: rows[0].id },
-      { delay }
-    );
+    // Only enqueue if approved, pending tweets wait for approval
+    if (approvalStatus === 'approved') {
+      const delay = Math.max(0, new Date(scheduledTime).getTime() - Date.now());
+      await scheduledTweetQueue.add(
+        'scheduled-tweet',
+        { scheduledTweetId: rows[0].id },
+        { delay }
+      );
+      console.log(`✅ Scheduled tweet for ${scheduledTime.toISOString()}`);
+    } else {
+      console.log(`📋 Tweet scheduled for ${scheduledTime.toISOString()} - pending approval`);
+    }
 
     res.json({
       success: true,
-      message: 'Tweets are scheduled at least 5 minutes in the future as per platform policy.',
+      scheduled: rows[0],
+      message: approvalStatus === 'pending_approval' 
+        ? 'Tweet scheduled and awaiting approval from team admin/owner. Tweets are scheduled at least 5 minutes in the future as per platform policy.'
+        : 'Tweets are scheduled at least 5 minutes in the future as per platform policy.',
+      approval_status: approvalStatus,
       scheduled_tweet: {
         id: rows[0].id,
         scheduled_for: rows[0].scheduled_for,
