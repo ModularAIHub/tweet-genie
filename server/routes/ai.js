@@ -39,10 +39,16 @@ router.post('/bulk-generate', authenticateToken, async (req, res) => {
             ? result.content.split('---').map(t => t.trim()).filter(Boolean)
             : [result.content.trim()];
           // Schedule the tweets for future posting
+          // Merge options: individual opt (with media) should override global scheduleOptions
           const scheduledResult = await scheduledTweetService.scheduleTweets({
             userId,
             tweets,
-            options: { ...scheduleOptions, ...opt }
+            options: { 
+              ...scheduleOptions, 
+              ...opt,
+              // Ensure media/mediaUrls from opt are preserved
+              mediaUrls: opt.mediaUrls || opt.media_urls || scheduleOptions.mediaUrls || scheduleOptions.media_urls || []
+            }
           });
           // Optionally, immediately post if scheduled time is now or in the past
           if (scheduledResult && scheduledResult.scheduledTime && new Date(scheduledResult.scheduledTime) <= new Date()) {
