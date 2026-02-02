@@ -313,6 +313,9 @@ class ScheduledTweetService {
       } else {
         console.log(`⚠️ Main tweet posted but thread failed: ${scheduledTweet.id}`);
       }
+      
+      // Return early to prevent any further processing
+      return;
 
     } catch (error) {
       console.error(`❌ Error posting scheduled tweet ${scheduledTweet.id}:`, error);
@@ -329,7 +332,17 @@ class ScheduledTweetService {
         console.error('   - Duplicate content (same tweet posted recently)');
         console.error('   - Rate limit exceeded');
         console.error('   - Tweet violates Twitter rules');
-        errorMessage = `Twitter error (403): ${error.message || 'Forbidden - likely duplicate or rate limit'}`;
+        errorMessage = `Twitter error (403): ${error.data?.detail || error.message || 'Forbidden - likely duplicate or rate limit'}`;
+        
+        // Mark as failed and DON'T retry for duplicate content
+        await pool.query(
+          'UPDATE scheduled_tweets SET status = $1, error_message = $2 WHERE id = $3',
+          ['failed', errorMessage, scheduledTweet.id]
+        );
+        
+        // Don't throw error - this prevents BullMQ from retrying
+        console.log('🛑 Not retrying 403 error (likely duplicate content)');
+        return;
       } else if (error.code === 429) {
         console.error('❌ Twitter 429 Error - Rate limit exceeded');
         errorMessage = 'Twitter rate limit exceeded. Will retry later.';
