@@ -151,7 +151,15 @@ router.post('/generate', authenticateToken, async (req, res) => {
     console.log(`AI generation request: "${sanitizedPrompt}" with style: ${style}`);
 
     // First generate the content to analyze thread count
-  const result = await aiService.generateContent(sanitizedPrompt, style, 3, req.cookies?.accessToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) || null, req.user.id);
+    let result;
+    try {
+      result = await aiService.generateContent(sanitizedPrompt, style, 3, req.cookies?.accessToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) || null, req.user.id);
+    } catch (aiError) {
+      // Refund credits if AI generation fails
+      console.error('AI generation failed, refunding credits:', estimatedCreditsNeeded);
+      await TeamCreditService.refundCredits(req.user.id, teamId, estimatedCreditsNeeded, 'ai_generation_failed', token);
+      throw aiError; // Re-throw to be caught by outer catch block
+    }
 
     // Use the AI-generated content directly (no post-sanitization to prevent [FILTERED])
     const sanitizedContent = result.content;
