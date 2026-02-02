@@ -219,8 +219,8 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     let approvedBy = null;
     if (teamId) {
       const { rows: memberRows } = await pool.query(
-        'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = \'active\'',
-        [teamId, userId]
+        'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = $3',
+        [teamId, userId, 'active']
       );
       if (memberRows.length === 0) {
         return res.status(403).json({ error: 'Not a member of this team' });
