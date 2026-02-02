@@ -243,6 +243,8 @@ class ScheduledTweetService {
       // Handle thread if present
       let threadSuccess = true;
       let threadError = null;
+      const threadTweetIds = []; // Store all thread tweet IDs and content for inserting into history
+      
       if (scheduledTweet.thread_tweets && scheduledTweet.thread_tweets.length > 0) {
         let previousTweetId = tweetResponse.data.id;
         for (let i = 0; i < scheduledTweet.thread_tweets.length; i++) {
@@ -265,6 +267,14 @@ class ScheduledTweetService {
             };
             const threadResponse = await twitterClient.v2.tweet(threadTweetData);
             previousTweetId = threadResponse.data.id;
+            
+            // Store thread tweet info for history insertion
+            threadTweetIds.push({
+              tweetId: threadResponse.data.id,
+              content: cleanThreadContent,
+              mediaIds: threadMediaIds
+            });
+            
             console.log(`✅ Thread tweet ${i + 1} posted successfully: ${threadResponse.data.id}`);
           } catch (threadErr) {
             console.error(`❌ Error posting thread tweet ${i + 1}:`, threadErr);
@@ -297,7 +307,20 @@ class ScheduledTweetService {
         accountId
       ]);
       
-      console.log(`Inserted tweet into history with ID: ${insertedTweet[0].id}`);
+      console.log(`Inserted main tweet into history with ID: ${insertedTweet[0].id}`);
+      
+      // Insert each thread tweet as a separate record in history
+      if (threadTweetIds.length > 0) {
+        for (const threadTweet of threadTweetIds) {
+          await pool.query(tweetInsertQuery, [
+            scheduledTweet.user_id,
+            threadTweet.content,
+            threadTweet.tweetId,
+            accountId
+          ]);
+        }
+        console.log(`Inserted ${threadTweetIds.length} additional thread tweets into history`);
+      }
 
       // Mark scheduled tweet as completed or partially completed
       const finalStatus = threadSuccess ? 'completed' : 'partially_completed';
