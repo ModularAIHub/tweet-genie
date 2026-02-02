@@ -58,13 +58,13 @@ export const getClearCookieOptions = () => {
  * @param {string} refreshToken - Refresh token to set (optional)
  */
 export const setAuthCookies = (res, accessToken, refreshToken = null) => {
-  // Set access token (7 days)
-  const accessTokenOptions = getCookieOptions(7 * 24 * 60 * 60 * 1000);
+  // Set access token (30 days)
+  const accessTokenOptions = getCookieOptions(30 * 24 * 60 * 60 * 1000);
   res.cookie('accessToken', accessToken, accessTokenOptions);
   
-  // Set refresh token if provided (7 days)
+  // Set refresh token if provided (30 days)
   if (refreshToken) {
-    const refreshTokenOptions = getCookieOptions(7 * 24 * 60 * 60 * 1000);
+    const refreshTokenOptions = getCookieOptions(30 * 24 * 60 * 60 * 1000);
     res.cookie('refreshToken', refreshToken, refreshTokenOptions);
   }
 };
