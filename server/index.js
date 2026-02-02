@@ -71,14 +71,23 @@ function isAllowedOrigin(origin) {
 }
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  console.log('🌐 CORS request from origin:', origin);
+  
   if (isAllowedOrigin(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
+    console.log('✅ CORS headers set for:', origin);
+  } else {
+    console.warn('⚠️ Origin not allowed:', origin);
   }
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  
+  if (req.method === 'OPTIONS') {
+    console.log('✅ Preflight OPTIONS request handled');
+    return res.sendStatus(200);
+  }
   next();
 });
 
@@ -94,10 +103,16 @@ app.get('/health', (req, res) => {
 
 // CSRF token endpoint (for frontend compatibility)
 app.get('/api/csrf-token', (req, res) => {
-  res.json({ 
-    csrfToken: 'dummy-csrf-token',
-    message: 'CSRF protection not implemented in Tweet Genie' 
-  });
+  try {
+    console.log('🔐 CSRF token requested');
+    res.json({ 
+      csrfToken: 'dummy-csrf-token',
+      message: 'CSRF protection not implemented in Tweet Genie' 
+    });
+  } catch (error) {
+    console.error('❌ CSRF token error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Routes
