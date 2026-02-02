@@ -35,13 +35,13 @@ router.post('/secure-login', async (req, res) => {
       const accessToken = jwt.sign(
         { userId: userId, email: email },
         process.env.JWT_SECRET,
-        { expiresIn: '7d' }
+        { expiresIn: '30d' }
       );
       
       const refreshToken = jwt.sign(
         { userId: userId },
         process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
-        { expiresIn: '7d' }
+        { expiresIn: '30d' }
       );
       
       // Set authentication cookies
