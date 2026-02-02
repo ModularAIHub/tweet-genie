@@ -107,7 +107,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
     const estimatedCreditsNeeded = estimatedThreadCount * 1.2;
 
     // Get team context from header
-    const teamId = req.headers['x-team-id'] ? parseInt(req.headers['x-team-id']) : null;
+    const teamId = req.headers['x-team-id'] || null;
 
     // Check and deduct credits before AI generation based on estimated count
     let token = req.cookies?.accessToken;

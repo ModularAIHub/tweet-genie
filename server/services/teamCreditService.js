@@ -29,7 +29,7 @@ export const TeamCreditService = {
         };
       } else {
         // Personal context - get user credits from existing creditService
-        const userCredits = await creditService.getCredits(userId);
+        const userCredits = await creditService.getBalance(userId);
         
         return {
           credits: userCredits,
