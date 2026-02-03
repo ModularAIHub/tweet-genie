@@ -241,14 +241,14 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       throw testError;
     }
 
-    // Get tweets to sync with increased limits
+    // Get tweets to sync with conservative limits to avoid rate limits
     const { rows: tweetsToUpdate } = await pool.query(
       `SELECT id, tweet_id, content, created_at FROM tweets 
        WHERE user_id = $1 AND status = 'posted' AND source = 'platform'
        AND created_at >= NOW() - INTERVAL '7 days'
        AND tweet_id IS NOT NULL
        AND (impressions IS NULL OR impressions = 0 OR updated_at < NOW() - INTERVAL '6 hours')
-       ORDER BY created_at DESC LIMIT 20`,  // Increased to 20 tweets
+       ORDER BY created_at DESC LIMIT 15`,  // Reduced from 20 to 15 tweets per sync
       [userId]
     );
 
@@ -262,10 +262,10 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       });
     }
 
-    // Increased batching (5 tweets at a time)
-    const batchSize = 5; 
-    const requestDelay = 1000; // 1 second between requests
-    const batchDelay = 3000;  // 3 seconds between batches
+    // Conservative batching to avoid rate limits
+    const batchSize = 3; // Reduced from 5 to 3
+    const requestDelay = 2000; // 2 seconds between requests (increased from 1s)
+    const batchDelay = 5000;  // 5 seconds between batches (increased from 3s)
 
     for (let i = 0; i < tweetsToUpdate.length; i += batchSize) {
       const batch = tweetsToUpdate.slice(i, i + batchSize);
@@ -276,10 +276,10 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
           continue;
         }
         try {
-          // Add random jitter to avoid predictable patterns
-          const jitter = Math.random() * 1000;
+          // Add random jitter to avoid predictable patterns (1-2 seconds)
+          const jitter = 1000 + Math.random() * 1000;
           await new Promise(resolve => setTimeout(resolve, requestDelay + jitter));
-          console.log(`Fetching metrics for tweet ${tweet.tweet_id}...`);
+          console.log(`⏳ [${i + 1}/${tweetsToUpdate.length}] Fetching metrics for tweet ${tweet.tweet_id}...`);
           const tweetData = await twitterClient.v2.singleTweet(tweet.tweet_id, {
             'tweet.fields': ['public_metrics', 'created_at']
           });
@@ -371,7 +371,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       }
       // Long delay between batches to respect rate limits
       if (i + batchSize < tweetsToUpdate.length && !rateLimitExceeded) {
-        console.log(`Waiting ${batchDelay/1000}s before next tweet...`);
+        const nextBatch = Math.min(i + batchSize, tweetsToUpdate.length);
+        console.log(`⏸️ Batch complete (${i + batch.length}/${tweetsToUpdate.length}). Waiting ${batchDelay/1000}s before next batch...`);
         await new Promise(resolve => setTimeout(resolve, batchDelay));
       }
     }
