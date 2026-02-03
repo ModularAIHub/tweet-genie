@@ -129,6 +129,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
     }
 
     let tweetResponse;
+    let threadTweets = []; // Declare here so it's accessible in catch block
 
     try {
       // Handle media upload if present
@@ -153,9 +154,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         mediaIds = await mediaService.uploadMedia(media, twitterClient, oauth1Tokens);
         console.log('Media upload completed, IDs:', mediaIds);
       }
-
-      let tweetResponse;
-      let threadTweets = [];
 
       // If we have a thread, post the first tweet from the thread as the main tweet
       if (thread && thread.length > 0) {
@@ -206,42 +204,86 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           text: tweetResponse.data?.text?.substring(0, 50) + '...'
         });
 
-        // Post remaining thread tweets (skip the first one since it's already posted)
-        let previousTweetId = tweetResponse.data.id;
+        // Post remaining thread tweets in BACKGROUND (non-blocking)
+        // User gets immediate response, tweets continue posting
+        const postRemainingTweets = async () => {
+          let previousTweetId = tweetResponse.data.id;
 
-        for (let i = 1; i < thread.length; i++) {
-          const threadTweetText = thread[i];
-          let threadMediaIds = [];
-          // Check if we have specific media for this thread tweet
-          if (threadMedia && threadMedia[i] && threadMedia[i].length > 0) {
-            console.log(`Uploading media for thread tweet ${i + 1}...`);
-            const oauth1Tokens = {
-              accessToken: twitterAccount.oauth1_access_token,
-              accessTokenSecret: twitterAccount.oauth1_access_token_secret
-            };
-            threadMediaIds = await mediaService.uploadMedia(threadMedia[i], twitterClient, oauth1Tokens);
-            console.log(`Media upload completed for thread tweet ${i + 1}, IDs:`, threadMediaIds);
+          for (let i = 1; i < thread.length; i++) {
+            try {
+              // Fast delays for better UX (4-6 seconds) - balances speed with rate limits
+              const delayMs = 4000 + Math.random() * 2000; // 4-6 seconds
+              console.log(`⏳ [Background] Waiting ${Math.round(delayMs/1000)}s before posting tweet ${i + 1}/${thread.length}...`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+
+              const threadTweetText = thread[i];
+              let threadMediaIds = [];
+              
+              // Check if we have specific media for this thread tweet
+              if (threadMedia && threadMedia[i] && threadMedia[i].length > 0) {
+                console.log(`[Background] Uploading media for thread tweet ${i + 1}...`);
+                const oauth1Tokens = {
+                  accessToken: twitterAccount.oauth1_access_token,
+                  accessTokenSecret: twitterAccount.oauth1_access_token_secret
+                };
+                threadMediaIds = await mediaService.uploadMedia(threadMedia[i], twitterClient, oauth1Tokens);
+                console.log(`[Background] Media upload completed for thread tweet ${i + 1}, IDs:`, threadMediaIds);
+              }
+
+              const threadTweetData = {
+                text: decodeHTMLEntities(threadTweetText),
+                reply: { in_reply_to_tweet_id: previousTweetId },
+                ...(threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
+              };
+
+              console.log(`[Background] Posting thread tweet ${i + 1}/${thread.length}:`, {
+                text: threadTweetText.substring(0, 50) + '...',
+                hasMedia: threadMediaIds.length > 0,
+                mediaCount: threadMediaIds.length,
+                replyingTo: previousTweetId
+              });
+
+              const threadResponse = await twitterClient.v2.tweet(threadTweetData);
+              threadTweets.push(threadResponse.data);
+              previousTweetId = threadResponse.data.id;
+              
+              console.log(`✅ [Background] Thread tweet ${i + 1}/${thread.length} posted successfully:`, threadResponse.data.id);
+              
+              // Store each thread tweet in database as it's posted
+              const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
+              const threadTweetMediaUrls = threadMedia && threadMedia[i] ? threadMedia[i] : [];
+              
+              await pool.query(
+                `INSERT INTO tweets (
+                  user_id, account_id, tweet_id, content, 
+                  media_urls, credits_used, 
+                  impressions, likes, retweets, replies, status, source
+                ) VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, 'posted', 'platform')`,
+                [
+                  userId,
+                  accountId,
+                  threadResponse.data.id,
+                  threadTweetText,
+                  JSON.stringify(threadTweetMediaUrls),
+                  0
+                ]
+              );
+              
+            } catch (error) {
+              console.error(`❌ [Background] Failed to post thread tweet ${i + 1}:`, error.message);
+              // Continue trying to post remaining tweets even if one fails
+            }
           }
-
-          const threadTweetData = {
-            text: decodeHTMLEntities(threadTweetText),
-            reply: { in_reply_to_tweet_id: previousTweetId },
-            ...(threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
-          };
-
-          console.log(`Posting thread tweet ${i + 1}:`, {
-            text: threadTweetText.substring(0, 50) + '...',
-            hasMedia: threadMediaIds.length > 0,
-            mediaCount: threadMediaIds.length,
-            replyingTo: previousTweetId
-          });
-
-          const threadResponse = await twitterClient.v2.tweet(threadTweetData);
-          threadTweets.push(threadResponse.data);
-          previousTweetId = threadResponse.data.id;
           
-          console.log(`Thread tweet ${i + 1} posted successfully:`, threadResponse.data.id);
-        }
+          console.log(`✅ [Background] Thread posting complete! Posted ${threadTweets.length + 1}/${thread.length} tweets`);
+        };
+
+        // Start background posting (fire and forget)
+        postRemainingTweets().catch(err => {
+          console.error('❌ [Background] Thread posting error:', err);
+        });
+
+        // Don't wait for remaining tweets - return immediately after first tweet
       } else {
         // Regular single tweet
         // Post main tweet
@@ -291,30 +333,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         ]
       );
       
-      // If this was a thread, insert each thread tweet as a separate record for history
-      if (threadTweets.length > 0) {
-        for (let i = 0; i < threadTweets.length; i++) {
-          const threadTweetContent = thread[i + 1]; // +1 because thread[0] is the main tweet
-          const threadTweetMediaUrls = threadMedia && threadMedia[i + 1] ? threadMedia[i + 1] : [];
-          
-          await pool.query(
-            `INSERT INTO tweets (
-              user_id, account_id, tweet_id, content, 
-              media_urls, credits_used, 
-              impressions, likes, retweets, replies, status, source
-            ) VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, 'posted', 'platform')`,
-            [
-              userId,
-              accountId,
-              threadTweets[i].id,
-              threadTweetContent,
-              JSON.stringify(threadTweetMediaUrls),
-              0
-            ]
-          );
-        }
-        console.log(`Inserted ${threadTweets.length} additional thread tweets into history`);
-      }
+      // Note: For threads, only the first tweet is inserted here
+      // Remaining tweets are inserted by background process as they post
+      // This is intentional - no need to update this section
 
       res.json({
         success: true,
@@ -324,7 +345,8 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           content: mainContent,
           url: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
           credits_used: 0,  // No credits charged for posting
-          thread_count: thread ? thread.length : 1
+          thread_count: thread ? thread.length : 1,
+          thread_status: thread && thread.length > 1 ? 'First tweet posted, remaining tweets posting in background...' : 'Posted'
         }
       });
 
@@ -344,11 +366,29 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       
       if (isRateLimitError) {
         console.log('✅ Rate limit detected - Twitter API returned 429');
+        
+        // Calculate retry time
+        let retryAfterMinutes = 15; // Default fallback
+        let resetTime = null;
+        
+        if (twitterError.rateLimit?.reset) {
+          resetTime = new Date(twitterError.rateLimit.reset * 1000);
+          retryAfterMinutes = Math.ceil((resetTime - Date.now()) / 60000);
+        }
+        
+        // Safely check threadTweets length (it might not be defined if error happens in non-thread code)
+        const postedCount = (threadTweets?.length || 0) + 1; // +1 for the first tweet
+        const hasPartialSuccess = threadTweets && threadTweets.length > 0;
+        
         return res.status(429).json({
-          error: 'Twitter rate limit reached. Please try again later.',
+          error: `Twitter rate limit reached${hasPartialSuccess ? ` after posting ${postedCount} tweets in thread` : ''}. Please wait ${retryAfterMinutes} minutes before posting again.`,
           code: 'TWITTER_RATE_LIMIT',
           details: twitterError.message,
-          retryAfter: twitterError.rateLimit?.reset || 'unknown'
+          retryAfter: resetTime?.toISOString() || 'unknown',
+          retryMinutes: retryAfterMinutes,
+          partialSuccess: hasPartialSuccess,
+          postedTweets: hasPartialSuccess ? postedCount : 0,
+          totalTweets: thread?.length || 1
         });
       } else if (is403Error) {
         console.log('🔐 Permissions error detected - Twitter API returned 403');
