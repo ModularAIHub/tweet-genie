@@ -575,7 +575,7 @@ router.get(['/history', '/'], async (req, res) => {
         SELECT ta.id, ta.team_id 
         FROM team_accounts ta
         INNER JOIN team_members tm ON ta.team_id = tm.team_id
-        WHERE ta.id::TEXT = $1 AND tm.user_id = $2 AND tm.status = 'active'
+        WHERE ta.id::TEXT = $1::TEXT AND tm.user_id = $2 AND tm.status = 'active'
       `, [selectedAccountId, req.user.id]);
       
       console.log('[GET /tweets/history] Team account check result:', teamCheckResult.rows);
