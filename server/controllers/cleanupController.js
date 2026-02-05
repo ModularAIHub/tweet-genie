@@ -134,5 +134,67 @@ export const cleanupController = {
                 message: error.message
             });
         }
+    },
+
+    // Clean up Twitter data when a member leaves/is removed from a team
+    async cleanupMemberData(req, res) {
+        try {
+            const { teamId, userId } = req.body;
+
+            if (!teamId || !userId) {
+                return res.status(400).json({
+                    error: 'teamId and userId are required',
+                    code: 'MISSING_PARAMS'
+                });
+            }
+
+            console.log(`🗑️ [Twitter] Starting cleanup for member ${userId} leaving team ${teamId}`);
+
+            const client = await pool.connect();
+
+            try {
+                await client.query('BEGIN');
+
+                // Delete Twitter team accounts connected by this user for this team
+                const teamAccountsResult = await client.query(
+                    'DELETE FROM team_accounts WHERE team_id = $1 AND user_id = $2',
+                    [teamId, userId]
+                );
+                console.log(`   ✓ Deleted ${teamAccountsResult.rowCount} Twitter accounts for member`);
+
+                // Delete scheduled tweets created by this user for this team
+                const scheduledTweetsResult = await client.query(
+                    'DELETE FROM scheduled_tweets WHERE team_id = $1 AND user_id = $2',
+                    [teamId, userId]
+                );
+                console.log(`   ✓ Deleted ${scheduledTweetsResult.rowCount} scheduled tweets for member`);
+
+                await client.query('COMMIT');
+                console.log(`✅ [Twitter] Member cleanup completed`);
+
+                res.json({
+                    success: true,
+                    message: 'Twitter member data cleaned up successfully',
+                    deletedCounts: {
+                        teamAccounts: teamAccountsResult.rowCount,
+                        scheduledTweets: scheduledTweetsResult.rowCount
+                    }
+                });
+
+            } catch (error) {
+                await client.query('ROLLBACK');
+                throw error;
+            } finally {
+                client.release();
+            }
+
+        } catch (error) {
+            console.error('❌ [Twitter] Member cleanup error:', error);
+            res.status(500).json({
+                error: 'Failed to cleanup Twitter member data',
+                code: 'CLEANUP_ERROR',
+                message: error.message
+            });
+        }
     }
 };

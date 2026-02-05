@@ -12,4 +12,7 @@ router.post('/user', cleanupController.cleanupUserData);
 // Clean up team's Twitter data
 router.post('/team', cleanupController.cleanupTeamData);
 
+// Clean up member's Twitter data when leaving/removed from team
+router.post('/member', cleanupController.cleanupMemberData);
+
 export default router;
