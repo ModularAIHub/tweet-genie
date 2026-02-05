@@ -585,7 +585,7 @@ router.get(['/history', '/'], async (req, res) => {
         queryParams.push(selectedAccountId);
         countParams.push(selectedAccountId);
 
-        let whereClause = `WHERE t.account_id::TEXT = $2`;
+        let whereClause = `WHERE t.account_id::TEXT = $2::TEXT`;
         if (status) {
           whereClause += ` AND t.status = $3`;
           queryParams.push(status);
