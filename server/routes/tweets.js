@@ -157,42 +157,43 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
       // If we have a thread, post the first tweet from the thread as the main tweet
       if (thread && thread.length > 0) {
-        console.log('Processing thread with', thread.length, 'tweets');
-        
-        // Use the first thread tweet as the main tweet
-        const firstTweetText = thread[0];
-        let firstTweetMediaIds = [];
-        
-        // Check if we have media for the first thread tweet
-        if (threadMedia && threadMedia[0] && threadMedia[0].length > 0) {
-          console.log('Uploading media for first thread tweet...');
-          
-          // Check if we have OAuth 1.0a tokens for media upload
-          if (!twitterAccount.oauth1_access_token || !twitterAccount.oauth1_access_token_secret) {
-            throw {
-              code: 'OAUTH1_REQUIRED',
-              message: 'Media uploads require OAuth 1.0a authentication. Please reconnect your Twitter account.',
-              details: 'Go to Settings > Twitter Account and reconnect to enable media uploads.'
-            };
-          }
-          
-          const oauth1Tokens = {
-            accessToken: twitterAccount.oauth1_access_token,
-            accessTokenSecret: twitterAccount.oauth1_access_token_secret
-          };
-          
-          firstTweetMediaIds = await mediaService.uploadMedia(threadMedia[0], twitterClient, oauth1Tokens);
-          console.log('Media upload completed for first thread tweet, IDs:', firstTweetMediaIds);
-        }
+          // Team mode: show all tweets for the selected team account (any team member)
+          queryParams.push(selectedAccountId);
+          countParams.push(selectedAccountId);
 
-        // Post the first tweet
-        const firstTweetData = {
-          text: decodeHTMLEntities(firstTweetText),
-          ...(firstTweetMediaIds.length > 0 && { media: { media_ids: firstTweetMediaIds } })
-        };
-        
-        console.log('Posting first thread tweet to Twitter API...', {
-          hasText: !!firstTweetData.text,
+          let whereClause = `WHERE t.account_id::TEXT = $1::TEXT`;
+          if (status) {
+            whereClause += ` AND t.status = $2`;
+            queryParams.push(status);
+            countParams.push(status);
+          }
+
+          sqlQuery = `
+            SELECT t.*, 
+                    ta.twitter_username as username, 
+                    ta.twitter_display_name as display_name,
+                    CASE 
+                      WHEN t.source = 'external' THEN t.external_created_at
+                      ELSE t.created_at
+                    END as display_created_at
+            FROM tweets t
+            LEFT JOIN team_accounts ta ON t.account_id::TEXT = ta.id::TEXT
+            ${whereClause}
+            ORDER BY 
+              CASE 
+                WHEN t.source = 'external' THEN t.external_created_at
+                ELSE t.created_at
+              END DESC
+            LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
+          `;
+
+          countQuery = `
+            SELECT COUNT(*) FROM tweets t
+            ${whereClause}
+          `;
+
+          queryParams.push(parsedLimit, parsedOffset);
+        console.log({
           textLength: firstTweetData.text?.length,
           hasMedia: !!firstTweetData.media,
           mediaIds: firstTweetMediaIds
@@ -581,16 +582,26 @@ router.get(['/history', '/'], async (req, res) => {
       console.log('[GET /tweets/history] Team account check result:', teamCheckResult.rows);
       
       if (teamCheckResult.rows.length > 0) {
-        // Team mode: show all tweets for the selected team account
-        queryParams.push(selectedAccountId);
-        countParams.push(selectedAccountId);
-
-        let whereClause = `WHERE t.account_id::TEXT = $2::TEXT`;
+        let whereClause = `WHERE t.account_id::TEXT = $1::TEXT`;
         if (status) {
-          whereClause += ` AND t.status = $3`;
+          whereClause += ` AND t.status = $2`;
           queryParams.push(status);
           countParams.push(status);
         }
+        // Log account ID and query parameters for debugging
+        console.log('[TEAM HISTORY DEBUG] SelectedAccountId:', selectedAccountId);
+        console.log('[TEAM HISTORY DEBUG] QueryParams:', queryParams);
+        console.log('[TEAM HISTORY DEBUG] CountParams:', countParams);
+        console.log('[TEAM HISTORY DEBUG] WhereClause:', whereClause);
+        // Team mode: show all tweets for the selected team account
+        queryParams = [selectedAccountId];
+        countParams = [selectedAccountId];
+
+        // Log account ID and query parameters for debugging
+        console.log('[TEAM HISTORY DEBUG] SelectedAccountId:', selectedAccountId);
+        console.log('[TEAM HISTORY DEBUG] QueryParams:', queryParams);
+        console.log('[TEAM HISTORY DEBUG] CountParams:', countParams);
+        console.log('[TEAM HISTORY DEBUG] WhereClause:', whereClause);
 
         sqlQuery = `
           SELECT t.*, 
@@ -738,17 +749,27 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
     const { tweetId } = req.params;
     const userId = req.user.id;
 
-    // Get tweet details
-    const { rows } = await pool.query(
+    // Get tweet details for user
+    let { rows } = await pool.query(
       'SELECT * FROM tweets WHERE id = $1 AND user_id = $2',
       [tweetId, userId]
     );
 
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'Tweet not found' });
-    }
+    let tweet = rows[0];
 
-    const tweet = rows[0];
+    // If not found, check if it's a team tweet the user has access to
+    if (!tweet) {
+      const teamTweetResult = await pool.query(`
+        SELECT t.* FROM tweets t
+        INNER JOIN team_accounts ta ON t.account_id = ta.id
+        INNER JOIN team_members tm ON ta.team_id = tm.team_id
+        WHERE t.id = $1 AND tm.user_id = $2 AND tm.status = 'active'
+      `, [tweetId, userId]);
+      if (teamTweetResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Tweet not found or not authorized' });
+      }
+      tweet = teamTweetResult.rows[0];
+    }
 
     // Create Twitter client with OAuth 2.0
     const twitterClient = new TwitterApi(req.twitterAccount.access_token);
