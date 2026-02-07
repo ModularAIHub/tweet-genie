@@ -71,7 +71,7 @@ const Scheduling = () => {
 
   const handleCancel = async (scheduleId) => {
     try {
-      await scheduling.cancel(scheduleId);
+      await schedulingAPI.cancel(scheduleId);
       toast.success('Scheduled tweet cancelled');
       fetchScheduledTweets();
     } catch (error) {
