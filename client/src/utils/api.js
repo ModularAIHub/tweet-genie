@@ -33,6 +33,10 @@ api.interceptors.request.use(
         if (account.id) {
           config.headers['X-Selected-Account-Id'] = account.id;
         }
+        // Attach x-team-id header if team_id exists
+        if (account.team_id) {
+          config.headers['x-team-id'] = account.team_id;
+        }
       } catch (error) {
         console.error('Failed to parse selected account:', error);
       }

@@ -1,3 +1,4 @@
+
 import express from 'express';
 import pool from '../config/database.js';
 import { validateRequest, scheduleSchema } from '../middleware/validation.js';
@@ -8,6 +9,68 @@ import { scheduledTweetQueue } from '../services/queueService.js';
 import moment from 'moment-timezone';
 
 const router = express.Router();
+
+// Get scheduled tweets (frontend expects /scheduled)
+router.get('/scheduled', async (req, res) => {
+
+  try {
+    const { page = 1, limit = 20, status = 'pending' } = req.query;
+    const offset = (page - 1) * limit;
+    const teamId = req.headers['x-team-id'] || null;
+
+    console.log('[ScheduledTweets] Request:', {
+      userId: req.user.id,
+      teamId,
+      page,
+      limit,
+      status,
+      headers: req.headers
+    });
+
+    let rows;
+    if (teamId) {
+      // Check if user is a member of the team
+      const { rows: memberRows } = await pool.query(
+        'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = $3',
+        [teamId, req.user.id, 'active']
+      );
+      console.log('[ScheduledTweets] Team membership rows:', memberRows);
+      if (memberRows.length === 0) {
+        console.log('[ScheduledTweets] Not a member of this team:', teamId);
+        return res.status(403).json({ error: 'Not a member of this team' });
+      }
+      // Fetch all scheduled tweets for the team
+      const result = await pool.query(
+        `SELECT *
+         FROM scheduled_tweets
+         WHERE team_id::text = $1 AND status = $2
+         ORDER BY scheduled_for ASC
+         LIMIT $3 OFFSET $4`,
+        [teamId, status, limit, offset]
+      );
+      console.log('[ScheduledTweets] Team scheduled tweets:', result.rows);
+      rows = result.rows;
+    } else {
+      // Fetch only user's scheduled tweets
+      const result = await pool.query(
+        `SELECT *
+         FROM scheduled_tweets
+         WHERE user_id::text = $1 AND status = $2
+         ORDER BY scheduled_for ASC
+         LIMIT $3 OFFSET $4`,
+        [req.user.id, status, limit, offset]
+      );
+      console.log('[ScheduledTweets] User scheduled tweets:', result.rows);
+      rows = result.rows;
+    }
+
+    res.json({ scheduled_tweets: rows });
+
+  } catch (error) {
+    console.error('Get scheduled tweets error:', error);
+    res.status(500).json({ error: 'Failed to fetch scheduled tweets' });
+  }
+});
 
 // Bulk schedule drafts
 router.post('/bulk', async (req, res) => {
@@ -196,7 +259,22 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
   try {
   const { content, media = [], thread, threadMedia = [], scheduled_for, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
-    const teamId = req.headers['x-team-id'] || null;
+    let teamId = req.headers['x-team-id'] || null;
+    let accountId = null;
+    // If frontend sends selectedAccount.team_id, use that
+    if (!teamId && req.body.team_id) {
+      teamId = req.body.team_id;
+    }
+    if (teamId) {
+      // Find the active team account for this team
+      const { rows: teamAccountRows } = await pool.query(
+        'SELECT id FROM team_accounts WHERE team_id = $1 AND active = true LIMIT 1',
+        [teamId]
+      );
+      if (teamAccountRows.length > 0) {
+        accountId = teamAccountRows[0].id;
+      }
+    }
 
     // Validate timezone
     if (!moment.tz.zone(timezone)) {
@@ -290,10 +368,10 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     // Store per-tweet media for threads in thread_media column
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tweets (
-        user_id, team_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, $12)
+        user_id, team_id, account_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13)
       RETURNING *`,
-      [userId, teamId, mainContent, JSON.stringify(media), JSON.stringify(media), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledTime, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
+      [userId, teamId || null, accountId || null, mainContent, JSON.stringify(media), JSON.stringify(media), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledTime, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
     );
 
     // Only enqueue if approved, pending tweets wait for approval

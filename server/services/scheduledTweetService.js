@@ -64,12 +64,16 @@ class ScheduledTweetService {
     const mainContent = flatTweets[0];
     const threadTweets = flatTweets.length > 1 ? flatTweets.slice(1).map(content => ({ content })) : [];
 
-    // Insert into scheduled_tweets
+    // Extract team_id and account_id from options
+    const teamId = options.teamId || options.team_id || null;
+    const accountId = options.accountId || options.account_id || null;
+
+    // Insert into scheduled_tweets with team_id and account_id
     const insertQuery = `
       INSERT INTO scheduled_tweets
-        (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, created_at, updated_at)
+        (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, team_id, account_id, created_at, updated_at)
       VALUES
-        ($1, $2, $3, 'pending', $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       RETURNING id, scheduled_for;
     `;
     const values = [
@@ -78,7 +82,9 @@ class ScheduledTweetService {
       timezone,
       mainContent,
       JSON.stringify(mediaUrls),
-      JSON.stringify(threadTweets)
+      JSON.stringify(threadTweets),
+      teamId,
+      accountId
     ];
 
     const { rows } = await pool.query(insertQuery, values);
@@ -100,9 +106,10 @@ class ScheduledTweetService {
     }
     const scheduledTweet = rows[0];
 
+
     let accountRow = null;
     let accountType = 'personal';
-    // If account_id is present, it's a team account
+    // Use account_id for team scheduled tweets
     if (scheduledTweet.account_id) {
       // Team account
       const teamAccountRes = await pool.query(
@@ -111,6 +118,17 @@ class ScheduledTweetService {
       );
       if (!teamAccountRes.rows.length) {
         throw new Error(`Team account not found or inactive: ${scheduledTweet.account_id}`);
+      }
+      accountRow = teamAccountRes.rows[0];
+      accountType = 'team';
+    } else if (scheduledTweet.team_id) {
+      // Fallback: find team account by team_id
+      const teamAccountRes = await pool.query(
+        `SELECT * FROM team_accounts WHERE team_id = $1 AND active = true LIMIT 1`,
+        [scheduledTweet.team_id]
+      );
+      if (!teamAccountRes.rows.length) {
+        throw new Error(`Team account not found or inactive: ${scheduledTweet.team_id}`);
       }
       accountRow = teamAccountRes.rows[0];
       accountType = 'team';

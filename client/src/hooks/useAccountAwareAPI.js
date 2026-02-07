@@ -18,7 +18,6 @@ export const useAccountAwareAPI = () => {
    */
   const fetchForCurrentAccount = async (endpoint, options = {}) => {
     const accountId = getCurrentAccountId();
-    
     // Build full URL using API base URL, not window.location.origin
     const url = new URL(endpoint, API_BASE_URL);
 
@@ -27,9 +26,14 @@ export const useAccountAwareAPI = () => {
       ...options.headers,
     };
 
-    // Only add account ID header if we have one (team users)
+    // Add account ID header if we have one (team users)
     if (accountId) {
       headers['X-Selected-Account-Id'] = accountId;
+    }
+
+    // Add x-team-id header if selectedAccount has a team_id property
+    if (selectedAccount && selectedAccount.team_id) {
+      headers['x-team-id'] = selectedAccount.team_id;
     }
 
     return fetch(url.toString(), {
