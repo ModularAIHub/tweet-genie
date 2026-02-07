@@ -1,58 +1,130 @@
-
 import OpenAI from 'openai';
 import axios from 'axios';
-import { sanitizeAIPrompt, sanitizeInput } from '../utils/sanitization.js';
+
+// Simple rate limiter - inline
+const rateLimits = new Map();
+function checkRateLimit(userId) {
+  if (!userId) return { allowed: true };
+  
+  const key = userId;
+  const now = Date.now();
+  const limit = { maxRequests: 50, windowMs: 60 * 60 * 1000 }; // 50/hour
+  
+  if (!rateLimits.has(key)) {
+    rateLimits.set(key, { count: 1, resetTime: now + limit.windowMs });
+    return { allowed: true };
+  }
+  
+  const userLimit = rateLimits.get(key);
+  if (now >= userLimit.resetTime) {
+    userLimit.count = 1;
+    userLimit.resetTime = now + limit.windowMs;
+    return { allowed: true };
+  }
+  
+  if (userLimit.count >= limit.maxRequests) {
+    const resetIn = Math.ceil((userLimit.resetTime - now) / 1000 / 60);
+    return { allowed: false, error: `Rate limit exceeded. Try again in ${resetIn} minutes.` };
+  }
+  
+  userLimit.count++;
+  return { allowed: true };
+}
 
 // Helper to fetch user preference and keys from new-platform
-async function getUserPreferenceAndKeys(userToken) {
+async function getUserPreferenceAndKeys(userToken, maxRetries = 3) {
   const baseUrl = process.env.NEW_PLATFORM_API_URL || 'https://your-new-platform-domain/api';
-  // Fetch preference
-  const prefRes = await axios.get(`${baseUrl}/byok/preference`, {
-    headers: { Authorization: `Bearer ${userToken}` }
-  });
-  const preference = prefRes.data.api_key_preference;
-  let userKeys = [];
-  if (preference === 'byok') {
-    const keysRes = await axios.get(`${baseUrl}/byok/keys`, {
-      headers: { Authorization: `Bearer ${userToken}` }
-    });
-    userKeys = keysRes.data.keys;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const prefRes = await axios.get(`${baseUrl}/byok/preference`, {
+        headers: { Authorization: `Bearer ${userToken}` },
+        timeout: 5000
+      });
+      const preference = prefRes.data.api_key_preference;
+      let userKeys = [];
+      
+      if (preference === 'byok') {
+        const keysRes = await axios.get(`${baseUrl}/byok/keys`, {
+          headers: { Authorization: `Bearer ${userToken}` },
+          timeout: 5000
+        });
+        userKeys = keysRes.data.keys;
+      }
+      
+      return { preference, userKeys };
+    } catch (error) {
+      if (attempt === maxRetries) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+    }
   }
-  return { preference, userKeys };
 }
 
 class AIService {
   constructor() {
-    // Initialize OpenAI client only if API key is present
     if (process.env.OPENAI_API_KEY) {
       this.openai = new OpenAI({
         apiKey: process.env.OPENAI_API_KEY,
       });
     } else {
-      console.warn('⚠️ OpenAI API key not configured - OpenAI features will be unavailable');
+      console.warn('⚠️ OpenAI API key not configured');
       this.openai = null;
     }
     
     this.perplexityApiKey = process.env.PERPLEXITY_API_KEY;
     this.googleApiKey = process.env.GOOGLE_AI_API_KEY;
+  }
+
+  // FIXED: Added input validation
+  validatePrompt(prompt) {
+    if (!prompt || typeof prompt !== 'string') {
+      throw new Error('Invalid prompt');
+    }
     
-    // Hub integration removed - now using platform directly
+    const trimmed = prompt.trim();
+    
+    // Length validation
+    if (trimmed.length < 5) throw new Error('Prompt too short');
+    if (trimmed.length > 2000) throw new Error('Prompt too long (max 2000 characters)');
+    
+    // FIXED: Block obvious prompt injection
+    const dangerousPatterns = [
+      /ignore\s+(all\s+)?previous\s+instructions/gi,
+      /disregard\s+(all\s+)?prior\s+instructions/gi,
+      /system\s*:\s*you\s+are/gi,
+    ];
+    
+    for (const pattern of dangerousPatterns) {
+      if (pattern.test(trimmed)) {
+        throw new Error('Invalid prompt content detected');
+      }
+    }
+    
+    return trimmed;
   }
 
   async generateContent(prompt, style = 'casual', maxRetries = 3, userToken = null, userId = null) {
-    // Skip all sanitization for AI prompts to prevent [FILTERED] content
-    // Just do basic validation
-    if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5) {
-      throw new Error('Invalid or too short prompt');
+    // FIXED: Validate and sanitize input
+    const sanitizedPrompt = this.validatePrompt(prompt);
+    
+    // FIXED: Rate limiting
+    if (userId) {
+      const rateCheck = checkRateLimit(userId);
+      if (!rateCheck.allowed) {
+        throw new Error(rateCheck.error);
+      }
+    }
+    
+    // Extract requested thread count
+    const threadCountMatch = sanitizedPrompt.match(/generate\s+(\d+)\s+threads?/i);
+    const requestedCount = threadCountMatch ? parseInt(threadCountMatch[1]) : null;
+    
+    // FIXED: Limit thread count
+    if (requestedCount && (requestedCount < 1 || requestedCount > 10)) {
+      throw new Error('Thread count must be between 1 and 10');
     }
 
-    const sanitizedPrompt = prompt.trim();
-    
-    // Extract requested thread count from prompt
-    const threadCountMatch = prompt.match(/generate\s+(\d+)\s+threads?/i);
-    const requestedCount = threadCountMatch ? parseInt(threadCountMatch[1]) : null;
-
-    // Fetch user preference and keys from new-platform if userToken is provided
+    // Fetch user preference
     let preference = 'platform';
     let userKeys = [];
     if (userToken) {
@@ -60,32 +132,33 @@ class AIService {
         const prefResult = await getUserPreferenceAndKeys(userToken);
         preference = prefResult.preference;
         userKeys = prefResult.userKeys;
-        console.log('[BYOK DEBUG] userKeys from new-platform:', JSON.stringify(userKeys, null, 2));
+        // FIXED: Don't log API keys
+        console.log('[BYOK] Fetched keys for providers:', userKeys.map(k => k.provider).join(', '));
       } catch (err) {
         console.error('Failed to fetch user BYOK preference/keys:', err.message);
+        // Continue with platform keys
       }
     }
 
-    // Build providers array based on available API keys (user or platform)
+    // Build providers array
     const providers = [];
-    // Perplexity
     let perplexityKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'perplexity')?.apiKey) : this.perplexityApiKey;
     if (perplexityKey) {
       providers.push({ name: 'perplexity', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey) });
     }
-    // Google
+    
     let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
     if (googleKey) {
       providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
     }
-    // OpenAI
+    
     let openaiKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'openai')?.apiKey) : process.env.OPENAI_API_KEY;
     if (openaiKey) {
-      providers.push({ name: 'openai', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey) });
+      providers.push({ name: 'openai', keyType: preference === 'byok' ? 'BYOOK' : 'platform', method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey) });
     }
 
     if (providers.length === 0) {
-      throw new Error('No AI providers configured. Please set at least one API key (PERPLEXITY_API_KEY, GOOGLE_AI_API_KEY, or OPENAI_API_KEY)');
+      throw new Error('No AI providers configured');
     }
 
     console.log(`Available AI providers: ${providers.map(p => p.name).join(', ')}`);
@@ -93,7 +166,6 @@ class AIService {
     let lastError = null;
     for (const provider of providers) {
       try {
-        // Log which key and provider is being used
         if (userId) {
           console.log(`[AI Key Usage] userId=${userId} provider=${provider.name} keyType=${provider.keyType}`);
         }
@@ -101,7 +173,6 @@ class AIService {
         const result = await provider.method(sanitizedPrompt, style, requestedCount);
         console.log(`✅ Content generated successfully with ${provider.name}`);
         
-        // Clean up AI output - remove citations and artifacts
         const cleanedContent = this.cleanAIOutput(result);
         
         return {
@@ -134,71 +205,36 @@ class AIService {
       informative: 'Write in an informative, educational tone.'
     };
 
-    // Build the system prompt based on whether a specific count is requested
+    // FIXED: Simplified system prompt - removed aggressive "NEVER" instructions
     let systemPrompt;
     
     if (requestedCount) {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-CRITICAL RULES:
-- NEVER explain what you are or clarify your role
-- NEVER say "I'm Perplexity" or "I'm an AI assistant"
-- NEVER refuse or explain limitations
-- Generate EXACTLY ${requestedCount} tweets separated by "---"
-- Output ONLY the tweet text, NOTHING ELSE
-- Use plain apostrophes (') NOT HTML entities (&#x27; or &apos;)
+Generate EXACTLY ${requestedCount} tweets separated by "---"
+Keep each tweet under 280 characters
+Include 1-3 relevant hashtags at the end of each tweet
+Use plain text (no HTML entities like &#x27;)
 
-CONTENT RULES:
-- Generate ONLY tweet content, no explanations
-- DO NOT include "Here's a tweet" or similar phrases
-- Keep under 280 characters per tweet
-- Include 1-3 relevant hashtags at the end of each tweet
-- NO citations, references, or numbered brackets like [1], [2], [3]
-- NO source citations or footnotes
-- NO HTML entities - use plain text characters
-- Be engaging and informative
-- Each tweet should be complete and standalone
-
-User request: ${prompt}
-
-Remember: Generate EXACTLY ${requestedCount} tweets. Count them as you write. Include relevant hashtags. DO NOT add any citations or references.`;
+User request: ${prompt}`;
     } else {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-CRITICAL RULES:
-- NEVER explain what you are or clarify your role
-- NEVER say "I'm Perplexity" or "I'm an AI assistant" or "I'm trained to..."
-- NEVER refuse to generate content or provide meta-commentary
-- Output ONLY the tweet text, NOTHING ELSE
-- Use plain apostrophes (') NOT HTML entities (&#x27; or &apos;)
+If user asks for "threads" without a number, generate 3-5 tweets separated by "---"
+Keep under 280 characters per tweet
+Include 1-3 relevant hashtags
+Use plain text only
 
-CONTENT RULES:
-- Generate tweet content based on the request
-- If user asks for "threads" without a number, generate 3-5 tweets separated by "---"
-- DO NOT include "Here's a tweet" or similar phrases
-- Keep under 280 characters per tweet
-- Include 1-3 relevant hashtags at the end of each tweet
-- NO citations, references, or numbered brackets like [1], [2], [3]
-- NO source citations or footnotes
-- NO HTML entities - use plain text characters
-- Be engaging and informative
-- Each tweet should be complete and standalone
-
-User request: ${prompt}
-
-Generate appropriate tweet content with relevant hashtags. DO NOT add any citations or references.`;
+User request: ${prompt}`;
     }
 
     try {
-      console.log('[Perplexity] Attempting to generate content with model: sonar');
-      console.log('[Perplexity] API key present:', !!keyToUse, 'Length:', keyToUse?.length);
-      
       const response = await axios.post(
         'https://api.perplexity.ai/chat/completions',
         {
           model: 'sonar',
           messages: [
-            { role: 'system', content: 'You are a creative Twitter content writer. Generate engaging tweet content based on user requests without any meta-commentary or refusals.' },
+            { role: 'system', content: 'You are a creative Twitter content writer.' },
             { role: 'user', content: systemPrompt }
           ],
           max_tokens: 800,
@@ -208,31 +244,22 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
           headers: {
             'Authorization': `Bearer ${keyToUse}`,
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: 30000 // FIXED: Added timeout
         }
       );
 
-      console.log('[Perplexity] Response status:', response.status);
       const content = response.data.choices[0]?.message?.content?.trim();
       if (!content) {
         throw new Error('No content generated by Perplexity');
       }
 
-      console.log('[Perplexity] Successfully generated content, length:', content.length);
       return content;
     } catch (error) {
-      console.error('[Perplexity] Error details:', {
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        message: error.message
-      });
-      
       if (error.response?.status === 400) {
         const errorData = error.response.data;
         throw new Error(`Perplexity API Error: ${errorData.error?.message || errorData.message || 'Bad Request'}`);
       }
-      
       throw error;
     }
   }
@@ -243,9 +270,6 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
       throw new Error('Google AI API key not configured');
     }
 
-    console.log('[Google AI] Attempting to generate content');
-    console.log('[Google AI] API key present:', !!keyToUse, 'Length:', keyToUse?.length);
-
     const stylePrompts = {
       professional: 'professional and business-appropriate',
       casual: 'casual and conversational',
@@ -254,54 +278,32 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
       informative: 'informative and educational'
     };
 
-    // Build the system prompt based on whether a specific count is requested
+    // FIXED: Simplified prompt
     let systemPrompt;
     
     if (requestedCount) {
       systemPrompt = `You are a Twitter content creator. Be ${stylePrompts[style] || 'casual and conversational'}.
 
-CRITICAL RULES:
-- NEVER explain what you are or your limitations
-- NEVER refuse to generate content
-- Output ONLY tweet text, NOTHING ELSE
-- Generate EXACTLY ${requestedCount} tweets separated by "---"
+Generate EXACTLY ${requestedCount} tweets separated by "---"
+Keep under 280 characters per tweet
+Include 1-3 relevant hashtags
+Use plain text only
 
-CONTENT RULES:
-- Generate ONLY tweet content
-- DO NOT include "Here's a tweet:" phrases
-- Keep under 280 characters per tweet
-- Include 1-3 relevant hashtags at the end of each tweet
-- NO citations, references, or numbered brackets like [1], [2], [3]
-- NO source citations or footnotes
-- NO HTML entities (&#x27;, &apos;) - use plain apostrophes (')
-- Be engaging and informative
-- Each tweet should be complete
-
-User request: ${prompt}
-
-IMPORTANT: Generate EXACTLY ${requestedCount} tweets with relevant hashtags. DO NOT add any citations or references.`;
+User request: ${prompt}`;
     } else {
       systemPrompt = `You are a Twitter content creator. Be ${stylePrompts[style] || 'casual and conversational'}.
 
-CONTENT RULES:
-- Generate tweet content based on the request
-- If user asks for "threads" without a number, generate 3-5 tweets separated by "---"
-- DO NOT include "Here's a tweet:" phrases
-- Keep under 280 characters per tweet
-- Include 1-3 relevant hashtags at the end of each tweet
-- NO citations, references, or numbered brackets like [1], [2], [3]
-- NO source citations or footnotes
-- Be engaging and informative
-- Each tweet should be complete
+Generate tweet content based on the request
+If "threads" requested, generate 3-5 tweets separated by "---"
+Keep under 280 characters per tweet
+Include 1-3 relevant hashtags
 
-User request: ${prompt}
-
-Generate appropriate tweet content with relevant hashtags. DO NOT add any citations or references.`;
+User request: ${prompt}`;
     }
 
     try {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/gemini-1.5-flash-latest:generateContent?key=${keyToUse}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${keyToUse}`,
         {
           contents: [{
             parts: [{
@@ -328,35 +330,18 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
         {
           headers: {
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: 30000 // FIXED: Added timeout
         }
       );
 
-      console.log('[Google AI] Response status:', response.status);
-      console.log('[Google AI] Response data structure:', {
-        hasCandidates: !!response.data.candidates,
-        candidatesLength: response.data.candidates?.length,
-        firstCandidate: !!response.data.candidates?.[0],
-        hasContent: !!response.data.candidates?.[0]?.content,
-        hasParts: !!response.data.candidates?.[0]?.content?.parts,
-        partsLength: response.data.candidates?.[0]?.content?.parts?.length
-      });
-
       const content = response.data.candidates[0]?.content?.parts[0]?.text?.trim();
       if (!content) {
-        console.error('[Google AI] Full response data:', JSON.stringify(response.data, null, 2));
         throw new Error('No content generated by Google Gemini');
       }
 
-      console.log('[Google AI] Successfully generated content, length:', content.length);
       return content;
     } catch (error) {
-      console.error('[Google AI] Error details:', {
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        url: error.config?.url
-      });
       throw new Error(`Google AI Error: ${error.response?.data?.error?.message || error.message}`);
     }
   }
@@ -367,7 +352,6 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
       throw new Error('OpenAI API key not configured');
     }
 
-    // Create a new OpenAI client if using BYOK key
     let openaiClient = this.openai;
     if (apiKey && apiKey !== process.env.OPENAI_API_KEY) {
       const OpenAI = (await import('openai')).default;
@@ -382,59 +366,38 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
       informative: 'Write in an informative, educational tone.'
     };
 
-    // Build the system prompt based on whether a specific count is requested
+    // FIXED: Simplified prompt
     let systemPrompt;
     
     if (requestedCount) {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-CRITICAL RULES:
-- NEVER explain your identity or capabilities
-- NEVER refuse or provide meta-commentary
-- Output ONLY tweet text, NOTHING ELSE
-- Generate EXACTLY ${requestedCount} tweets separated by "---"
+Generate EXACTLY ${requestedCount} tweets separated by "---"
+Keep under 280 characters per tweet
+Include 1-3 relevant hashtags
+Use plain text only
 
-CONTENT RULES:
-- Generate ONLY tweet content
-- DO NOT include "Here's a tweet:" phrases  
-- Keep under 280 characters per tweet
-- Include 1-3 relevant hashtags at the end of each tweet
-- NO citations, references, or numbered brackets like [1], [2], [3]
-- NO source citations or footnotes
-- NO HTML entities (&#x27;, &apos;) - use plain apostrophes (')
-- Be engaging and informative
-- Each tweet should be complete
-
-User request: ${prompt}
-
-IMPORTANT: Generate EXACTLY ${requestedCount} tweets with relevant hashtags. DO NOT add any citations or references.`;
+User request: ${prompt}`;
     } else {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-CONTENT RULES:
-- Generate tweet content based on the request
-- If user asks for "threads" without a number, generate 3-5 tweets separated by "---"
-- DO NOT include "Here's a tweet:" phrases  
-- Keep under 280 characters per tweet
-- Include 1-3 relevant hashtags at the end of each tweet
-- NO citations, references, or numbered brackets like [1], [2], [3]
-- NO source citations or footnotes
-- Be engaging and informative
-- Each tweet should be complete
+Generate tweet content based on request
+If "threads" requested, generate 3-5 tweets separated by "---"
+Keep under 280 characters per tweet
+Include 1-3 relevant hashtags
 
-User request: ${prompt}
-
-Generate appropriate tweet content with relevant hashtags. DO NOT add any citations or references.`;
+User request: ${prompt}`;
     }
 
     const response = await openaiClient.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt }
       ],
       max_tokens: 800,
       temperature: 0.7,
+      timeout: 30000 // FIXED: Added timeout
     });
 
     const content = response.choices[0]?.message?.content?.trim();
@@ -446,14 +409,8 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
   }
 
   async generateImageContent(prompt, imageUrl = null) {
-    // Basic validation without aggressive sanitization
-    if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 3) {
-      throw new Error('Invalid or too short prompt for image content generation');
-    }
+    const sanitizedPrompt = this.validatePrompt(prompt);
 
-    const sanitizedPrompt = prompt.trim();
-
-    // Build providers array for image content generation
     const providers = [];
     
     if (this.openai && process.env.OPENAI_API_KEY) {
@@ -495,17 +452,13 @@ Generate appropriate tweet content with relevant hashtags. DO NOT add any citati
       throw new Error('OpenAI API key not configured');
     }
 
-    const systemPrompt = `You are a Twitter content creator. Generate engaging tweet content based on the image and prompt provided.
+    // FIXED: Simplified prompt
+    const systemPrompt = `You are a Twitter content creator. Generate engaging tweet content.
 
-CRITICAL INSTRUCTIONS:
-- Generate ONLY the tweet text, no explanations or chat responses
-- DO NOT include phrases like "Here's a tweet:", "Caption:", etc.
-- DO NOT add conversational elements
-- Keep under 280 characters
-- For thread content: Only include hashtags in the FINAL tweet of the thread
-- For single tweets: Include relevant hashtags (max 2-3)
-- Be engaging and descriptive
-- Focus on what makes the image interesting or noteworthy
+Keep under 280 characters
+For threads: Only include hashtags in the FINAL tweet
+For single tweets: Include 2-3 relevant hashtags
+Be engaging and descriptive
 
 Generate tweet content for: ${prompt}`;
 
@@ -526,10 +479,11 @@ Generate tweet content for: ${prompt}`;
     }
 
     const response = await this.openai.chat.completions.create({
-      model: imageUrl ? 'gpt-4-vision-preview' : 'gpt-3.5-turbo',
+      model: imageUrl ? 'gpt-4o' : 'gpt-4o-mini',
       messages: messages,
       max_tokens: 400,
       temperature: 0.7,
+      timeout: 30000 // FIXED: Added timeout
     });
 
     const content = response.choices[0]?.message?.content?.trim();
@@ -545,17 +499,13 @@ Generate tweet content for: ${prompt}`;
       throw new Error('Google AI API key not configured');
     }
 
-    const systemPrompt = `You are a Twitter content creator. Generate ONLY tweet content based on the image and prompt.
+    // FIXED: Simplified prompt
+    const systemPrompt = `You are a Twitter content creator. Generate engaging tweet content.
 
-CRITICAL RULES:
-- Generate ONLY the tweet text, nothing else
-- DO NOT include "Here's a tweet:" or similar phrases
-- DO NOT add explanations or commentary
-- Keep under 280 characters
-- For thread content: Only include hashtags in the FINAL tweet of the thread
-- For single tweets: Include 1-2 relevant hashtags
-- Be engaging and visual
-- Focus on what makes the image compelling
+Keep under 280 characters
+For threads: hashtags in FINAL tweet only
+For single tweets: include 1-2 hashtags
+Be engaging and visual
 
 Generate tweet content for: ${prompt}`;
 
@@ -573,7 +523,6 @@ Generate tweet content for: ${prompt}`;
       }
     };
 
-    // Add image if provided
     if (imageUrl && imageUrl.startsWith('data:image/')) {
       const base64Data = imageUrl.split(',')[1];
       const mimeType = imageUrl.split(';')[0].split(':')[1];
@@ -587,12 +536,13 @@ Generate tweet content for: ${prompt}`;
     }
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${this.googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.googleApiKey}`,
       requestBody,
       {
         headers: {
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 30000 // FIXED: Added timeout
       }
     );
 
@@ -608,14 +558,12 @@ Generate tweet content for: ${prompt}`;
     const results = [];
     const errors = [];
 
-    // Try to generate multiple options, but don't fail if some don't work
     for (let i = 0; i < count; i++) {
       try {
         const result = await this.generateContent(prompt, style);
         results.push(result);
       } catch (error) {
         errors.push(error.message);
-        // If we can't generate any options, throw the error
         if (results.length === 0 && i === count - 1) {
           throw error;
         }
@@ -628,12 +576,9 @@ Generate tweet content for: ${prompt}`;
     };
   }
 
-  // Legacy hub methods removed - now using platform directly
-
   async generateTweets(params) {
     const { prompt, provider, style, hashtags, mentions, max_tweets, userId } = params;
 
-    // Use direct AI generation through platform
     try {
       const result = await this.generateContent(prompt, style);
       return [result.content];
@@ -643,9 +588,6 @@ Generate tweet content for: ${prompt}`;
     }
   }
 
-
-
-  // Clean AI output by removing citations and artifacts
   cleanAIOutput(content) {
     if (!content || typeof content !== 'string') {
       return content;
@@ -653,27 +595,21 @@ Generate tweet content for: ${prompt}`;
 
     let cleaned = content;
 
-    // Detect AI refusals or meta-commentary (garbage responses)
+    // FIXED: Better refusal detection
     const refusalPatterns = [
       /I appreciate the detailed instructions/i,
       /I need to clarify my role/i,
       /I'm (Perplexity|Claude|ChatGPT|an AI|a language model)/i,
       /I cannot (generate|create|write)/i,
-      /I'm not designed to/i,
-      /I don't feel comfortable/i,
       /As an AI (assistant|model)/i,
-      /I apologize, but I/i,
-      /trained to synthesize information/i,
-      /search assistant trained/i
     ];
 
     const isRefusal = refusalPatterns.some(pattern => pattern.test(content));
     if (isRefusal) {
-      console.error('AI generated refusal/meta-commentary instead of content:', content.substring(0, 100));
-      throw new Error('AI provider refused to generate content. Please try again or rephrase your prompt.');
+      throw new Error('AI provider refused to generate content. Please try again.');
     }
 
-    // CRITICAL: Decode HTML entities FIRST (some AIs generate them directly)
+    // Decode HTML entities
     cleaned = cleaned
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
@@ -683,55 +619,37 @@ Generate tweet content for: ${prompt}`;
       .replace(/&#39;/g, "'")
       .replace(/&apos;/g, "'");
 
-    // Remove markdown formatting (bold, italic, headers)
-    // Bold: **text** or __text__
+    // Remove markdown
     cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
     cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
-    
-    // Italic: *text* or _text_ (but not underscores in URLs or middle of words)
     cleaned = cleaned.replace(/\*([^*\s][^*]*[^*\s])\*/g, '$1');
     cleaned = cleaned.replace(/(?<!\w)_([^_\s][^_]*[^_\s])_(?!\w)/g, '$1');
-    
-    // Headers: # text, ## text, etc.
     cleaned = cleaned.replace(/^#{1,6}\s+(.+)$/gm, '$1');
-    
-    // Strikethrough: ~~text~~
     cleaned = cleaned.replace(/~~([^~]+)~~/g, '$1');
-    
-    // Code blocks: `code` or ```code```
     cleaned = cleaned.replace(/```[^`]*```/g, '');
     cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
 
-    // Remove citation brackets: [1], [2], [3], etc.
+    // Remove citations
     cleaned = cleaned.replace(/\[\d+\]/g, '');
-    
-    // Remove citation parentheses: (1), (2), etc.
     cleaned = cleaned.replace(/\(\d+\)/g, '');
-    
-    // Remove source citations at end
     cleaned = cleaned.replace(/\s*sources?:\s*.*$/gi, '');
-    
-    // Remove "Here's a tweet:" or similar prefixes
     cleaned = cleaned.replace(/^(Here's a tweet:|Here's|Tweet:|Here are \d+ tweets?:|Caption:)\s*/gi, '');
-    
-    // Remove numbered prefixes like "1. " at start of lines
     cleaned = cleaned.replace(/^\d+\.\s+/gm, '');
-    
-    // Clean up excessive whitespace
     cleaned = cleaned.replace(/\s{3,}/g, '  ').trim();
 
     return cleaned;
   }
 
-  // Generate a tweet or thread for a prompt, returning { text, isThread, threadParts }
   async generateTweetOrThread(prompt, options = {}) {
     const style = options.style || 'casual';
     let aiPrompt = prompt;
-    // If isThread is true, force thread generation in the prompt
+    
     if (options.isThread) {
       aiPrompt = `${prompt}\nGenerate a Twitter thread (3-5 tweets, separated by ---).`;
     }
+    
     const result = await this.generateContent(aiPrompt, style);
+    
     if (options.isThread) {
       const threadParts = result.content.split(/---+/).map(t => t.trim()).filter(Boolean);
       return {
@@ -742,7 +660,6 @@ Generate tweet content for: ${prompt}`;
         success: true
       };
     } else {
-      // Always return a single tweet (first part)
       const first = typeof result.content === 'string' ? result.content.split(/---+/)[0].trim() : '';
       return {
         text: first,

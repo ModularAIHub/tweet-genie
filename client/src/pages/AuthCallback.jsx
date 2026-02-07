@@ -37,18 +37,15 @@ const AuthCallback = () => {
             navigate(redirectUrl, { replace: true });
           } else {
             // If callback failed, redirect to login
-            const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in';
-            window.location.href = `${platformUrl}/login`;
+            window.location.href = `${import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173'}/login`;
           }
         } catch (error) {
           console.error('Auth callback error:', error);
-          const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in';
-          window.location.href = `${platformUrl}/login`;
+          window.location.href = `${import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173'}/login`;
         }
       } else {
         // No token, redirect to platform login
-        const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in';
-        window.location.href = `${platformUrl}/login`;
+        window.location.href = `${import.meta.env.VITE_PLATFORM_URL || 'http://localhost:5173'}/login`;
       }
     };
 
