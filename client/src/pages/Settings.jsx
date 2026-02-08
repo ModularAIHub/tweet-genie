@@ -191,8 +191,6 @@ const Settings = () => {
 
   const tabs = [
     { id: 'twitter', name: 'Twitter Account', icon: Twitter },
-    { id: 'ai', name: 'AI Providers', icon: Sparkles },
-    { id: 'general', name: 'General', icon: SettingsIcon },
   ];
 
   if (loading) {
@@ -212,7 +210,7 @@ const Settings = () => {
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
         <p className="mt-2 text-gray-600">
-          Manage your Twitter connections and AI providers
+          Manage your Twitter connections
         </p>
       </div>
 
@@ -348,86 +346,6 @@ const Settings = () => {
                 </button>
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* AI Providers Tab */}
-      {activeTab === 'ai' && (
-        <div className="space-y-6">
-          <div className="card">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              AI Content Providers
-            </h3>
-            <p className="text-sm text-gray-600 mb-6">
-              Configure your own API keys or use the platform's built-in providers
-            </p>
-
-            <div className="space-y-6">
-              {aiProviders.map((provider) => (
-                <ProviderCard
-                  key={provider.name}
-                  provider={provider}
-                  onConfigure={handleProviderConfigure}
-                  onRemove={handleProviderRemove}
-                  showApiKey={showApiKey[provider.name]}
-                  onToggleApiKey={() => setShowApiKey(prev => ({
-                    ...prev,
-                    [provider.name]: !prev[provider.name]
-                  }))}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* General Tab */}
-      {activeTab === 'general' && (
-        <div className="space-y-6">
-          <div className="card">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              General Settings
-            </h3>
-            
-            <div className="space-y-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Default Timezone
-                </label>
-                <select className="input w-full max-w-xs">
-                  <option value="UTC">UTC</option>
-                  <option value="America/New_York">Eastern Time</option>
-                  <option value="America/Chicago">Central Time</option>
-                  <option value="America/Denver">Mountain Time</option>
-                  <option value="America/Los_Angeles">Pacific Time</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="flex items-center">
-                  <input
-                    type="checkbox"
-                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                  />
-                  <span className="ml-2 text-sm text-gray-700">
-                    Enable email notifications for failed posts
-                  </span>
-                </label>
-              </div>
-
-              <div>
-                <label className="flex items-center">
-                  <input
-                    type="checkbox"
-                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                  />
-                  <span className="ml-2 text-sm text-gray-700">
-                    Auto-sync analytics daily
-                  </span>
-                </label>
-              </div>
-            </div>
           </div>
         </div>
       )}

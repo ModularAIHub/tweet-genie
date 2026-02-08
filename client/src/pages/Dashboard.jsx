@@ -326,6 +326,7 @@ const Dashboard = () => {
               Welcome back! Here's an overview of your Twitter activity.
             </p>
           </div>
+          {/* Removed round icon and email from header */}
           <Link
             to="/compose"
             className="btn btn-primary btn-lg"
