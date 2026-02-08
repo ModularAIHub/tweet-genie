@@ -1,5 +1,3 @@
-
-
 import express from 'express';
 import pool from '../config/database.js';
 import crypto from 'crypto';
@@ -23,6 +21,10 @@ router.post('/upload-media', validateTwitterConnection, async (req, res) => {
   try {
     const { media } = req.body;
     const twitterAccount = req.twitterAccount;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    if (!selectedAccountId) {
+      return res.status(400).json({ error: 'Missing x-selected-account-id header. Please select a team Twitter account before uploading media.' });
+    }
     if (!media || !Array.isArray(media) || media.length === 0) {
       return res.status(400).json({ error: 'No media provided' });
     }
@@ -364,11 +366,11 @@ async function handleOAuth2Callback(req, res) {
   }
 }
 
-// OAuth 1.0a callback handler
+// OAuth 1.0a callback handler - FIXED VERSION
 async function handleOAuth1Callback(req, res) {
   const { oauth_token, oauth_verifier } = req.query;
   
-  console.log('OAuth 1.0a callback received:', { oauth_token: !!oauth_token, oauth_verifier: !!oauth_verifier });
+  console.log('[OAuth1 Callback] OAuth 1.0a callback received:', { oauth_token: !!oauth_token, oauth_verifier: !!oauth_verifier });
   
   if (!oauth_token || !oauth_verifier) {
     return res.redirect(`${process.env.CLIENT_URL}/settings?error=oauth1_missing_params`);
@@ -383,6 +385,8 @@ async function handleOAuth1Callback(req, res) {
     const tokenData = global.oauth1TempTokens.get(oauth_token);
     const { secret: oauthTokenSecret, userId, teamId, returnUrl, isTeamConnection } = tokenData;
     global.oauth1TempTokens.delete(oauth_token); // Clean up
+
+    console.log('[OAuth1 Callback] Token data retrieved:', { userId, teamId, isTeamConnection });
 
     // Initialize OAuth 1.0a with request token
     const oauth = OAuth({
@@ -415,7 +419,7 @@ async function handleOAuth1Callback(req, res) {
     });
 
     const responseText = await response.text();
-    console.log('OAuth 1.0a access token response:', responseText);
+    console.log('[OAuth1 Callback] Access token response:', responseText);
 
     if (!response.ok) {
       throw new Error(`Access token failed: ${responseText}`);
@@ -425,51 +429,124 @@ async function handleOAuth1Callback(req, res) {
     const params = new URLSearchParams(responseText);
     const accessToken = params.get('oauth_token');
     const accessTokenSecret = params.get('oauth_token_secret');
+    // ⭐ FIX: Get these from params, not undefined variables
+    const twitterUserId = params.get('user_id');
+    const screenName = params.get('screen_name');
 
     if (!accessToken || !accessTokenSecret) {
       throw new Error('Missing access token or secret');
     }
 
+    console.log('[OAuth1 Callback] OAuth1 tokens received:', { 
+      hasAccessToken: !!accessToken, 
+      hasAccessTokenSecret: !!accessTokenSecret,
+      twitterUserId,
+      screenName
+    });
+
     if (isTeamConnection) {
-      // Team connection: Update OAuth1 tokens in user_social_accounts table
-      console.log('Updating OAuth1 tokens for team connection:', { teamId, userId });
-      
+      // Team connection: Update OAuth1 tokens in team_accounts table
+      console.log('[OAuth1 Callback] Updating OAuth1 tokens for team connection:', { teamId, userId, twitterUserId, screenName });
+
       // Validate team membership and permissions
       const teamMemberResult = await pool.query(`
         SELECT role FROM team_members 
         WHERE team_id = $1 AND user_id = $2 AND status = 'active'
       `, [teamId, userId]);
-      
+
       if (teamMemberResult.rows.length === 0) {
-        console.error('User not authorized for team:', { teamId, userId });
+        console.error('[OAuth1 Callback] User not authorized for team:', { teamId, userId });
         return res.redirect(`${returnUrl}?error=unauthorized`);
       }
-      
+
       const userRole = teamMemberResult.rows[0].role;
       if (!['owner', 'admin'].includes(userRole)) {
-        console.error('User lacks permission to connect accounts:', { teamId, userId, role: userRole });
+        console.error('[OAuth1 Callback] User lacks permission to connect accounts:', { teamId, userId, role: userRole });
         return res.redirect(`${returnUrl}?error=insufficient_permissions`);
       }
-      
-      // Update existing social account with OAuth1 tokens (if exists)
-      const updateResult = await pool.query(`
-        UPDATE user_social_accounts
-        SET oauth1_access_token = $1,
-            oauth1_access_token_secret = $2,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE team_id = $3 AND platform = 'twitter' AND user_id = $4 AND is_active = true
-        RETURNING id
-      `, [accessToken, accessTokenSecret, teamId, userId]);
-      
-      if (updateResult.rows.length === 0) {
-        console.error('No existing Twitter account found for OAuth1 token update:', { teamId, userId });
-        return res.redirect(`${returnUrl}?error=account_not_found`);
+
+      // CRITICAL FIX: Update team_accounts table (not user_social_accounts)
+      console.log('[OAuth1 Callback] Attempting to update team_accounts with OAuth1 tokens');
+
+      // First try to find existing account by twitter_user_id
+      const existingAccountResult = await pool.query(`
+        SELECT id, twitter_username, twitter_display_name 
+        FROM team_accounts 
+        WHERE team_id = $1 AND twitter_user_id = $2 AND active = true
+      `, [teamId, twitterUserId]);
+
+      if (existingAccountResult.rows.length > 0) {
+        // Update existing team account with OAuth1 tokens
+        console.log('[OAuth1 Callback] Found existing team account, updating with OAuth1 tokens');
+        const updateResult = await pool.query(`
+          UPDATE team_accounts
+          SET oauth1_access_token = $1,
+              oauth1_access_token_secret = $2,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE team_id = $3 AND twitter_user_id = $4 AND active = true
+          RETURNING id, twitter_username, twitter_display_name
+        `, [accessToken, accessTokenSecret, teamId, twitterUserId]);
+
+        console.log('[OAuth1 Callback] Update result:', updateResult.rows);
+
+        if (updateResult.rows.length > 0) {
+          console.log('[OAuth1 Callback] OAuth 1.0a tokens stored successfully in team_accounts');
+          return res.redirect(`${returnUrl}?success=oauth1_connected&username=${encodeURIComponent(updateResult.rows[0].twitter_username)}`);
+        }
+      } else {
+        // No existing OAuth2 account found - fetch Twitter details and create new account
+        console.log('[OAuth1 Callback] No existing team account found, fetching Twitter details and creating new account');
+
+        let accountDisplayName = screenName;
+        let profileImageUrl = null;
+
+        try {
+          const { TwitterApi } = await import('twitter-api-v2');
+          const twitterClient = new TwitterApi({
+            appKey: process.env.TWITTER_CONSUMER_KEY,
+            appSecret: process.env.TWITTER_CONSUMER_SECRET,
+            accessToken,
+            accessSecret: accessTokenSecret
+          });
+
+          const userData = await twitterClient.v1.verifyCredentials();
+          accountDisplayName = userData.name;
+          profileImageUrl = userData.profile_image_url_https;
+
+          console.log('[OAuth1 Callback] Fetched Twitter details:', { 
+            screenName: userData.screen_name, 
+            name: userData.name,
+            profileImageUrl 
+          });
+        } catch (fetchErr) {
+          console.error('[OAuth1 Callback] Failed to fetch Twitter account details:', fetchErr);
+        }
+
+        // Insert new team account with OAuth1 tokens only
+        const insertResult = await pool.query(`
+          INSERT INTO team_accounts (
+            team_id, user_id, twitter_user_id, twitter_username, twitter_display_name,
+            twitter_profile_image_url, oauth1_access_token, oauth1_access_token_secret,
+            active, created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          RETURNING id, twitter_username
+        `, [teamId, userId, twitterUserId, screenName, accountDisplayName, profileImageUrl, accessToken, accessTokenSecret]);
+
+        console.log('[OAuth1 Callback] Insert result:', insertResult.rows);
+
+        if (insertResult.rows.length > 0) {
+          console.log('[OAuth1 Callback] New team account created with OAuth1 tokens');
+          return res.redirect(`${returnUrl}?success=oauth1_connected&username=${encodeURIComponent(insertResult.rows[0].twitter_username)}`);
+        }
       }
-      
-      console.log('OAuth 1.0a tokens stored successfully for team:', teamId);
-      res.redirect(`${returnUrl}?success=oauth1_connected`);
+
+      // If we get here, something went wrong
+      console.error('[OAuth1 Callback] Failed to store OAuth1 tokens in team_accounts');
+      return res.redirect(`${returnUrl}?error=oauth1_storage_failed`);
     } else {
       // Individual user connection: Update twitter_auth table (legacy)
+      console.log('[OAuth1 Callback] Updating OAuth1 tokens for individual user:', userId);
+      
       await pool.query(`
         UPDATE twitter_auth 
         SET oauth1_access_token = $1, 
@@ -478,11 +555,21 @@ async function handleOAuth1Callback(req, res) {
         WHERE user_id = $3
       `, [accessToken, accessTokenSecret, userId]);
 
-      console.log('OAuth 1.0a tokens stored successfully for user:', userId);
+      console.log('[OAuth1 Callback] OAuth 1.0a tokens stored successfully for user:', userId);
       res.redirect(`${process.env.CLIENT_URL}/settings?oauth1_connected=true`);
     }
   } catch (error) {
-    console.error('OAuth 1.0a callback error:', error);
+    console.error('[OAuth1 Callback] OAuth 1.0a callback error:', error);
+    
+    // Get tokenData safely in case it exists
+    let isTeamConnection = false;
+    let returnUrl = null;
+    
+    if (global.oauth1TempTokens && global.oauth1TempTokens.has(oauth_token)) {
+      const tokenData = global.oauth1TempTokens.get(oauth_token);
+      isTeamConnection = tokenData?.isTeamConnection;
+      returnUrl = tokenData?.returnUrl;
+    }
     
     if (isTeamConnection && returnUrl) {
       return res.redirect(`${returnUrl}?error=oauth1_connection_failed`);
@@ -607,7 +694,7 @@ router.get('/team-connect-oauth1', async (req, res) => {
       });
     }
 
-    console.log('Initiating OAuth 1.0a team connection:', { teamId, userId });
+    console.log('[OAuth1 Connect] Initiating OAuth 1.0a team connection:', { teamId, userId });
 
     // Initialize OAuth 1.0a
     const oauth = OAuth({
@@ -637,7 +724,7 @@ router.get('/team-connect-oauth1', async (req, res) => {
     });
 
     const responseText = await response.text();
-    console.log('OAuth 1.0a team request token response:', responseText);
+    console.log('[OAuth1 Connect] Request token response:', responseText);
 
     if (!response.ok) {
       throw new Error(`Request token failed: ${responseText}`);
@@ -662,19 +749,23 @@ router.get('/team-connect-oauth1', async (req, res) => {
       isTeamConnection: true
     });
 
+    console.log('[OAuth1 Connect] Token stored temporarily:', { oauthToken, teamId, userId });
+
     // Clean up after 5 minutes
     setTimeout(() => {
       if (global.oauth1TempTokens) {
         global.oauth1TempTokens.delete(oauthToken);
+        console.log('[OAuth1 Connect] Cleaned up expired token:', oauthToken);
       }
     }, 5 * 60 * 1000);
 
     // Step 2: Redirect to Twitter
     const authURL = `https://api.twitter.com/oauth/authenticate?oauth_token=${oauthToken}`;
     
+    console.log('[OAuth1 Connect] Redirecting to Twitter:', authURL);
     res.redirect(authURL);
   } catch (error) {
-    console.error('OAuth 1.0a team connect error:', error);
+    console.error('[OAuth1 Connect] OAuth 1.0a team connect error:', error);
     const { returnUrl } = req.query;
     if (returnUrl) {
       return res.redirect(`${returnUrl}?error=oauth1_init_failed`);
@@ -701,29 +792,39 @@ router.get('/test-team-accounts', async (req, res) => {
 
     console.log('Testing team Twitter accounts for team:', testTeamId);
 
-    // Get all Twitter accounts for this team
-    const accountsResult = await newPlatformPool.query(`
+    // Get all Twitter accounts for this team from team_accounts table
+    const accountsResult = await pool.query(`
       SELECT 
         id,
-        account_id,
-        account_username,
-        account_display_name,
-        profile_image_url,
+        twitter_user_id,
+        twitter_username,
+        twitter_display_name,
+        twitter_profile_image_url,
+        followers_count,
+        following_count,
+        tweet_count,
+        verified,
         created_at,
         updated_at,
-        oauth1_access_token IS NOT NULL AND oauth1_access_token_secret IS NOT NULL as has_oauth1
-      FROM user_social_accounts 
-      WHERE team_id = $1 AND platform = 'twitter' AND is_active = true
+        oauth1_access_token IS NOT NULL AND oauth1_access_token_secret IS NOT NULL as has_oauth1,
+        access_token IS NOT NULL as has_oauth2
+      FROM team_accounts 
+      WHERE team_id = $1 AND active = true
       ORDER BY created_at ASC
     `, [testTeamId]);
 
     const accounts = accountsResult.rows.map(account => ({
       id: account.id,
-      twitter_user_id: account.account_id,
-      username: account.account_username,
-      display_name: account.account_display_name,
-      profile_image_url: account.profile_image_url,
+      twitter_user_id: account.twitter_user_id,
+      username: account.twitter_username,
+      display_name: account.twitter_display_name,
+      profile_image_url: account.twitter_profile_image_url,
+      followers_count: account.followers_count,
+      following_count: account.following_count,
+      tweet_count: account.tweet_count,
+      verified: account.verified,
       has_oauth1: account.has_oauth1,
+      has_oauth2: account.has_oauth2,
       created_at: account.created_at,
       updated_at: account.updated_at
     }));
@@ -744,12 +845,12 @@ router.get('/test-team-accounts', async (req, res) => {
 
 // GET /api/twitter/user/profile - Return authenticated user's profile
 router.get('/user/profile', authenticateToken, async (req, res) => {
-  console.log('[PROERP] /api/twitter/user/profile called');
+  console.log('[PROFILE] /api/twitter/user/profile called');
   if (!req.user) {
-    console.log('[PROERP] Not authenticated');
+    console.log('[PROFILE] Not authenticated');
     return res.status(401).json({ success: false, error: 'Not authenticated' });
   }
-  console.log('[PROERP] Authenticated user:', {
+  console.log('[PROFILE] Authenticated user:', {
     id: req.user.id,
     email: req.user.email,
     name: req.user.name,
@@ -776,7 +877,7 @@ router.get('/team-accounts', async (req, res) => {
       return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    console.log('Fetching team Twitter accounts for user:', userId);
+    console.log('[TEAM-ACCOUNTS] Fetching team Twitter accounts for user:', userId);
 
     // Get user's team (assuming they can only be in one active team)
     const teamResult = await newPlatformPool.query(`
@@ -785,15 +886,15 @@ router.get('/team-accounts', async (req, res) => {
       LIMIT 1
     `, [userId]);
 
-    console.log('[DEBUG] Team query result for user', userId, ':', teamResult.rows);
+    console.log('[TEAM-ACCOUNTS] Team query result for user', userId, ':', teamResult.rows);
 
     if (teamResult.rows.length === 0) {
-      console.log('[DEBUG] User', userId, 'is not in any active team');
+      console.log('[TEAM-ACCOUNTS] User', userId, 'is not in any active team');
       return res.json({ accounts: [] }); // User not in any team
     }
 
     const teamId = teamResult.rows[0].team_id;
-    console.log('[DEBUG] User', userId, 'is in team', teamId);
+    console.log('[TEAM-ACCOUNTS] User', userId, 'is in team', teamId);
 
     // Get Twitter accounts from user_social_accounts (OAuth1)
     const oauth1AccountsResult = await newPlatformPool.query(`
@@ -812,8 +913,7 @@ router.get('/team-accounts', async (req, res) => {
       ORDER BY created_at ASC
     `, [teamId]);
 
-    console.log('[DEBUG] OAuth1 accounts found:', oauth1AccountsResult.rows.length);
-    console.log('[DEBUG] OAuth1 accounts:', oauth1AccountsResult.rows);
+    console.log('[TEAM-ACCOUNTS] OAuth1 accounts found:', oauth1AccountsResult.rows.length);
 
     const oauth1Accounts = oauth1AccountsResult.rows.map(account => ({
       id: account.id,
@@ -828,7 +928,7 @@ router.get('/team-accounts', async (req, res) => {
       type: 'oauth1'
     }));
 
-    // Get Twitter accounts from team_accounts (OAuth2)
+    // ⭐ FIX: Get Twitter accounts from team_accounts with OAuth status
     const oauth2AccountsResult = await pool.query(`
       SELECT 
         id,
@@ -844,11 +944,15 @@ router.get('/team-accounts', async (req, res) => {
         verified,
         active,
         token_expires_at,
-        updated_at
+        updated_at,
+        oauth1_access_token IS NOT NULL AND oauth1_access_token_secret IS NOT NULL as has_oauth1,
+        access_token IS NOT NULL as has_oauth2
       FROM team_accounts
       WHERE team_id = $1 AND active = true
       ORDER BY updated_at DESC
     `, [teamId]);
+
+    console.log('[TEAM-ACCOUNTS] Team accounts found:', oauth2AccountsResult.rows.length);
 
     const oauth2Accounts = oauth2AccountsResult.rows.map(account => ({
       id: account.id,
@@ -860,23 +964,25 @@ router.get('/team-accounts', async (req, res) => {
       following_count: account.following_count,
       tweet_count: account.tweet_count,
       verified: account.verified,
-      has_oauth1: false,
+      has_oauth1: account.has_oauth1,  // ⭐ FIXED: Now reads from database
+      has_oauth2: account.has_oauth2,  // ⭐ ADDED: OAuth2 status
       created_at: null,
       updated_at: account.updated_at,
-      type: 'oauth2'
+      connected_by_user_id: account.user_id,
+      type: 'team'
     }));
 
     // Merge both account types
     const accounts = [...oauth1Accounts, ...oauth2Accounts];
 
-    console.log(`[API] /api/twitter/team-accounts response for team ${teamId}:`, JSON.stringify(accounts, null, 2));
+    console.log(`[TEAM-ACCOUNTS] Response for team ${teamId}:`, JSON.stringify(accounts, null, 2));
     res.json({ 
       success: true,
       accounts,
       team_id: teamId
     });
   } catch (error) {
-    console.error('Failed to fetch team Twitter accounts:', error);
+    console.error('[TEAM-ACCOUNTS] Failed to fetch team Twitter accounts:', error);
     res.status(500).json({ error: 'Failed to fetch team accounts' });
   }
 });
@@ -970,4 +1076,3 @@ router.get('/token-status', authenticateToken, async (req, res) => {
 });
 
 export default router;
-

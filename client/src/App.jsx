@@ -15,6 +15,9 @@ const History = lazy(() => import('./pages/History'));
 const Analytics = lazy(() => import('./pages/Analytics'));
 const Settings = lazy(() => import('./pages/Settings'));
 const AuthCallback = lazy(() => import('./pages/AuthCallback'));
+const Features = lazy(() => import('./pages/Features'));
+const Pricing = lazy(() => import('./pages/Pricing'));
+const Docs = lazy(() => import('./pages/Docs'));
 
 // Loading fallback component
 const PageLoader = () => (
@@ -55,6 +58,9 @@ function App() {
                         <Route path="/history" element={<History />} />
                         <Route path="/analytics" element={<Analytics />} />
                         <Route path="/settings" element={<Settings />} />
+                        <Route path="/features" element={<Features />} />
+                        <Route path="/pricing" element={<Pricing />} />
+                        <Route path="/docs" element={<Docs />} />
                       </Routes>
                     </Suspense>
                   </Layout>

@@ -1,4 +1,5 @@
 import express from 'express';
+import Honeybadger from '@honeybadger-io/js';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -30,8 +31,17 @@ import { authenticateToken } from './middleware/auth.js';
 
 dotenv.config();
 
+// Honeybadger configuration
+Honeybadger.configure({
+  apiKey: 'hbp_A8vjKimYh8OnyV8J3djwKrpqc4OniI3a4MJg', // Replace with your real key
+  environment: process.env.NODE_ENV || 'development'
+});
+
 import proTeamRoutes from './routes/proTeam.js';
 const app = express();
+
+// Honeybadger request handler (must be first middleware)
+app.use(Honeybadger.requestHandler);
 const PORT = process.env.PORT || 3002;
 
 // Basic middleware with CSP configuration for development
@@ -117,6 +127,7 @@ app.get('/api/csrf-token', (req, res) => {
 });
 
 // Routes
+
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', secureAuthRoutes);
 app.use('/', ssoRoutes); // SSO routes at root level
@@ -146,6 +157,7 @@ app.use('/api/twitter', (req, res, next) => {
     authenticateToken(req, res, next);
   }
 }, twitterRoutes);
+app.use('/api/pro-team', proTeamRoutes); // <-- Register proTeam routes here
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);
 app.use('/api/analytics', authenticateToken, analyticsRoutes);
@@ -182,6 +194,9 @@ app.use((err, req, res, next) => {
 import './workers/scheduledTweetWorker.js';
 // Sync orphaned scheduled tweets on startup
 import './workers/startupScheduledTweetSync.js';
+
+// Honeybadger error handler (must be after all routes/middleware)
+app.use(Honeybadger.errorHandler);
 
 app.listen(PORT, () => {
   console.log(`Tweet Genie server running on port ${PORT}`);
