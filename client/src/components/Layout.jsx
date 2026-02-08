@@ -97,7 +97,7 @@ const Layout = ({ children }) => {
       >
         <div className="flex items-center justify-between h-16 px-6 border-b border-gray-200">
           <div className="flex items-center space-x-2">
-            <img src="/logo[1].png" alt="SuiteGenie Logo" className="h-8 w-8 mr-2 rounded-lg shadow" />
+            {/* Removed round logo icon from sidebar */}
             <span className="text-xl font-bold gradient-text">Tweet Genie</span>
           </div>
           <button
@@ -182,9 +182,7 @@ const Layout = ({ children }) => {
                   onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
                   className="flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
                 >
-                  <div className="h-8 w-8 bg-primary-600 rounded-full flex items-center justify-center">
-                    <img src="/logo[1].png" alt="SuiteGenie Logo" className="h-8 w-8 rounded-full" />
-                  </div>
+                  {/* Removed round profile icon/avatar */}
                   <span className="hidden sm:block">{user?.email || 'User'}</span>
                   <ChevronDown className="h-4 w-4" />
                 </button>
