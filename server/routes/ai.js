@@ -43,11 +43,12 @@ router.post('/bulk-generate', authenticateToken, async (req, res) => {
           const scheduledResult = await scheduledTweetService.scheduleTweets({
             userId,
             tweets,
-            options: { 
-              ...scheduleOptions, 
+            options: {
+              ...scheduleOptions,
               ...opt,
-              // Ensure media/mediaUrls from opt are preserved
-              mediaUrls: opt.mediaUrls || opt.media_urls || scheduleOptions.mediaUrls || scheduleOptions.media_urls || []
+              mediaUrls: opt.mediaUrls || opt.media_urls || scheduleOptions.mediaUrls || scheduleOptions.media_urls || [],
+              teamId: scheduleOptions.teamId || scheduleOptions.team_id || req.headers['x-team-id'] || null,
+              accountId: scheduleOptions.accountId || scheduleOptions.account_id || null
             }
           });
           // Optionally, immediately post if scheduled time is now or in the past
@@ -243,7 +244,11 @@ router.post('/generate', authenticateToken, async (req, res) => {
       scheduledResult = await scheduledTweetService.scheduleTweets({
         userId: req.user.id,
         tweets,
-        options: scheduleOptions
+        options: {
+          ...scheduleOptions,
+          teamId: scheduleOptions.teamId || scheduleOptions.team_id || req.headers['x-team-id'] || null,
+          accountId: scheduleOptions.accountId || scheduleOptions.account_id || null
+        }
       });
       // Optionally, immediately post if scheduled time is now or in the past
       if (scheduledResult && scheduledResult.scheduledTime && new Date(scheduledResult.scheduledTime) <= new Date()) {

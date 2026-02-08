@@ -1,9 +1,16 @@
 import express from 'express';
-import { getTeamSocialAccounts } from '../controllers/proTeamController.js';
+import { authenticateToken } from '../middleware/auth.js';
+import { getTeamSocialAccounts, getTeamAccountCredentials, disconnectTeamTwitterAccount } from '../controllers/proTeamController.js';
 
 const router = express.Router();
 
-// Real implementation for /social-accounts
-router.get('/social-accounts', getTeamSocialAccounts);
+// Get team social accounts (Twitter accounts with OAuth credentials)
+router.get('/social-accounts', authenticateToken, getTeamSocialAccounts);
+
+// Get team account credentials info
+router.get('/accounts/:accountId/credentials', authenticateToken, getTeamAccountCredentials);
+
+// Disconnect a team Twitter account
+router.delete('/social-accounts/:accountId', authenticateToken, disconnectTeamTwitterAccount);
 
 export default router;

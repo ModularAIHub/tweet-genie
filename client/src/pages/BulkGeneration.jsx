@@ -188,6 +188,24 @@ const BulkGeneration = () => {
       }
 
       // Use bulk scheduling API
+      // Get selected account info from localStorage
+      let teamId = null;
+      let accountId = null;
+      const selectedAccountRaw = localStorage.getItem('selectedTwitterAccount');
+      if (selectedAccountRaw) {
+        try {
+          const selectedAccount = JSON.parse(selectedAccountRaw);
+          accountId = selectedAccount.id || selectedAccount.account_id || null;
+          // Try to get teamId from account or from session storage
+          teamId = selectedAccount.team_id || sessionStorage.getItem('currentTeamId') || null;
+        } catch (e) {
+          accountId = null;
+          teamId = null;
+        }
+      } else {
+        // fallback: try sessionStorage
+        teamId = sessionStorage.getItem('currentTeamId') || null;
+      }
       const bulkPayload = {
         items,
         frequency,
@@ -196,7 +214,9 @@ const BulkGeneration = () => {
         dailyTimes,
         daysOfWeek,
         images: mediaMap,
-        timezone
+        timezone,
+        teamId,
+        accountId
       };
 
       try {

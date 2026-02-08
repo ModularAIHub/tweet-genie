@@ -49,7 +49,11 @@ const Scheduling = () => {
       
       // Use account-aware API for team users
       if (isTeamUser && selectedAccount) {
-        const apiResponse = await accountAPI.getScheduledTweets();
+        // Always include teamId in fetch for team users
+        const teamId = selectedAccount.team_id || sessionStorage.getItem('currentTeamId') || null;
+        const apiResponse = await accountAPI.fetchForCurrentAccount('/api/scheduling/scheduled', {
+          headers: teamId ? { 'x-team-id': teamId } : {}
+        });
         const data = await apiResponse.json();
         let tweets = data.data?.scheduled_tweets || data.scheduled_tweets || [];
         // Apply filter

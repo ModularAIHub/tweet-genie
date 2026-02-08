@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@headlessui/react": "^1.7.17",
+    "@honeybadger-io/js": "^6.12.3",
+    "@honeybadger-io/react": "^6.1.27",
     "axios": "^1.6.0",
     "clsx": "^2.0.0",
     "date-fns": "^2.30.0",
