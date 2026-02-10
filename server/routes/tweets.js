@@ -157,48 +157,71 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
       // If we have a thread, post the first tweet from the thread as the main tweet
       if (thread && thread.length > 0) {
-          // Team mode: show all tweets for the selected team account (any team member)
-          queryParams.push(selectedAccountId);
-          countParams.push(selectedAccountId);
+        // BROKEN SQL BLOCK BELOW (commented out):
+        /*
+        // Team mode: show all tweets for the selected team account (any team member)
+        queryParams.push(selectedAccountId);
+        countParams.push(selectedAccountId);
 
-          let whereClause = `WHERE t.account_id::TEXT = $1::TEXT`;
-          if (status) {
-            whereClause += ` AND t.status = $2`;
-            queryParams.push(status);
-            countParams.push(status);
-          }
+        let whereClause = `WHERE t.account_id::TEXT = $1::TEXT`;
+        if (status) {
+          whereClause += ` AND t.status = $2`;
+          queryParams.push(status);
+          countParams.push(status);
+        }
 
-          sqlQuery = `
-            SELECT t.*, 
-                    ta.twitter_username as username, 
-                    ta.twitter_display_name as display_name,
-                    CASE 
-                      WHEN t.source = 'external' THEN t.external_created_at
-                      ELSE t.created_at
-                    END as display_created_at
-            FROM tweets t
-            LEFT JOIN team_accounts ta ON t.account_id::TEXT = ta.id::TEXT
-            ${whereClause}
-            ORDER BY 
-              CASE 
-                WHEN t.source = 'external' THEN t.external_created_at
-                ELSE t.created_at
-              END DESC
-            LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
-          `;
+        sqlQuery = `
+          SELECT t.*, 
+                  ta.twitter_username as username, 
+                  ta.twitter_display_name as display_name,
+                  CASE 
+                    WHEN t.source = 'external' THEN t.external_created_at
+                    ELSE t.created_at
+                  END as display_created_at
+          FROM tweets t
+          LEFT JOIN team_accounts ta ON t.account_id::TEXT = ta.id::TEXT
+          ${whereClause}
+          ORDER BY 
+            CASE 
+              WHEN t.source = 'external' THEN t.external_created_at
+              ELSE t.created_at
+            END DESC
+          LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
+        `;
 
-          countQuery = `
-            SELECT COUNT(*) FROM tweets t
-            ${whereClause}
-          `;
+        countQuery = `
+          SELECT COUNT(*) FROM tweets t
+          ${whereClause}
+        `;
 
-          queryParams.push(parsedLimit, parsedOffset);
+        queryParams.push(parsedLimit, parsedOffset);
         console.log({
           textLength: firstTweetData.text?.length,
           hasMedia: !!firstTweetData.media,
           mediaIds: firstTweetMediaIds
         });
+        */
 
+        // Prepare first tweet data for thread
+        let firstTweetMediaIds = [];
+        if (threadMedia && threadMedia[0] && threadMedia[0].length > 0) {
+          if (!twitterAccount.oauth1_access_token || !twitterAccount.oauth1_access_token_secret) {
+            throw {
+              code: 'OAUTH1_REQUIRED',
+              message: 'Media uploads require OAuth 1.0a authentication. Please reconnect your Twitter account.',
+              details: 'Go to Settings > Twitter Account and reconnect to enable media uploads.'
+            };
+          }
+          const oauth1Tokens = {
+            accessToken: twitterAccount.oauth1_access_token,
+            accessTokenSecret: twitterAccount.oauth1_access_token_secret
+          };
+          firstTweetMediaIds = await mediaService.uploadMedia(threadMedia[0], twitterClient, oauth1Tokens);
+        }
+        const firstTweetData = {
+          text: decodeHTMLEntities(thread[0]),
+          ...(firstTweetMediaIds.length > 0 && { media: { media_ids: firstTweetMediaIds } })
+        };
         tweetResponse = await twitterClient.v2.tweet(firstTweetData);
         console.log('First thread tweet posted successfully:', {
           tweetId: tweetResponse.data?.id,
