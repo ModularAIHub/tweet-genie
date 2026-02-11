@@ -50,14 +50,15 @@ export const AccountProvider = ({ children }) => {
   const updateSelectedAccount = async (account) => {
     setSelectedAccount(account);
     if (account) {
-      localStorage.setItem(
-        'selectedTwitterAccount',
-        JSON.stringify({
-          id: account.id,
-          username: account.account_username || account.username,
-          display_name: account.account_display_name || account.display_name,
-        }),
-      );
+      llocalStorage.setItem(
+  'selectedTwitterAccount',
+  JSON.stringify({
+    id: account.id,
+    username: account.account_username || account.username,
+    display_name: account.account_display_name || account.display_name,
+    team_id: account.team_id || account.teamId || null,
+  }),
+);
 
     } else {
       localStorage.removeItem('selectedTwitterAccount');
@@ -178,10 +179,11 @@ export const AccountProvider = ({ children }) => {
           setSelectedAccount(accountToSelect);
           // Also save to localStorage
           localStorage.setItem('selectedTwitterAccount', JSON.stringify({
-            id: accountToSelect.id,
-            username: accountToSelect.account_username,
-            display_name: accountToSelect.account_display_name,
-          }));
+  id: accountToSelect.id,
+  username: accountToSelect.account_username,
+  display_name: accountToSelect.account_display_name,
+  team_id: accountToSelect.team_id || accountToSelect.teamId || null,
+}));
         } else {
           // No team accounts (individual user) - clear selection
           console.log('[AccountContext] Setting selectedAccount to null for individual user');
