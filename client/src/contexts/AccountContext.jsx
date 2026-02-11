@@ -50,9 +50,9 @@ export const AccountProvider = ({ children }) => {
   const updateSelectedAccount = async (account) => {
     setSelectedAccount(account);
     if (account) {
-      llocalStorage.setItem(
-  'selectedTwitterAccount',
-  JSON.stringify({
+      localStorage.setItem(
+        'selectedTwitterAccount',
+        JSON.stringify({
     id: account.id,
     username: account.account_username || account.username,
     display_name: account.account_display_name || account.display_name,
