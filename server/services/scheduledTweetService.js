@@ -4,6 +4,7 @@ import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 
+
 // Helper function to strip markdown formatting
 function stripMarkdown(text) {
   if (!text) return text;
@@ -30,6 +31,7 @@ function stripMarkdown(text) {
   
   return cleaned.trim();
 }
+
 
 class ScheduledTweetService {
   /**
@@ -79,6 +81,7 @@ class ScheduledTweetService {
     }
   }
 
+
   /**
    * Schedule a tweet or thread for future posting.
    * @param {Object} params
@@ -93,27 +96,33 @@ class ScheduledTweetService {
       throw new Error('Missing userId or tweets for scheduling');
     }
 
+
     // Flatten and sanitize tweets: allow [{content: "..."}, "..."] or ["..."]
     let flatTweets = tweets
       .map(t => (typeof t === 'string' ? t : (t && typeof t.content === 'string' ? t.content : '')))
       .map(t => (t || '').trim())
       .filter(t => t.length > 0);
 
+
     if (flatTweets.length === 0) {
       throw new Error('No valid tweets to schedule');
     }
+
 
     const scheduledFor = options.scheduledFor || options.scheduled_for || new Date();
     const timezone = options.timezone || 'UTC';
     const mediaUrls = options.mediaUrls || options.media_urls || [];
 
+
     // Main tweet is first, rest are thread
     const mainContent = flatTweets[0];
     const threadTweets = flatTweets.length > 1 ? flatTweets.slice(1).map(content => ({ content })) : [];
 
+
     // Extract team_id and account_id from options
     const teamId = options.teamId || options.team_id || null;
     const accountId = options.accountId || options.account_id || null;
+
 
     // Insert into scheduled_tweets with team_id and account_id
     const insertQuery = `
@@ -134,12 +143,14 @@ class ScheduledTweetService {
       accountId
     ];
 
+
     const { rows } = await pool.query(insertQuery, values);
     return {
       scheduledId: rows[0].id,
       scheduledTime: rows[0].scheduled_for
     };
   }
+
 
   /**
    * For BullMQ worker: process a scheduled tweet by its ID
@@ -156,14 +167,16 @@ class ScheduledTweetService {
     }
     const scheduledTweet = rows[0];
 
+
     let accountRow = null;
     let accountType = 'personal';
+
 
     // ✅ FIXED: Get tokens from the correct table
     if (scheduledTweet.account_id) {
       // Team account - get tokens directly from team_accounts table
       const teamAccountRes = await pool.query(
-        `SELECT id, twitter_user_id, twitter_username, username,
+        `SELECT id, twitter_user_id, twitter_username,
                 access_token, refresh_token, token_expires_at,
                 oauth1_access_token, oauth1_access_token_secret,
                 active, team_id, user_id
@@ -176,11 +189,11 @@ class ScheduledTweetService {
       }
       accountRow = teamAccountRes.rows[0];
       accountType = 'team';
-      console.log(`[Scheduled Tweet] Using team account: ${accountRow.twitter_username || accountRow.username}`);
+      console.log(`[Scheduled Tweet] Using team account: ${accountRow.twitter_username}`);
     } else if (scheduledTweet.team_id) {
       // Fallback: find team account by team_id
       const teamAccountRes = await pool.query(
-        `SELECT id, twitter_user_id, twitter_username, username,
+        `SELECT id, twitter_user_id, twitter_username,
                 access_token, refresh_token, token_expires_at,
                 oauth1_access_token, oauth1_access_token_secret,
                 active, team_id, user_id
@@ -194,7 +207,7 @@ class ScheduledTweetService {
       }
       accountRow = teamAccountRes.rows[0];
       accountType = 'team';
-      console.log(`[Scheduled Tweet] Using team account (via team_id): ${accountRow.twitter_username || accountRow.username}`);
+      console.log(`[Scheduled Tweet] Using team account (via team_id): ${accountRow.twitter_username}`);
     } else {
       // Personal account - use twitter_auth table
       console.log(`[Scheduled Tweet] User not in team, using personal account`);
@@ -209,11 +222,12 @@ class ScheduledTweetService {
       console.log(`[Scheduled Tweet] Using personal account: ${accountRow.twitter_username}`);
     }
 
+
     // ✅ Attach credentials to scheduledTweet object
     scheduledTweet.access_token = accountRow.access_token || null;
     scheduledTweet.refresh_token = accountRow.refresh_token || null;
     scheduledTweet.token_expires_at = accountRow.token_expires_at || null;
-    scheduledTweet.twitter_username = accountRow.twitter_username || accountRow.username;
+    scheduledTweet.twitter_username = accountRow.twitter_username;
     scheduledTweet.oauth1_access_token = accountRow.oauth1_access_token || null;
     scheduledTweet.oauth1_access_token_secret = accountRow.oauth1_access_token_secret || null;
     scheduledTweet.isTeamAccount = accountType === 'team';
@@ -224,8 +238,10 @@ class ScheduledTweetService {
       accountType
     });
 
+
     await this.processSingleScheduledTweet(scheduledTweet);
   }
+
 
   /**
    * Process all scheduled tweets that are due
@@ -243,18 +259,22 @@ class ScheduledTweetService {
          LIMIT 10`
       );
 
+
       for (const scheduledTweet of scheduledTweets) {
         await this.processSingleScheduledTweetById(scheduledTweet.id);
       }
+
 
       if (scheduledTweets.length > 0) {
         console.log(`Processed ${scheduledTweets.length} scheduled tweets`);
       }
 
+
     } catch (error) {
       console.error('Error processing scheduled tweets:', error);
     }
   }
+
 
   /**
    * Process a single scheduled tweet and post it to Twitter
@@ -267,6 +287,7 @@ class ScheduledTweetService {
         'UPDATE scheduled_tweets SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['processing', scheduledTweet.id]
       );
+
 
       // Create Twitter client - use OAuth1 if available, otherwise OAuth2
       let twitterClient;
@@ -313,6 +334,7 @@ class ScheduledTweetService {
         throw authError;
       }
 
+
       // Use stored media IDs directly if present
       let mediaIds = [];
       if (scheduledTweet.media_urls) {
@@ -335,6 +357,7 @@ class ScheduledTweetService {
         }
       }
 
+
       // Parse per-tweet media for thread tweets
       let threadMediaArr = [];
       if (scheduledTweet.thread_media) {
@@ -349,6 +372,7 @@ class ScheduledTweetService {
         }
       }
 
+
       // Post main tweet with media IDs if present, decode HTML entities ONCE
       const cleanContent = stripMarkdown(scheduledTweet.content);
       console.log('[Thread Unicode Debug] Posting main tweet:', cleanContent);
@@ -358,8 +382,10 @@ class ScheduledTweetService {
         ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
       };
 
+
       const tweetResponse = await twitterClient.v2.tweet(tweetData);
       console.log(`✅ Main tweet posted successfully: ${tweetResponse.data.id}`);
+
 
       // Handle thread if present
       let threadSuccess = true;
@@ -401,6 +427,7 @@ class ScheduledTweetService {
           }
         }
       }
+
 
       // Insert into tweets table for history tracking
       const tweetInsertQuery = `
@@ -487,6 +514,7 @@ class ScheduledTweetService {
     }
   }
 
+
   /**
    * Check if user can access a scheduled tweet (personal or team)
    * @param {string} userId - User ID
@@ -506,6 +534,7 @@ class ScheduledTweetService {
     return rows.length > 0;
   }
 
+
   /**
    * Re-upload media for scheduled tweets (placeholder implementation)
    * @param {Array} mediaUrls - Array of media URLs
@@ -518,6 +547,7 @@ class ScheduledTweetService {
     // and retrieve them here for re-upload
     const mediaIds = [];
 
+
     for (const mediaUrl of mediaUrls) {
       try {
         // For now, skip media re-upload in scheduled tweets
@@ -528,8 +558,10 @@ class ScheduledTweetService {
       }
     }
 
+
     return mediaIds;
   }
+
 
   /**
    * Get count of pending scheduled tweets for a user
@@ -543,12 +575,14 @@ class ScheduledTweetService {
         [userId, 'pending']
       );
 
+
       return parseInt(rows[0].count);
     } catch (error) {
       console.error('Error getting scheduled count:', error);
       return 0;
     }
   }
+
 
   /**
    * Cancel expired scheduled tweets (more than 24 hours overdue)
@@ -564,6 +598,7 @@ class ScheduledTweetService {
          RETURNING id`
       );
 
+
       if (rows.length > 0) {
         console.log(`Cancelled ${rows.length} expired scheduled tweets`);
       }
@@ -572,5 +607,6 @@ class ScheduledTweetService {
     }
   }
 }
+
 
 export const scheduledTweetService = new ScheduledTweetService();
