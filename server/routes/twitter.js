@@ -15,6 +15,37 @@ const newPlatformPool = new Pool({
 
 const router = express.Router();
 
+function sendPopupResult(res, messageType, payload = {}, message = 'Authentication complete. You can close this window.') {
+  const eventData = JSON.stringify({ type: messageType, ...payload })
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
+  const safeMessage = String(message).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Allow inline callback script and keep opener available for popup callbacks.
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; base-uri 'self'; object-src 'none'");
+  res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
+
+  return res.send(`
+    <html>
+      <body>
+        <script>
+          try {
+            if (window.opener) {
+              window.opener.postMessage(${eventData}, '*');
+            }
+          } catch (e) {}
+          window.close();
+          setTimeout(function () {
+            try { window.open('', '_self'); } catch (e) {}
+            try { window.close(); } catch (e) {}
+          }, 20);
+        </script>
+        <p>${safeMessage}</p>
+      </body>
+    </html>
+  `);
+}
+
 
 // POST /api/twitter/upload-media - Upload images to Twitter and return media IDs
 router.post('/upload-media', validateTwitterConnection, async (req, res) => {
@@ -103,6 +134,7 @@ router.get('/status', async (req, res) => {
 router.get('/connect', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const popup = String(req.query.popup || '').toLowerCase() === 'true';
     
     console.log('Generating Twitter OAuth URL with PKCE for user:', userId);
     console.log('Client ID:', process.env.TWITTER_CLIENT_ID);
@@ -112,7 +144,11 @@ router.get('/connect', authenticateToken, async (req, res) => {
     const { codeVerifier, codeChallenge } = generatePKCE();
     
     // Store code verifier temporarily (use user ID as key)
-    pkceStore.set(userId, codeVerifier);
+    pkceStore.set(userId, {
+      codeVerifier,
+      userId,
+      popup
+    });
     
     // Set expiry for the stored verifier (5 minutes)
     setTimeout(() => {
@@ -207,27 +243,47 @@ async function handleOAuth2Callback(req, res) {
   const { code, state, error } = req.query;
   console.log('[OAuth2 Callback] Step 1: Received callback', { code, state, error });
   const sessionKey = state;
+  const sessionData = pkceStore.get(sessionKey);
+  console.log('[OAuth2 Callback] Step 4: Retrieved session data', sessionData);
+  const isObjectSession = typeof sessionData === 'object' && sessionData !== null;
+  const isTeamConnection = isObjectSession && !!sessionData.teamId;
+  const isPopupFlow = isObjectSession && !!sessionData.popup && !isTeamConnection;
 
   if (error) {
     console.error('[OAuth2 Callback] Step 2: Error in callback', error);
+    if (isPopupFlow) {
+      pkceStore.delete(sessionKey);
+      return sendPopupResult(
+        res,
+        'TWITTER_AUTH_ERROR',
+        { provider: 'twitter', oauthType: 'oauth2', error: 'oauth_denied' },
+        'Twitter authorization was denied.'
+      );
+    }
     return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=oauth_denied`);
   }
 
   if (!code) {
     console.error('[OAuth2 Callback] Step 3: No authorization code received');
+    if (isPopupFlow) {
+      pkceStore.delete(sessionKey);
+      return sendPopupResult(
+        res,
+        'TWITTER_AUTH_ERROR',
+        { provider: 'twitter', oauthType: 'oauth2', error: 'no_code' },
+        'Twitter callback missing authorization code.'
+      );
+    }
     return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=no_code`);
   }
 
-  const sessionData = pkceStore.get(sessionKey);
-  console.log('[OAuth2 Callback] Step 4: Retrieved session data', sessionData);
   if (!sessionData) {
     console.error('[OAuth2 Callback] Step 5: No session data found for', sessionKey);
     return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=session_expired`);
   }
 
-  const isTeamConnection = typeof sessionData === 'object' && sessionData.teamId;
-  const codeVerifier = isTeamConnection ? sessionData.codeVerifier : sessionData;
-  const userId = isTeamConnection ? sessionData.userId : sessionKey;
+  const codeVerifier = isObjectSession ? sessionData.codeVerifier : sessionData;
+  const userId = isObjectSession ? (sessionData.userId || sessionKey) : sessionKey;
   const teamId = isTeamConnection ? sessionData.teamId : null;
   const returnUrl = isTeamConnection ? sessionData.returnUrl : null;
 
@@ -255,7 +311,7 @@ async function handleOAuth2Callback(req, res) {
       return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=token_failed`);
     }
 
-    pkceStore.delete(userId);
+    pkceStore.delete(sessionKey);
     console.log('[OAuth2 Callback] Step 9: Code verifier cleaned up');
 
     const userResponse = await fetch('https://api.twitter.com/2/users/me?user.fields=public_metrics,verified,profile_image_url', {
@@ -354,7 +410,19 @@ async function handleOAuth2Callback(req, res) {
       ]);
       pkceStore.delete(sessionKey);
       console.log('[OAuth2 Callback] Step 14: Individual account stored and session cleaned up');
-      res.redirect(`${process.env.CLIENT_URL}/settings?twitter_connected=true`);
+      if (isPopupFlow) {
+        return sendPopupResult(
+          res,
+          'TWITTER_AUTH_SUCCESS',
+          {
+            provider: 'twitter',
+            oauthType: 'oauth2',
+            username: twitterUser.data.username
+          },
+          `Twitter account @${twitterUser.data.username} connected successfully.`
+        );
+      }
+      return res.redirect(`${process.env.CLIENT_URL}/settings?twitter_connected=true`);
     }
   } catch (error) {
     console.error('[OAuth2 Callback] Step 15: Error in callback handler', error);
@@ -362,13 +430,22 @@ async function handleOAuth2Callback(req, res) {
     if (isTeamConnection && returnUrl) {
       return res.redirect(`${returnUrl}?error=connection_failed`);
     }
-    res.redirect(`${process.env.CLIENT_URL}/settings?error=connection_failed`);
+    if (isPopupFlow) {
+      return sendPopupResult(
+        res,
+        'TWITTER_AUTH_ERROR',
+        { provider: 'twitter', oauthType: 'oauth2', error: 'connection_failed' },
+        'Twitter connection failed. Please try again.'
+      );
+    }
+    return res.redirect(`${process.env.CLIENT_URL}/settings?error=connection_failed`);
   }
 }
 
 // OAuth 1.0a callback handler - FIXED VERSION
 async function handleOAuth1Callback(req, res) {
   const { oauth_token, oauth_verifier } = req.query;
+  let popupFlow = false;
   
   console.log('[OAuth1 Callback] OAuth 1.0a callback received:', { oauth_token: !!oauth_token, oauth_verifier: !!oauth_verifier });
   
@@ -383,7 +460,8 @@ async function handleOAuth1Callback(req, res) {
     }
 
     const tokenData = global.oauth1TempTokens.get(oauth_token);
-    const { secret: oauthTokenSecret, userId, teamId, returnUrl, isTeamConnection } = tokenData;
+    const { secret: oauthTokenSecret, userId, teamId, returnUrl, isTeamConnection, popup } = tokenData;
+    popupFlow = !!popup;
     global.oauth1TempTokens.delete(oauth_token); // Clean up
 
     console.log('[OAuth1 Callback] Token data retrieved:', { userId, teamId, isTeamConnection });
@@ -556,7 +634,15 @@ async function handleOAuth1Callback(req, res) {
       `, [accessToken, accessTokenSecret, userId]);
 
       console.log('[OAuth1 Callback] OAuth 1.0a tokens stored successfully for user:', userId);
-      res.redirect(`${process.env.CLIENT_URL}/settings?oauth1_connected=true`);
+      if (popupFlow) {
+        return sendPopupResult(
+          res,
+          'TWITTER_AUTH_SUCCESS',
+          { provider: 'twitter', oauthType: 'oauth1', username: screenName },
+          `Twitter media permissions enabled for @${screenName || 'your account'}.`
+        );
+      }
+      return res.redirect(`${process.env.CLIENT_URL}/settings?oauth1_connected=true`);
     }
   } catch (error) {
     console.error('[OAuth1 Callback] OAuth 1.0a callback error:', error);
@@ -564,18 +650,28 @@ async function handleOAuth1Callback(req, res) {
     // Get tokenData safely in case it exists
     let isTeamConnection = false;
     let returnUrl = null;
+    let popup = popupFlow;
     
     if (global.oauth1TempTokens && global.oauth1TempTokens.has(oauth_token)) {
       const tokenData = global.oauth1TempTokens.get(oauth_token);
       isTeamConnection = tokenData?.isTeamConnection;
       returnUrl = tokenData?.returnUrl;
+      popup = tokenData?.popup;
     }
     
     if (isTeamConnection && returnUrl) {
       return res.redirect(`${returnUrl}?error=oauth1_connection_failed`);
     }
-    
-    res.redirect(`${process.env.CLIENT_URL}/settings?error=oauth1_connection_failed`);
+    if (popup) {
+      return sendPopupResult(
+        res,
+        'TWITTER_AUTH_ERROR',
+        { provider: 'twitter', oauthType: 'oauth1', error: 'oauth1_connection_failed' },
+        'Failed to enable Twitter media permissions. Please try again.'
+      );
+    }
+
+    return res.redirect(`${process.env.CLIENT_URL}/settings?error=oauth1_connection_failed`);
   }
 }
 
@@ -614,6 +710,7 @@ router.post('/disconnect', async (req, res) => {
 router.get('/connect-oauth1', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id;
+    const popup = String(req.query.popup || '').toLowerCase() === 'true';
     if (!userId) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
@@ -670,7 +767,8 @@ router.get('/connect-oauth1', authenticateToken, async (req, res) => {
     }
     global.oauth1TempTokens.set(oauthToken, { 
       secret: oauthTokenSecret, 
-      userId 
+      userId,
+      popup
     });
 
     // Step 2: Redirect to Twitter

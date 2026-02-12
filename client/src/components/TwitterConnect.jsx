@@ -21,21 +21,29 @@ const TwitterConnect = () => {
   }, [isAuthenticated, user]);
 
   useEffect(() => {
+    const allowedOrigins = new Set([window.location.origin]);
+    try {
+      const apiOrigin = new URL(import.meta.env.VITE_API_URL || 'http://localhost:3002').origin;
+      allowedOrigins.add(apiOrigin);
+    } catch {
+      // Ignore malformed env URL
+    }
+
     // Listen for postMessage from OAuth popup
     const handlePopupMessage = (event) => {
       // Verify origin for security
-      if (event.origin !== window.location.origin) {
+      if (!allowedOrigins.has(event.origin)) {
         return;
       }
 
       console.log('📨 Received popup message:', event.data);
 
-      if (event.data.type === 'twitter_auth_success') {
+      if (event.data.type === 'twitter_auth_success' || event.data.type === 'TWITTER_AUTH_SUCCESS') {
         console.log('✅ Popup auth success:', event.data.username);
         toast.success(`🎉 Twitter account @${event.data.username} connected successfully!`);
         checkTwitterStatus();
         setConnecting(false);
-      } else if (event.data.type === 'twitter_auth_error') {
+      } else if (event.data.type === 'twitter_auth_error' || event.data.type === 'TWITTER_AUTH_ERROR') {
         console.log('❌ Popup auth error:', event.data.error);
         toast.error('❌ Twitter authentication failed. Please try again.');
         setConnecting(false);
