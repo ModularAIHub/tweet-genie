@@ -187,8 +187,8 @@ export const auth = {
 export const twitter = {
   getStatus: () => api.get('/api/twitter/status'),
   getTeamAccounts: () => api.get('/api/twitter/team-accounts'),
-  connect: () => api.get('/api/twitter/connect'),
-  connectOAuth1: () => api.get('/api/twitter/connect-oauth1'),
+  connect: () => api.get('/api/twitter/connect', { params: { popup: 'true' } }),
+  connectOAuth1: () => api.get('/api/twitter/connect-oauth1', { params: { popup: 'true' } }),
   disconnect: () => api.post('/api/twitter/disconnect'),
   getProfile: () => api.get('/api/twitter/profile'),
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Twitter, 
   Settings as SettingsIcon, 
@@ -21,6 +21,25 @@ const Settings = () => {
   const [aiProviders, setAiProviders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showApiKey, setShowApiKey] = useState({});
+  const oauthMessageReceivedRef = useRef(false);
+
+  const getAllowedPopupOrigins = () => {
+    const allowed = new Set([window.location.origin]);
+    try {
+      const apiOrigin = new URL(import.meta.env.VITE_API_URL || 'http://localhost:3002').origin;
+      allowed.add(apiOrigin);
+    } catch {
+      // Ignore malformed env URL
+    }
+    return allowed;
+  };
+
+  const refreshAfterOauth = async () => {
+    await fetchData();
+    setTimeout(() => {
+      fetchData().catch(() => {});
+    }, 1200);
+  };
 
   useEffect(() => {
     fetchData();
@@ -72,6 +91,7 @@ const Settings = () => {
 
   const handleOAuth1Connect = async () => {
     try {
+      oauthMessageReceivedRef.current = false;
       const response = await twitter.connectOAuth1();
       const { url } = response.data;
       
@@ -81,15 +101,41 @@ const Settings = () => {
         'twitter-oauth1-auth',
         'width=600,height=600,scrollbars=yes,resizable=yes'
       );
+
+      if (!popup) {
+        toast.error('Popup was blocked. Please allow popups and try again.');
+        return;
+      }
+
+      const allowedOrigins = getAllowedPopupOrigins();
+      const handleMessage = async (event) => {
+        if (!allowedOrigins.has(event.origin)) return;
+        if (event.source !== popup) return;
+
+        const type = event.data?.type;
+        if (type === 'TWITTER_AUTH_SUCCESS' || type === 'twitter_auth_success') {
+          oauthMessageReceivedRef.current = true;
+          window.removeEventListener('message', handleMessage);
+          toast.success('Media upload permissions enabled successfully!');
+          await refreshAfterOauth();
+          if (!popup.closed) popup.close();
+        } else if (type === 'TWITTER_AUTH_ERROR' || type === 'twitter_auth_error') {
+          oauthMessageReceivedRef.current = true;
+          window.removeEventListener('message', handleMessage);
+          toast.error(event.data?.error || 'Failed to enable media permissions. Please try again.');
+          if (!popup.closed) popup.close();
+        }
+      };
+      window.addEventListener('message', handleMessage);
       
       // Listen for popup completion
       const checkClosed = setInterval(() => {
         if (popup.closed) {
           clearInterval(checkClosed);
-          // Check if OAuth 1.0a was successful by refreshing data
-          setTimeout(() => {
-            fetchData();
-          }, 1000);
+          window.removeEventListener('message', handleMessage);
+          if (!oauthMessageReceivedRef.current) {
+            refreshAfterOauth();
+          }
         }
       }, 1000);
       
@@ -101,6 +147,7 @@ const Settings = () => {
 
   const handleTwitterConnect = async () => {
     try {
+      oauthMessageReceivedRef.current = false;
       const response = await twitter.connect();
       const { url, oauth_token, state, oauth_token_secret } = response.data;
       // Store oauth_token_secret in sessionStorage for the callback (if needed)
@@ -113,21 +160,32 @@ const Settings = () => {
         'twitter-auth',
         'width=600,height=600,scrollbars=yes,resizable=yes'
       );
+
+      if (!popup) {
+        toast.error('Popup was blocked. Please allow popups and try again.');
+        return;
+      }
+
+      const allowedOrigins = getAllowedPopupOrigins();
       
       // Listen for messages from the popup
-      const handleMessage = (event) => {
+      const handleMessage = async (event) => {
+        if (!allowedOrigins.has(event.origin)) return;
         // Ensure message is from our popup
         if (event.source !== popup) return;
-        
-        if (event.data.type === 'TWITTER_AUTH_SUCCESS') {
+
+        const type = event.data?.type;
+        if (type === 'TWITTER_AUTH_SUCCESS' || type === 'twitter_auth_success') {
+          oauthMessageReceivedRef.current = true;
           window.removeEventListener('message', handleMessage);
           toast.success('Twitter account connected successfully!');
-          fetchData(); // Refresh data
-          popup.close();
-        } else if (event.data.type === 'TWITTER_AUTH_ERROR') {
+          await refreshAfterOauth();
+          if (!popup.closed) popup.close();
+        } else if (type === 'TWITTER_AUTH_ERROR' || type === 'twitter_auth_error') {
+          oauthMessageReceivedRef.current = true;
           window.removeEventListener('message', handleMessage);
-          toast.error(event.data.error || 'Failed to connect Twitter account');
-          popup.close();
+          toast.error(event.data?.error || 'Failed to connect Twitter account');
+          if (!popup.closed) popup.close();
         }
       };
       
@@ -139,6 +197,9 @@ const Settings = () => {
           clearInterval(checkClosed);
           window.removeEventListener('message', handleMessage);
           sessionStorage.removeItem('oauth_token_secret');
+          if (!oauthMessageReceivedRef.current) {
+            refreshAfterOauth();
+          }
         }
       }, 1000);
       
