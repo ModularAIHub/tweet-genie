@@ -181,10 +181,14 @@ const History = () => {
   };
 
   const getTweetUrl = (tweet) => {
-    if (tweet.tweet_id && tweet.username) {
-      return `https://twitter.com/${tweet.username}/status/${tweet.tweet_id}`;
-    }
-    return null;
+    // Defensive: check for valid username and tweet_id
+    if (!tweet.tweet_id || !tweet.username) return null;
+    // Remove @ if present in username
+    const username = tweet.username.startsWith('@') ? tweet.username.slice(1) : tweet.username;
+    const url = `https://twitter.com/${username}/status/${tweet.tweet_id}`;
+    // Optionally log for debugging
+    // console.log('Redirecting to:', url);
+    return url;
   };
 
   // Parse thread content into individual tweets
