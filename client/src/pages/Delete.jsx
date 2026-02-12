@@ -1,25 +1,35 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 
 const Delete = ({ isOpen, tweet, onDelete, onCancel }) => {
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+  const isMounted = useRef(false);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
 
   if (!isOpen) return null;
 
   const handleDelete = async () => {
+    setDeleteError(null);
     setIsDeleting(true);
     try {
       await onDelete();
     } catch (error) {
-      console.error("Delete failed:", error);
+      if (isMounted.current) setDeleteError(error?.message || "Delete failed");
     } finally {
-      setIsDeleting(false);
+      if (isMounted.current) setIsDeleting(false);
     }
   };
 
   return (
     <div 
       className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 transition-all duration-300"
-      onClick={onCancel}
+      onClick={isDeleting ? undefined : onCancel}
     >
       <div 
         className="bg-white rounded-2xl shadow-2xl p-8 relative w-[90vw] max-w-md transform transition-all duration-300"
@@ -48,7 +58,6 @@ const Delete = ({ isOpen, tweet, onDelete, onCancel }) => {
           <p className="text-gray-700">
             Are you sure you want to delete this tweet?
           </p>
-          
           {tweet?.content && (
             <div className="bg-gray-50 border-l-4 border-red-500 p-3 rounded-r-lg">
               <p className="text-gray-800 font-medium text-sm">
@@ -57,13 +66,17 @@ const Delete = ({ isOpen, tweet, onDelete, onCancel }) => {
               </p>
             </div>
           )}
-          
           <p className="text-sm text-gray-500 flex items-start gap-2">
             <svg className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
             </svg>
             <span>This will permanently delete the tweet from both your Twitter account and history.</span>
           </p>
+          {deleteError && (
+            <div className="text-red-600 bg-red-50 border border-red-200 rounded p-2 text-sm mt-2">
+              {deleteError}
+            </div>
+          )}
         </div>
 
         {/* Action buttons */}

@@ -8,9 +8,9 @@ import toast from 'react-hot-toast';
 import Delete from './Delete';
 
 const History = () => {
-    const { selectedAccount, accounts } = useAccount();
-    const accountAPI = useAccountAwareAPI();
-    const isTeamUser = accounts.length > 0;
+  const { selectedAccount, accounts } = useAccount();
+  const accountAPI = useAccountAwareAPI();
+  const isTeamUser = accounts.length > 0;
   const currentAccountId = selectedAccount?.id;
   
   const [postedTweets, setPostedTweets] = useState([]);
@@ -21,7 +21,8 @@ const History = () => {
   const [sortBy, setSortBy] = useState('newest'); // newest, oldest, most_likes, most_retweets
   const [deletingTweets, setDeletingTweets] = useState(new Set()); // Track which tweets are being deleted
   const [expandedThreads, setExpandedThreads] = useState(new Set()); // Track which threads are expanded
-const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
+  const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
+
   // Load saved filters when account changes (per-account persistence)
   useEffect(() => {
     if (!currentAccountId) return;
@@ -62,7 +63,6 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
       
       // Build query parameters
       const params = {
-        // Remove status filter to show all tweets (including external)
         limit: 50,
         sort: sortBy === 'newest' ? 'created_at_desc' : 
               sortBy === 'oldest' ? 'created_at_asc' :
@@ -151,11 +151,11 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     const now = new Date();
-    // Always compare UTC times for accurate difference
     const diffMs = now.getTime() - date.getTime();
     const diffInMinutes = Math.floor(diffMs / (1000 * 60));
     const diffInHours = diffMs / (1000 * 60 * 60);
     const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    
     if (diffInMinutes < 1) {
       return 'just now';
     } else if (diffInHours < 1) {
@@ -190,8 +190,6 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
   // Parse thread content into individual tweets
   const parseThreadTweets = (content) => {
     if (!content) return [];
-    
-    // Split by --- separator and filter out empty parts
     const parts = content.split('---').map(part => part.trim()).filter(part => part.length > 0);
     return parts;
   };
@@ -236,13 +234,12 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
       setDeleteModal({ open: true, tweet });
       return;
     }
+    
     try {
       setDeletingTweets(prev => new Set([...prev, tweet.id]));
-      if (tweet.tweet_id) {
-        await tweetsAPI.delete(tweet.id);
-      } else {
-        await tweetsAPI.delete(tweet.id);
-      }
+      await tweetsAPI.delete(tweet.id);
+      
+      // Update UI after successful deletion
       setPostedTweets(prev => prev.filter(t => t.id !== tweet.id));
       toast.success('Tweet deleted successfully');
     } catch (error) {
@@ -250,7 +247,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
       if (error.response?.status === 404) {
         // Tweet not found on Twitter, but remove from our database anyway
         try {
-          await tweets.delete(tweet.id);
+          await tweetsAPI.delete(tweet.id);
           setPostedTweets(prev => prev.filter(t => t.id !== tweet.id));
           toast.success('Tweet removed from history (was already deleted from Twitter)');
         } catch (dbError) {
@@ -317,7 +314,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                   <button
                     key={option.value}
                     onClick={() => setFilter(option.value)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors cursor-pointer ${
                       filter === option.value
                         ? 'bg-blue-100 text-blue-700 border border-blue-200'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
@@ -335,7 +332,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer"
               >
                 <option value="newest">Newest First</option>
                 <option value="oldest">Oldest First</option>
@@ -362,7 +359,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                   <button
                     key={option.value}
                     onClick={() => setSourceFilter(option.value)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors cursor-pointer ${
                       sourceFilter === option.value
                         ? 'bg-green-100 text-green-700 border border-green-200'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
@@ -389,7 +386,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                   <button
                     key={option.value}
                     onClick={() => setStatusFilter(option.value)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors cursor-pointer ${
                       statusFilter === option.value
                         ? 'bg-purple-100 text-purple-700 border border-purple-200'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
@@ -495,7 +492,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                           href={getTweetUrl(tweet)}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-blue-500 hover:text-blue-700"
+                          className="text-blue-500 hover:text-blue-700 cursor-pointer"
                           title="View on Twitter"
                         >
                           <ExternalLink className="h-4 w-4" />
@@ -521,7 +518,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                             </div>
                             <button
                               onClick={() => toggleThreadExpansion(tweet.id)}
-                              className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-medium"
+                              className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-medium cursor-pointer"
                             >
                               <ChevronDown className="h-4 w-4 mr-1" />
                               Show all {threadPreview.count} tweets in thread
@@ -545,7 +542,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                             </div>
                             <button
                               onClick={() => toggleThreadExpansion(tweet.id)}
-                              className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-medium mt-3"
+                              className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-medium mt-3 cursor-pointer"
                             >
                               <ChevronUp className="h-4 w-4 mr-1" />
                               Collapse thread
@@ -570,39 +567,23 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                     )}
                     
                     {/* Engagement Metrics */}
-                    <div className="flex items-center space-x-6 text-sm text-gray-500">
-                      <div className="flex items-center space-x-1">
-                        <Heart className="h-4 w-4" />
-                        <span>{(tweet.likes || 0).toLocaleString()}</span>
-                      </div>
-                      <div className="flex items-center space-x-1">
-                        <Repeat2 className="h-4 w-4" />
-                        <span>{(tweet.retweets || 0).toLocaleString()}</span>
-                      </div>
-                      <div className="flex items-center space-x-1">
-                        <MessageCircle className="h-4 w-4" />
-                        <span>{(tweet.replies || 0).toLocaleString()}</span>
-                      </div>
-                      {tweet.impressions && (
-                        <div className="flex items-center space-x-1">
-                          <span className="text-xs">👀 {tweet.impressions.toLocaleString()}</span>
-                        </div>
-                      )}
-                    </div>
+                    {/* Engagement Metrics removed as requested */}
 
                     {/* Performance Indicators */}
-                    {tweet.impressions && (
-                      <div className="mt-2 flex items-center space-x-4 text-xs text-gray-500">
-                        <span>
-                          Engagement Rate: {getEngagementRate(tweet)}%
-                        </span>
-                        {tweet.impressions > 1000 && (
-                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full">
-                            High Reach
-                          </span>
-                        )}
-                      </div>
-                    )}
+                    {/* Performance Indicators */}
+{tweet.impressions > 0 && (
+  <div className="mt-2 flex items-center space-x-4 text-xs text-gray-500">
+    <span>
+      Engagement Rate: {getEngagementRate(tweet)}%
+    </span>
+    {tweet.impressions > 1000 && (
+      <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full">
+        High Reach
+      </span>
+    )}
+  </div>
+)}
+
                   </div>
 
                   {/* Action Buttons and Badges */}
@@ -612,7 +593,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                       <button
                         onClick={() => setDeleteModal({ open: true, tweet })}
                         disabled={deletingTweets.has(tweet.id)}
-                        className="flex items-center px-2 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex items-center px-2 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                         title="Delete tweet from Twitter and history"
                       >
                         {deletingTweets.has(tweet.id) ? (
@@ -636,9 +617,11 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
                       {tweet.scheduled_for && (
                         <span className="badge badge-warning">Scheduled</span>
                       )}
-                      {tweet.ai_generated && (
-                        <span className="badge badge-info">AI Generated</span>
-                      )}
+                      {tweet.ai_generated === true && (
+  <span className="badge badge-info">AI Generated</span>
+)}
+
+
                     </div>
                   </div>
                 </div>
@@ -659,7 +642,7 @@ const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
             </p>
             <a
               href="/compose"
-              className="btn btn-primary btn-md"
+              className="btn btn-primary btn-md cursor-pointer"
             >
               <MessageCircle className="h-4 w-4 mr-2" />
               Create Your First Tweet
