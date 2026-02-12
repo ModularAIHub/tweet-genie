@@ -15,6 +15,9 @@ const AIImageGenerator = ({
 
   return (
     <div className="border border-purple-200 rounded-lg p-4 mb-4 bg-purple-50">
+      <div className="mb-3 p-2 bg-yellow-100 border border-yellow-300 text-yellow-900 rounded text-sm">
+        <strong>Note:</strong> AI image generation is not supported yet. This feature will be available in a future update.
+      </div>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center">
           <Wand2 className="h-5 w-5 text-purple-600 mr-2" />

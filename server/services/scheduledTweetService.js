@@ -8,27 +8,27 @@ import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 // Helper function to strip markdown formatting
 function stripMarkdown(text) {
   if (!text) return text;
-  
+
   let cleaned = text;
-  
+
   // Remove bold: **text** or __text__
   cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
   cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
-  
+
   // Remove italic: *text* or _text_ (but not underscores in URLs or middle of words)
   cleaned = cleaned.replace(/\*([^*\s][^*]*[^*\s])\*/g, '$1');
   cleaned = cleaned.replace(/(?<!\w)_([^_\s][^_]*[^_\s])_(?!\w)/g, '$1');
-  
+
   // Remove headers: # text, ## text, etc.
   cleaned = cleaned.replace(/^#{1,6}\s+(.+)$/gm, '$1');
-  
+
   // Remove strikethrough: ~~text~~
   cleaned = cleaned.replace(/~~([^~]+)~~/g, '$1');
-  
+
   // Remove code blocks: `code` or ```code```
   cleaned = cleaned.replace(/```[^`]*```/g, '');
   cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
-  
+
   return cleaned.trim();
 }
 
@@ -43,7 +43,7 @@ class ScheduledTweetService {
   async getScheduledTweets(userId, teamId = null) {
     try {
       let query, params;
-      
+
       if (teamId) {
         // Fetch team scheduled tweets (visible to all team members)
         query = `
@@ -72,7 +72,7 @@ class ScheduledTweetService {
         `;
         params = [userId];
       }
-      
+
       const { rows } = await pool.query(query, params);
       return rows;
     } catch (error) {
@@ -376,7 +376,7 @@ class ScheduledTweetService {
       // Post main tweet with media IDs if present, decode HTML entities ONCE
       const cleanContent = stripMarkdown(scheduledTweet.content);
       console.log('[Thread Unicode Debug] Posting main tweet:', cleanContent);
-      
+
       const tweetData = {
         text: decodeHTMLEntities(cleanContent),
         ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
@@ -391,7 +391,7 @@ class ScheduledTweetService {
       let threadSuccess = true;
       let threadError = null;
       const threadTweetIds = [];
-      
+
       if (scheduledTweet.thread_tweets && scheduledTweet.thread_tweets.length > 0) {
         let previousTweetId = tweetResponse.data.id;
         for (let i = 0; i < scheduledTweet.thread_tweets.length; i++) {
@@ -530,7 +530,7 @@ class ScheduledTweetService {
        AND (st.user_id = $1 OR tm.user_id IS NOT NULL)`,
       [userId, scheduledTweetId]
     );
-    
+
     return rows.length > 0;
   }
 
