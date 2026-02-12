@@ -5,6 +5,7 @@ import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import { tweets as tweetsAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
+import Delete from './Delete';
 
 const History = () => {
     const { selectedAccount, accounts } = useAccount();
@@ -20,7 +21,7 @@ const History = () => {
   const [sortBy, setSortBy] = useState('newest'); // newest, oldest, most_likes, most_retweets
   const [deletingTweets, setDeletingTweets] = useState(new Set()); // Track which tweets are being deleted
   const [expandedThreads, setExpandedThreads] = useState(new Set()); // Track which threads are expanded
-
+const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
   // Load saved filters when account changes (per-account persistence)
   useEffect(() => {
     if (!currentAccountId) return;
@@ -229,35 +230,22 @@ const History = () => {
     });
   };
 
-  const handleDeleteTweet = async (tweet) => {
-    // Confirm deletion
-    const confirmed = window.confirm(
-      `Are you sure you want to delete this tweet?\n\n"${tweet.content.substring(0, 100)}${tweet.content.length > 100 ? '...' : ''}"\n\nThis will delete the tweet from both your Twitter account and history.`
-    );
-    
-    if (!confirmed) return;
-
+  const handleDeleteTweet = async (tweet, skipConfirm = false) => {
+    if (!tweet) return;
+    if (!skipConfirm) {
+      setDeleteModal({ open: true, tweet });
+      return;
+    }
     try {
-      // Add tweet ID to deleting set
       setDeletingTweets(prev => new Set([...prev, tweet.id]));
-      
-      // Attempt to delete from Twitter first
       if (tweet.tweet_id) {
-        console.log(`Deleting tweet ${tweet.tweet_id} from Twitter...`);
-        await tweetsAPI.delete(tweet.id); // This should handle both Twitter deletion and DB removal
+        await tweetsAPI.delete(tweet.id);
       } else {
-        // If no tweet_id, just remove from database
-        console.log(`Removing tweet ${tweet.id} from history (no Twitter ID)...`);
         await tweetsAPI.delete(tweet.id);
       }
-      
-      // Remove from local state
       setPostedTweets(prev => prev.filter(t => t.id !== tweet.id));
-      
       toast.success('Tweet deleted successfully');
     } catch (error) {
-      console.error('Failed to delete tweet:', error);
-      
       // Handle specific error cases
       if (error.response?.status === 404) {
         // Tweet not found on Twitter, but remove from our database anyway
@@ -274,7 +262,6 @@ const History = () => {
         toast.error('Failed to delete tweet: ' + (error.response?.data?.message || error.message));
       }
     } finally {
-      // Remove tweet ID from deleting set
       setDeletingTweets(prev => {
         const newSet = new Set(prev);
         newSet.delete(tweet.id);
@@ -623,7 +610,7 @@ const History = () => {
                     {/* Delete Button - Only for platform tweets */}
                     {tweet.source !== 'external' && (
                       <button
-                        onClick={() => handleDeleteTweet(tweet)}
+                        onClick={() => setDeleteModal({ open: true, tweet })}
                         disabled={deletingTweets.has(tweet.id)}
                         className="flex items-center px-2 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         title="Delete tweet from Twitter and history"
@@ -680,6 +667,17 @@ const History = () => {
           </div>
         )}
       </div>
+
+      {/* Delete Modal */}
+      <Delete
+        isOpen={deleteModal.open}
+        tweet={deleteModal.tweet}
+        onDelete={async () => {
+          await handleDeleteTweet(deleteModal.tweet, true);
+          setDeleteModal({ open: false, tweet: null });
+        }}
+        onCancel={() => setDeleteModal({ open: false, tweet: null })}
+      />
     </div>
   );
 };
