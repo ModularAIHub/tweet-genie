@@ -153,6 +153,24 @@ api.interceptors.response.use(
       }
     }
 
+    // Twitter rate limit error (status 429)
+    if (error.response?.status === 429 && error.response?.headers) {
+      // Twitter sends x-rate-limit-reset header (epoch seconds)
+      const resetEpoch = error.response.headers['x-rate-limit-reset'];
+      if (resetEpoch) {
+        const resetDate = new Date(parseInt(resetEpoch, 10) * 1000);
+        const now = new Date();
+        const diffMs = resetDate - now;
+        const diffMin = Math.ceil(diffMs / 60000);
+        const formatted = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const { toast } = await import('react-hot-toast');
+        toast.error(`Twitter rate limit exceeded. Try again at ${formatted} (${diffMin} min)`, { duration: 12000, id: 'twitter-rate-limit' });
+      } else {
+        const { toast } = await import('react-hot-toast');
+        toast.error('Twitter rate limit exceeded. Try again later.', { duration: 12000, id: 'twitter-rate-limit' });
+      }
+      return Promise.reject(error);
+    }
     // For other errors, just reject
     return Promise.reject(error);
   }
