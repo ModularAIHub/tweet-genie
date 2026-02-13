@@ -4,7 +4,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useAccount } from '../contexts/AccountContext';
 import { credits } from '../utils/api';
 import AccountSwitcher from './AccountSwitcher';
-import TwitterTokenStatus from './TwitterTokenStatus';
+import TwitterTokenStatus from './TwitterTokenStatusV2';
+import { isPageVisible } from '../utils/requestCache';
 import {
   LayoutDashboard,
   Edit3,
@@ -40,40 +41,42 @@ const Layout = ({ children }) => {
 
   const isActive = (href) => location.pathname === href;
 
-  // Fetch credit balance
+  // Fetch and refresh credit balance (visibility-aware)
   useEffect(() => {
-    const fetchCredits = async () => {
+    if (!user) {
+      setCreditBalance(null);
+      setLoadingCredits(false);
+      return;
+    }
+
+    let cancelled = false;
+    const fetchCredits = async ({ bypass = false } = {}) => {
       try {
-        setLoadingCredits(true);
-        const response = await credits.getBalance();
-        setCreditBalance(response.data.balance);
+        if (!cancelled) setLoadingCredits(true);
+        const response = await credits.getBalanceCached({ ttlMs: 60000, bypass });
+        if (!cancelled) {
+          setCreditBalance(response.data.balance);
+        }
       } catch (error) {
-        console.error('Failed to fetch credit balance:', error);
-        setCreditBalance(0);
+        if (!cancelled) {
+          setCreditBalance(0);
+        }
       } finally {
-        setLoadingCredits(false);
+        if (!cancelled) setLoadingCredits(false);
       }
     };
 
-    if (user) {
-      fetchCredits();
-    }
-  }, [user]);
+    fetchCredits({ bypass: true });
 
-  // Refresh credits periodically (every 5 minutes)
-  useEffect(() => {
     const interval = setInterval(async () => {
-      if (user) {
-        try {
-          const response = await credits.getBalance();
-          setCreditBalance(response.data.balance);
-        } catch (error) {
-          console.error('Failed to refresh credit balance:', error);
-        }
-      }
+      if (!isPageVisible()) return;
+      await fetchCredits();
     }, 5 * 60 * 1000); // 5 minutes
 
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [user]);
 
   return (

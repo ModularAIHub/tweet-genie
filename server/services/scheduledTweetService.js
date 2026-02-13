@@ -11,6 +11,11 @@ const SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD = Number.parseInt(process.env.SCHEDU
 const SCHEDULED_RATE_LIMIT_MAX_RETRIES = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_MAX_RETRIES || '2', 10);
 const SCHEDULED_RATE_LIMIT_WAIT_MS = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_WAIT_MS || '90000', 10);
 const SCHEDULED_RATE_LIMIT_MAX_WAIT_MS = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_MAX_WAIT_MS || '600000', 10);
+const SCHEDULED_PROCESSING_STUCK_MINUTES = Number.parseInt(
+  process.env.SCHEDULED_PROCESSING_STUCK_MINUTES || '20',
+  10
+);
+const SCHEDULED_DUE_BATCH_LIMIT = Number.parseInt(process.env.SCHEDULED_DUE_BATCH_LIMIT || '10', 10);
 
 function getScheduledThreadDelayMs() {
   const baseDelay = Number.isFinite(THREAD_REPLY_DELAY_MS) ? Math.max(0, THREAD_REPLY_DELAY_MS) : 600;
@@ -343,15 +348,49 @@ class ScheduledTweetService {
    */
   async processScheduledTweets() {
     try {
-      // Get tweets scheduled for now or earlier that are approved
+      const stuckMinutes = Number.isFinite(SCHEDULED_PROCESSING_STUCK_MINUTES)
+        ? Math.max(5, SCHEDULED_PROCESSING_STUCK_MINUTES)
+        : 20;
+      const batchLimit = Number.isFinite(SCHEDULED_DUE_BATCH_LIMIT) ? Math.max(1, SCHEDULED_DUE_BATCH_LIMIT) : 10;
+
+      // Recover jobs that were stuck in "processing" (worker crash/network timeout).
+      const { rows: recoveredRows } = await pool.query(
+        `UPDATE scheduled_tweets
+         SET status = 'pending',
+             error_message = CASE
+               WHEN COALESCE(error_message, '') = '' THEN 'Recovered by scheduler watchdog after processing timeout.'
+               ELSE error_message || ' | Recovered by scheduler watchdog after processing timeout.'
+             END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE status = 'processing'
+           AND updated_at < NOW() - ($1::int * INTERVAL '1 minute')
+         RETURNING id`,
+        [stuckMinutes]
+      );
+      if (recoveredRows.length > 0) {
+        console.warn(`[ScheduledTweets] Recovered ${recoveredRows.length} stuck processing jobs.`);
+      }
+
+      // Process due tweets with per-account fairness (one due row per account each cycle).
       const { rows: scheduledTweets } = await pool.query(
-        `SELECT st.*
-         FROM scheduled_tweets st
-         WHERE st.status = 'pending' 
-         AND st.scheduled_for <= NOW()
-         AND (st.approval_status = 'approved' OR st.approval_status IS NULL)
-         ORDER BY st.scheduled_for ASC
-         LIMIT 10`
+        `WITH due AS (
+           SELECT
+             st.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(st.account_id::text, 'personal:' || st.user_id::text)
+               ORDER BY st.scheduled_for ASC
+             ) AS account_rank
+           FROM scheduled_tweets st
+           WHERE st.status = 'pending'
+             AND st.scheduled_for <= NOW()
+             AND (st.approval_status = 'approved' OR st.approval_status IS NULL)
+         )
+         SELECT *
+         FROM due
+         WHERE account_rank = 1
+         ORDER BY scheduled_for ASC
+         LIMIT $1`,
+        [batchLimit]
       );
 
 
@@ -605,15 +644,32 @@ class ScheduledTweetService {
         errorMessage = `Twitter rate limit exceeded. Auto-retrying at ${retryAt.toISOString()}.`;
 
         await pool.query(
-          'UPDATE scheduled_tweets SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-          ['pending', errorMessage, scheduledTweet.id]
+          `UPDATE scheduled_tweets
+           SET status = $1,
+               error_message = $2,
+               scheduled_for = CASE
+                 WHEN scheduled_for < $4 THEN $4
+                 ELSE scheduled_for
+               END,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          ['pending', errorMessage, scheduledTweet.id, retryAt]
         );
 
-        await scheduledTweetQueue.add(
-          'scheduled-tweet',
-          { scheduledTweetId: scheduledTweet.id },
-          { delay: retryDelayMs }
-        );
+        if (scheduledTweetQueue?.add) {
+          try {
+            await scheduledTweetQueue.add(
+              'scheduled-tweet',
+              { scheduledTweetId: scheduledTweet.id },
+              { delay: retryDelayMs }
+            );
+          } catch (queueError) {
+            console.warn(
+              `[ScheduledRateLimit] Queue re-enqueue failed for ${scheduledTweet.id}, DB fallback will retry:`,
+              queueError?.message || queueError
+            );
+          }
+        }
 
         console.warn(`[ScheduledRateLimit] Requeued scheduled tweet ${scheduledTweet.id} to retry at ${retryAt.toISOString()}`);
         return;

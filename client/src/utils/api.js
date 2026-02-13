@@ -3,6 +3,11 @@ export const media = {
   upload: (mediaArray) => api.post('/api/twitter/upload-media', { media: mediaArray }),
 };
 import axios from 'axios';
+import {
+  createRequestCacheKey,
+  getOrFetchCached,
+  invalidateCacheByPrefix,
+} from './requestCache';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
@@ -15,6 +20,18 @@ const api = axios.create({
   },
   withCredentials: true, // Important for cookies
 });
+
+const DEFAULT_CACHE_TTL_MS = Number(import.meta.env.VITE_CLIENT_API_CACHE_TTL_MS || 20000);
+
+const cachedGet = ({ url, params = {}, scope, ttlMs = DEFAULT_CACHE_TTL_MS, bypass = false }) => {
+  const cacheKey = createRequestCacheKey({ scope, url, params });
+  return getOrFetchCached({
+    key: cacheKey,
+    ttlMs,
+    bypass,
+    fetcher: () => api.get(url, { params }),
+  });
+};
 
 // Request interceptor to attach JWT token and selected account ID
 api.interceptors.request.use(
@@ -203,6 +220,8 @@ api.interceptors.response.use(
 // Auth endpoints
 export const auth = {
   validate: () => api.get('/api/auth/validate'),
+  validateCached: ({ ttlMs = 15000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/auth/validate', scope: 'auth_validate', ttlMs, bypass }),
   refresh: () => api.post('/api/auth/refresh'),
   logout: () => api.post('/api/auth/logout'),
 };
@@ -210,6 +229,11 @@ export const auth = {
 // Twitter endpoints
 export const twitter = {
   getStatus: () => api.get('/api/twitter/status'),
+  getStatusCached: ({ ttlMs = 60000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/twitter/status', scope: 'twitter_status', ttlMs, bypass }),
+  getTokenStatus: () => api.get('/api/twitter/token-status'),
+  getTokenStatusCached: ({ ttlMs = 60000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/twitter/token-status', scope: 'twitter_token_status', ttlMs, bypass }),
   getTeamAccounts: () => api.get('/api/twitter/team-accounts'),
   connect: () => api.get('/api/twitter/connect', { params: { popup: 'true' } }),
   connectOAuth1: () => api.get('/api/twitter/connect-oauth1', { params: { popup: 'true' } }),
@@ -239,11 +263,19 @@ export const scheduling = {
 // Analytics endpoints
 export const analytics = {
   getOverview: (params) => api.get('/api/analytics/overview', { params }),
+  getOverviewCached: (params, { ttlMs = 20000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/analytics/overview', params, scope: 'analytics_overview', ttlMs, bypass }),
   getDetailed: (data) => api.post('/api/analytics/detailed', data),
   sync: () => api.post('/api/analytics/sync'),
   getHashtags: (params) => api.get('/api/analytics/hashtags', { params }),
   getEngagement: (params) => api.get('/api/analytics/engagement', { params }),
+  getEngagementCached: (params, { ttlMs = 20000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/analytics/engagement', params, scope: 'analytics_engagement', ttlMs, bypass }),
   getAudience: (params) => api.get('/api/analytics/audience', { params }),
+  getAudienceCached: (params, { ttlMs = 20000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/analytics/audience', params, scope: 'analytics_audience', ttlMs, bypass }),
+  refreshTweetMetrics: (tweetId) => api.post(`/api/analytics/tweets/${tweetId}/refresh`),
+  invalidateCache: () => invalidateCacheByPrefix('analytics_'),
 };
 
 // Dashboard endpoints
@@ -254,6 +286,8 @@ export const dashboard = {
 // Credits endpoints
 export const credits = {
   getBalance: () => api.get('/api/credits/balance'),
+  getBalanceCached: ({ ttlMs = 60000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/credits/balance', scope: 'credits_balance', ttlMs, bypass }),
   getHistory: (params) => api.get('/api/credits/history', { params }),
   getPricing: () => api.get('/api/credits/pricing'),
 };

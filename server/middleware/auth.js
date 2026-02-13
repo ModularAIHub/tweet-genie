@@ -65,6 +65,7 @@ const createAuthPerfState = () => ({
     teamCacheMiss: 0,
     teamDbQuerySuccess: 0,
     teamDbQueryError: 0,
+    teamStaleFallbackHit: 0,
     unexpectedErrors: 0,
   },
   sourceCounts: {},
@@ -466,10 +467,23 @@ export const authenticateToken = async (req, res, next) => {
         } catch (teamErr) {
           recordPerfDuration('teamLookup', Date.now() - teamLookupStart);
           bumpPerf('teamDbQueryError');
-          authWarn('team_membership_query_failed', '[auth] error querying team memberships:', teamErr.message);
-          req.user.teamId = null;
-          req.user.team_id = null;
-          req.user.teamMemberships = [];
+          const canUseStaleTeamCache = hasStaleFallbackEntry(teamCacheEntry, Date.now());
+          if (canUseStaleTeamCache) {
+            bumpPerf('teamStaleFallbackHit');
+            req.user.teamId = teamCacheEntry.value.teamId;
+            req.user.team_id = teamCacheEntry.value.team_id;
+            req.user.teamMemberships = teamCacheEntry.value.teamMemberships;
+            authWarn(
+              'team_membership_query_failed_stale_fallback',
+              '[auth] team membership lookup failed, using stale cache fallback:',
+              teamErr.message
+            );
+          } else {
+            authWarn('team_membership_query_failed', '[auth] error querying team memberships:', teamErr.message);
+            req.user.teamId = null;
+            req.user.team_id = null;
+            req.user.teamMemberships = [];
+          }
         }
       }
     }

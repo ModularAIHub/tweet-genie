@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useRef, useState, useEffect } from 'react';
 import { auth } from '../utils/api';
 import toast from 'react-hot-toast';
+import { isPageVisible } from '../utils/requestCache';
 
 const AuthContext = createContext();
 
@@ -16,6 +17,8 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const initialAuthCheckDoneRef = useRef(false);
+  const authCheckInFlightRef = useRef(false);
   
   // Get API base URL from environment
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3002';
@@ -30,6 +33,10 @@ export const AuthProvider = ({ children }) => {
       return;
     }
     
+    if (initialAuthCheckDoneRef.current) {
+      return;
+    }
+    initialAuthCheckDoneRef.current = true;
     checkAuthStatus();
   }, []);
 
@@ -40,6 +47,7 @@ export const AuthProvider = ({ children }) => {
     // Check auth status every 14 minutes to ensure tokens are fresh
     // (tokens expire at 15 minutes, so this gives 1 minute buffer for refresh)
     const interval = setInterval(() => {
+      if (!isPageVisible()) return;
       refreshTokenIfNeeded();
     }, 14 * 60 * 1000); // 14 minutes
 
@@ -66,7 +74,7 @@ export const AuthProvider = ({ children }) => {
 
       if (response.ok) {
         // Validate the new token
-        await checkAuthStatus();
+        await checkAuthStatus({ silent: true });
       }
     } catch (error) {
       console.error('Proactive token refresh error:', error);
@@ -77,40 +85,31 @@ export const AuthProvider = ({ children }) => {
   // Remove client-side token processing since we use server callback now
   // The server /api/auth/callback endpoint handles token processing and cookie setting
 
-  const checkAuthStatus = async () => {
+  const checkAuthStatus = async ({ silent = false } = {}) => {
+    if (authCheckInFlightRef.current) {
+      return;
+    }
+    authCheckInFlightRef.current = true;
     try {
-      console.log('Checking auth status...');
-      // Since we're using httpOnly cookies, just try to validate
-      const response = await auth.validate();
-      console.log('Auth validation response:', response.data);
+      const response = await auth.validateCached({ ttlMs: 15000, bypass: !silent });
       
       if (response.data.success) {
         setUser(response.data.user);
         setIsAuthenticated(true);
-        console.log('User authenticated:', response.data.user);
       } else {
         setIsAuthenticated(false);
         setUser(null);
-        console.log('User not authenticated - invalid response');
       }
     } catch (error) {
-      console.error('Auth check failed:', error);
-      console.error('Error status:', error.response?.status);
-      console.error('Error data:', error.response?.data);
-      
       // If it's a 401, the backend middleware should have already attempted
       // token refresh. If we still get 401, it means refresh failed.
       if (error.response?.status === 401) {
-        console.log('401 error - authentication failed, will redirect to login');
         setIsAuthenticated(false);
         setUser(null);
         // Note: Don't redirect here, let ProtectedRoute handle it
-      } else {
-        // For other errors (network, etc), don't immediately redirect
-        // The user might still be authenticated
-        console.log('Non-401 error during auth check, keeping current state');
       }
     } finally {
+      authCheckInFlightRef.current = false;
       setIsLoading(false);
     }
   };
@@ -129,7 +128,6 @@ export const AuthProvider = ({ children }) => {
     sessionStorage.setItem('auth_redirect_time', now.toString());
     const currentUrl = encodeURIComponent(window.location.href);
     const platformUrl = import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in';
-    console.log('Redirecting to login at:', `${platformUrl}/login`);
     window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
   };
 

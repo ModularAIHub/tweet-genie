@@ -32,6 +32,7 @@ import { scheduledTweetService } from './services/scheduledTweetService.js';
 import { getScheduledQueueHealth, isScheduledQueueAvailable } from './services/queueService.js';
 import { startScheduledTweetWorker } from './workers/scheduledTweetWorker.js';
 import { runStartupScheduledTweetSync } from './workers/startupScheduledTweetSync.js';
+import { getAnalyticsAutoSyncStatus, startAnalyticsAutoSyncWorker } from './workers/analyticsSyncWorker.js';
 
 dotenv.config();
 
@@ -302,6 +303,8 @@ app.listen(PORT, async () => {
 
   const queueHealth = getScheduledQueueHealth();
   console.log('[Startup] Scheduled queue health:', queueHealth);
+  startAnalyticsAutoSyncWorker();
+  console.log('[Startup] Analytics auto sync status:', getAnalyticsAutoSyncStatus());
 
   try {
     await startScheduledTweetWorker();

@@ -1,7 +1,42 @@
 import { useAccount } from '../contexts/AccountContext';
+import { createRequestCacheKey, getOrFetchCached } from '../utils/requestCache';
 
 // Use the same API base URL as the rest of the app
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+const resolveApiBaseUrl = () => {
+  const envBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+  if (/^https?:\/\//i.test(envBaseUrl)) {
+    return envBaseUrl;
+  }
+
+  if (typeof window !== 'undefined') {
+    return new URL(envBaseUrl, window.location.origin).toString();
+  }
+
+  return 'http://localhost:3002';
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
+const buildRequestUrl = (endpoint) => new URL(endpoint, API_BASE_URL).toString();
+const buildHeadersLike = (headers = {}) => {
+  const normalized = Object.fromEntries(
+    Object.entries(headers || {}).map(([key, value]) => [String(key).toLowerCase(), value])
+  );
+
+  return {
+    get: (name) => normalized[String(name || '').toLowerCase()] || null,
+  };
+};
+
+const toCachedFetchResponse = ({ ok, status, statusText, payload, headers, rawText }) => ({
+  ok,
+  status,
+  statusText: statusText || '',
+  headers: buildHeadersLike(headers),
+  data: payload,
+  json: async () => payload,
+  text: async () =>
+    typeof rawText === 'string' ? rawText : JSON.stringify(payload === undefined ? {} : payload),
+});
 
 /**
  * Hook to make API calls account-aware
@@ -19,12 +54,13 @@ export const useAccountAwareAPI = () => {
   const fetchForCurrentAccount = async (endpoint, options = {}) => {
     const accountId = getCurrentAccountId();
     const isTeamScope = Boolean(selectedAccount?.team_id);
-    // Build full URL using API base URL, not window.location.origin
-    const url = new URL(endpoint, API_BASE_URL);
+    const url = buildRequestUrl(endpoint);
+    const { cacheTtlMs = 0, bypassCache = false, ...requestOptions } = options;
+    const method = (requestOptions.method || 'GET').toUpperCase();
 
     const headers = {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...requestOptions.headers,
     };
 
     // Team account headers are intentionally omitted in personal mode.
@@ -36,10 +72,61 @@ export const useAccountAwareAPI = () => {
       headers['x-team-id'] = selectedAccount.team_id;
     }
 
-    return fetch(url.toString(), {
+    const requestConfig = {
       credentials: 'include',
-      ...options,
+      ...requestOptions,
       headers,
+    };
+
+    if (method !== 'GET' || cacheTtlMs <= 0) {
+      return fetch(url, requestConfig);
+    }
+
+    const cacheKey = createRequestCacheKey({
+      scope: 'accountAwareFetch',
+      url,
+      params: {
+        accountId: isTeamScope ? accountId : null,
+        teamId: isTeamScope ? selectedAccount?.team_id : null,
+      },
+    });
+
+    return getOrFetchCached({
+      key: cacheKey,
+      ttlMs: cacheTtlMs,
+      bypass: bypassCache,
+      fetcher: async () => {
+        const response = await fetch(url, requestConfig);
+        const contentType = response.headers.get('content-type') || 'application/json';
+        const rawText = await response.text();
+        let payload = {};
+
+        if (contentType.includes('application/json')) {
+          try {
+            payload = rawText ? JSON.parse(rawText) : {};
+          } catch {
+            payload = {};
+          }
+        } else {
+          payload = rawText ? { raw: rawText } : {};
+        }
+
+        return {
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText || '',
+          headers: {
+            'content-type': contentType,
+          },
+          payload,
+          rawText,
+        };
+      },
+    }).then((cachedResult) => {
+      if (cachedResult && typeof cachedResult.ok === 'boolean') {
+        return toCachedFetchResponse(cachedResult);
+      }
+      return cachedResult;
     });
   };
 
@@ -69,7 +156,7 @@ export const useAccountAwareAPI = () => {
       headers['x-team-id'] = selectedAccount.team_id;
     }
 
-    return fetch(endpoint, {
+    return fetch(buildRequestUrl(endpoint), {
       method: 'POST',
       credentials: 'include',
       headers,
@@ -81,24 +168,44 @@ export const useAccountAwareAPI = () => {
   /**
    * Get analytics for the currently selected account
    */
+  const parseTimeRangeDays = (timeRange = '50d') => {
+    const parsedDays = Number.parseInt(String(timeRange).replace(/d$/i, ''), 10);
+    return Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 50;
+  };
+
   const getAnalytics = async (timeRange = '50d') => {
-    const parsedDays = parseInt(String(timeRange).replace(/d$/i, ''), 10);
-    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 50;
-    return fetchForCurrentAccount(`/api/analytics/overview?days=${days}`);
+    const days = parseTimeRangeDays(timeRange);
+    return fetchForCurrentAccount(`/api/analytics/overview?days=${days}`, { cacheTtlMs: 20000 });
+  };
+
+  /**
+   * Get engagement analytics for the currently selected account
+   */
+  const getEngagementAnalytics = async (timeRange = '50d') => {
+    const days = parseTimeRangeDays(timeRange);
+    return fetchForCurrentAccount(`/api/analytics/engagement?days=${days}`, { cacheTtlMs: 20000 });
+  };
+
+  /**
+   * Get audience analytics for the currently selected account
+   */
+  const getAudienceAnalytics = async (timeRange = '50d') => {
+    const days = parseTimeRangeDays(timeRange);
+    return fetchForCurrentAccount(`/api/analytics/audience?days=${days}`, { cacheTtlMs: 20000 });
   };
 
   /**
    * Get scheduled tweets for the currently selected account
    */
   const getScheduledTweets = async () => {
-    return fetchForCurrentAccount('/api/scheduling/scheduled');
+    return fetchForCurrentAccount('/api/scheduling/scheduled', { cacheTtlMs: 15000 });
   };
 
   /**
    * Get tweet history for the currently selected account
    */
   const getTweetHistory = async (page = 1, limit = 20) => {
-    return fetchForCurrentAccount(`/api/tweets/history?page=${page}&limit=${limit}`);
+    return fetchForCurrentAccount(`/api/tweets/history?page=${page}&limit=${limit}`, { cacheTtlMs: 15000 });
   };
 
   /**
@@ -125,6 +232,8 @@ export const useAccountAwareAPI = () => {
     
     // Specific API methods
     getAnalytics,
+    getEngagementAnalytics,
+    getAudienceAnalytics,
     getScheduledTweets,
     getTweetHistory,
     postTweet,

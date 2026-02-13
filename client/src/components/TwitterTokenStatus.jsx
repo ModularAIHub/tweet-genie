@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { twitter } from '../utils/api';
+import { isPageVisible } from '../utils/requestCache';
 
 /**
  * Component to monitor Twitter token expiry and show warnings
@@ -10,19 +12,16 @@ const TwitterTokenStatus = () => {
   const [tokenStatus, setTokenStatus] = useState(null);
   const [showWarning, setShowWarning] = useState(false);
 
-  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
-
   useEffect(() => {
+    let cancelled = false;
+
     const checkTokenStatus = async () => {
+      if (!isPageVisible()) return;
       try {
-        const response = await fetch(`${API_BASE_URL}/api/twitter/token-status`, {
-          credentials: 'include'
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          console.log('[TwitterTokenStatus] Token status response:', data);
-          setTokenStatus(data);
+        const response = await twitter.getTokenStatusCached({ ttlMs: 60000 });
+        const data = response?.data || {};
+        if (cancelled) return;
+        setTokenStatus(data);
           
           // If no connection at all, don't show warning (user needs to connect first)
           if (!data.connected) {
