@@ -22,6 +22,7 @@ const History = () => {
   const [deletingTweets, setDeletingTweets] = useState(new Set()); // Track which tweets are being deleted
   const [expandedThreads, setExpandedThreads] = useState(new Set()); // Track which threads are expanded
   const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
+  const [isDisconnected, setIsDisconnected] = useState(false);
 
   // Load saved filters when account changes (per-account persistence)
   useEffect(() => {
@@ -119,9 +120,11 @@ const History = () => {
         
         const data = await apiResponse.json();
         console.log('[History] Parsed JSON data:', data);
+        setIsDisconnected(Boolean(data?.disconnected || data?.data?.disconnected));
         response = { data: { tweets: data.data?.tweets || data.tweets || [] } };
       } else {
         response = await tweetsAPI.list(params);
+        setIsDisconnected(Boolean(response.data?.disconnected));
       }
       
       let fetchedTweets = response.data.tweets || [];
@@ -142,7 +145,16 @@ const History = () => {
       setPostedTweets(fetchedTweets);
     } catch (error) {
       console.error('Failed to fetch posted tweets:', error);
-      toast.error('Failed to load tweet history');
+      const reconnectRequired =
+        error?.response?.data?.code === 'TWITTER_RECONNECT_REQUIRED' ||
+        error?.response?.data?.reconnect === true;
+      if (reconnectRequired) {
+        setIsDisconnected(true);
+        setPostedTweets([]);
+        toast.error('Twitter is disconnected. Please reconnect in Settings.');
+      } else {
+        toast.error('Failed to load tweet history');
+      }
     } finally {
       setLoading(false);
     }
@@ -278,6 +290,21 @@ const History = () => {
           <LoadingSpinner size="lg" />
           <p className="mt-4 text-gray-600">Loading tweet history...</p>
         </div>
+      </div>
+    );
+  }
+
+  if (isDisconnected) {
+    return (
+      <div className="card text-center py-12">
+        <HistoryIcon className="h-12 w-12 text-orange-500 mx-auto mb-4" />
+        <h3 className="text-lg font-medium text-gray-900 mb-2">Twitter Connection Required</h3>
+        <p className="text-gray-600 mb-6">
+          Reconnect your Twitter account to view posting history.
+        </p>
+        <a href="/settings" className="btn btn-primary btn-md cursor-pointer">
+          Go to Settings
+        </a>
       </div>
     );
   }

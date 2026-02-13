@@ -2,36 +2,151 @@ import express from 'express';
 import pool from '../config/database.js';
 import { TwitterApi } from 'twitter-api-v2';
 import { authenticateToken, validateTwitterConnection } from '../middleware/auth.js';
-import { buildTeamAccountFilter, resolveTeamAccountScope } from '../utils/teamAccountScope.js';
+import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 
 const router = express.Router();
 const SYNC_COOLDOWN_MS = Number(process.env.ANALYTICS_SYNC_COOLDOWN_MS || 3 * 60 * 1000);
 const SYNC_CANDIDATE_LIMIT = Number(process.env.ANALYTICS_SYNC_CANDIDATE_LIMIT || 20);
 const SYNC_LOOKBACK_DAYS = Number(process.env.ANALYTICS_SYNC_LOOKBACK_DAYS || 30);
 const SYNC_STALE_AFTER_MINUTES = Number(process.env.ANALYTICS_SYNC_STALE_AFTER_MINUTES || 360);
-const SYNC_FORCE_REFRESH_COUNT = Number(process.env.ANALYTICS_SYNC_FORCE_REFRESH_COUNT || 0);
-const syncState = new Map();
+const SYNC_FORCE_REFRESH_COUNT = Number(process.env.ANALYTICS_SYNC_FORCE_REFRESH_COUNT || 3);
+const SYNC_LOCK_STALE_MS = Number(process.env.ANALYTICS_SYNC_LOCK_STALE_MS || 20 * 60 * 1000);
 
 const getSyncKey = (userId, accountId) => `${userId}:${accountId || 'personal'}`;
+let analyticsSyncStateReady = false;
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
-const getSyncStatusPayload = (key, now = Date.now()) => {
-  const state = syncState.get(key) || {};
-  const nextAllowedAt = Number.isFinite(state.nextAllowedAt) ? state.nextAllowedAt : null;
-  const lastSyncAt = Number.isFinite(state.lastSyncAt) ? state.lastSyncAt : null;
+const ensureAnalyticsSyncStateTable = async () => {
+  if (analyticsSyncStateReady) return;
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics_sync_state (
+      sync_key TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      account_id TEXT,
+      in_progress BOOLEAN NOT NULL DEFAULT false,
+      started_at TIMESTAMP,
+      last_sync_at TIMESTAMP,
+      next_allowed_at TIMESTAMP,
+      last_result VARCHAR(50),
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_analytics_sync_state_user_account ON analytics_sync_state(user_id, account_id)`);
+  analyticsSyncStateReady = true;
+};
+
+const toTimestamp = (value) => {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  const dateValue = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(dateValue.getTime()) ? null : dateValue;
+};
+
+const buildSyncStatusPayload = (state, now = Date.now()) => {
+  const nextAllowedMs = state?.next_allowed_at ? new Date(state.next_allowed_at).getTime() : null;
+  const lastSyncMs = state?.last_sync_at ? new Date(state.last_sync_at).getTime() : null;
 
   return {
-    inProgress: !!state.inProgress,
+    inProgress: !!state?.in_progress,
     cooldownMs: SYNC_COOLDOWN_MS,
-    nextAllowedAt: nextAllowedAt ? new Date(nextAllowedAt).toISOString() : null,
-    cooldownRemainingMs: nextAllowedAt && nextAllowedAt > now ? nextAllowedAt - now : 0,
-    lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : null,
-    lastResult: state.lastResult || null,
+    nextAllowedAt: nextAllowedMs ? new Date(nextAllowedMs).toISOString() : null,
+    cooldownRemainingMs: nextAllowedMs && nextAllowedMs > now ? nextAllowedMs - now : 0,
+    lastSyncAt: lastSyncMs ? new Date(lastSyncMs).toISOString() : null,
+    lastResult: state?.last_result || null,
   };
 };
 
-const setSyncState = (key, patch) => {
-  const existing = syncState.get(key) || {};
-  syncState.set(key, { ...existing, ...patch });
+const getSyncState = async (syncKey) => {
+  await ensureAnalyticsSyncStateTable();
+  const { rows } = await pool.query(
+    `SELECT sync_key, user_id, account_id, in_progress, started_at, last_sync_at, next_allowed_at, last_result
+     FROM analytics_sync_state
+     WHERE sync_key = $1
+     LIMIT 1`,
+    [syncKey]
+  );
+  return rows[0] || null;
+};
+
+const getSyncStatusPayload = async (syncKey, now = Date.now()) => {
+  const state = await getSyncState(syncKey);
+  return buildSyncStatusPayload(state, now);
+};
+
+const setSyncState = async (syncKey, { userId, accountId, patch = {} }) => {
+  await ensureAnalyticsSyncStateTable();
+  const normalizedAccountId = accountId === null || accountId === undefined ? null : String(accountId);
+
+  await pool.query(
+    `INSERT INTO analytics_sync_state (sync_key, user_id, account_id)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (sync_key) DO NOTHING`,
+    [syncKey, userId, normalizedAccountId]
+  );
+
+  const values = [syncKey, userId, normalizedAccountId];
+  const assignments = ['user_id = $2', 'account_id = $3'];
+
+  if (hasOwn(patch, 'inProgress')) {
+    values.push(!!patch.inProgress);
+    assignments.push(`in_progress = $${values.length}`);
+  }
+  if (hasOwn(patch, 'startedAt')) {
+    values.push(toTimestamp(patch.startedAt));
+    assignments.push(`started_at = $${values.length}`);
+  }
+  if (hasOwn(patch, 'lastSyncAt')) {
+    values.push(toTimestamp(patch.lastSyncAt));
+    assignments.push(`last_sync_at = $${values.length}`);
+  }
+  if (hasOwn(patch, 'nextAllowedAt')) {
+    values.push(toTimestamp(patch.nextAllowedAt));
+    assignments.push(`next_allowed_at = $${values.length}`);
+  }
+  if (hasOwn(patch, 'lastResult')) {
+    values.push(patch.lastResult || null);
+    assignments.push(`last_result = $${values.length}`);
+  }
+
+  const { rows } = await pool.query(
+    `UPDATE analytics_sync_state
+     SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+     WHERE sync_key = $1
+     RETURNING sync_key, user_id, account_id, in_progress, started_at, last_sync_at, next_allowed_at, last_result`,
+    values
+  );
+
+  return rows[0] || null;
+};
+
+const acquireSyncLock = async ({ syncKey, userId, accountId }) => {
+  await ensureAnalyticsSyncStateTable();
+  const normalizedAccountId = accountId === null || accountId === undefined ? null : String(accountId);
+  const staleBefore = new Date(Date.now() - SYNC_LOCK_STALE_MS);
+
+  const { rows } = await pool.query(
+    `INSERT INTO analytics_sync_state (
+       sync_key, user_id, account_id, in_progress, started_at, last_result, updated_at
+     )
+     VALUES ($1, $2, $3, true, CURRENT_TIMESTAMP, 'running', CURRENT_TIMESTAMP)
+     ON CONFLICT (sync_key) DO UPDATE
+       SET user_id = EXCLUDED.user_id,
+           account_id = EXCLUDED.account_id,
+           in_progress = true,
+           started_at = CURRENT_TIMESTAMP,
+           last_result = 'running',
+           updated_at = CURRENT_TIMESTAMP
+     WHERE analytics_sync_state.in_progress = false
+        OR analytics_sync_state.started_at IS NULL
+        OR analytics_sync_state.started_at < $4
+     RETURNING sync_key`,
+    [syncKey, userId, normalizedAccountId, staleBefore]
+  );
+
+  return rows.length > 0;
 };
 
 const isRateLimitError = (error) => {
@@ -61,33 +176,63 @@ router.get('/overview', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
+    const requestTeamId = req.headers['x-team-id'] || null;
     const parsedDays = Number.parseInt(req.query.days, 10);
-    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
-    const teamAccountScope = await resolveTeamAccountScope(pool, userId, selectedAccountId);
+    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 50;
+    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
 
-    if (selectedAccountId && !teamAccountScope) {
-      console.warn('[analytics/overview] Selected account not accessible, using default user scope', {
+    if (!twitterScope.connected && twitterScope.mode === 'personal') {
+      return res.json({
+        disconnected: true,
+        overview: {},
+        daily_metrics: [],
+        tweets: [],
+        hourly_engagement: [],
+        content_type_metrics: [],
+        growth: {
+          current: {},
+          previous: {},
+        },
+      });
+    }
+
+    if (twitterScope.ignoredSelectedAccountId) {
+      console.warn('[analytics/overview] Ignoring selected account header in personal mode', {
         userId,
         selectedAccountId,
       });
     }
 
-    console.log('📊 Fetching analytics overview for user:', userId, 'account:', selectedAccountId, 'days:', days, 'scopeIds:', teamAccountScope?.relatedAccountIds || null);
+    console.log('Analytics overview fetch', { userId, selectedAccountId, days, mode: twitterScope.mode });
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
     const buildScopedStatement = (baseSql, baseParams, alias = '') => {
-      const { clause, params } = buildTeamAccountFilter({
-        scope: teamAccountScope,
+      const { clause, params } = buildTwitterScopeFilter({
+        scope: twitterScope,
         alias,
         startIndex: baseParams.length + 1,
-        includeOrphanFallback: true,
+        includeLegacyPersonalFallback: true,
+        includeTeamOrphanFallback: true,
         orphanUserId: userId,
       });
 
+      const injectScopeClause = (sql, scopeClause) => {
+        if (!scopeClause) return sql;
+        const marker = '/*__SCOPE__*/';
+        if (sql.includes(marker)) {
+          return sql.replace(marker, scopeClause);
+        }
+        const boundaryMatch = sql.match(/\b(GROUP BY|ORDER BY|LIMIT|HAVING|UNION)\b/i);
+        if (!boundaryMatch || boundaryMatch.index === undefined) {
+          return `${sql}${scopeClause}`;
+        }
+        return `${sql.slice(0, boundaryMatch.index).trimEnd()}${scopeClause} ${sql.slice(boundaryMatch.index)}`;
+      };
+
       return {
-        sql: `${baseSql}${clause}`,
+        sql: injectScopeClause(baseSql, clause),
         params: [...baseParams, ...params],
       };
     };
@@ -236,6 +381,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
     console.log('✅ Analytics overview data fetched successfully');
 
     res.json({
+      disconnected: false,
       overview: tweetMetrics[0] || {},
       daily_metrics: dailyMetrics || [],
       tweets: tweets || [],
@@ -260,11 +406,16 @@ router.get('/sync-status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const key = getSyncKey(userId, selectedAccountId);
+    const requestTeamId = req.headers['x-team-id'] || null;
+    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
+    const effectiveAccountId = twitterScope.mode === 'team' ? twitterScope.effectiveAccountId : null;
+    const key = getSyncKey(userId, effectiveAccountId);
+    const syncStatus = await getSyncStatusPayload(key);
 
     return res.json({
       success: true,
-      syncStatus: getSyncStatusPayload(key),
+      disconnected: !twitterScope.connected && twitterScope.mode === 'personal',
+      syncStatus,
     });
   } catch (error) {
     console.error('Sync status error:', error);
@@ -292,6 +443,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
   };
   let syncKey = null;
   let ownsSyncLock = false;
+  let syncAccountId = null;
+  let syncUserId = null;
   let tweetsToUpdate = [];
   let debugInfo = null;
   const syncRunId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -307,29 +460,45 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
     const selectedAccountId = req.headers['x-selected-account-id'];
+    const requestTeamId = req.headers['x-team-id'] || null;
     const teamAccountScope = twitterAccount?.isTeamAccount
-      ? await resolveTeamAccountScope(pool, userId, selectedAccountId)
+      ? await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId })
       : null;
-    const effectiveAccountId = teamAccountScope?.selectedAccountId || null;
+    const twitterScope = twitterAccount?.isTeamAccount && teamAccountScope?.mode === 'team'
+      ? teamAccountScope
+      : {
+          mode: 'personal',
+          connected: true,
+          userId,
+          selectedAccountId: null,
+          effectiveAccountId: null,
+          twitterUserId: twitterAccount?.twitter_user_id || null,
+          teamScope: null,
+          ignoredSelectedAccountId: !!selectedAccountId,
+        };
+    const effectiveAccountId = twitterScope.mode === 'team' ? twitterScope.effectiveAccountId : null;
     syncKey = getSyncKey(userId, effectiveAccountId);
+    syncAccountId = effectiveAccountId;
+    syncUserId = userId;
 
     log('Sync requested', {
       userId,
       selectedAccountId,
       effectiveAccountId,
       isTeamAccount: !!twitterAccount?.isTeamAccount,
-      scopeAccountIds: teamAccountScope?.relatedAccountIds || null,
-      allowOrphanFallback: !!teamAccountScope?.allowOrphanFallback,
+      scopeAccountIds: twitterScope.mode === 'team' ? twitterScope.teamScope?.relatedAccountIds || null : null,
+      allowOrphanFallback: twitterScope.mode === 'team' ? !!twitterScope.teamScope?.allowOrphanFallback : true,
+      twitterUserId: twitterScope.twitterUserId,
     });
 
-    if (selectedAccountId && twitterAccount?.isTeamAccount && !teamAccountScope) {
+    if (selectedAccountId && twitterAccount?.isTeamAccount && twitterScope.mode !== 'team') {
       log('Selected team account not accessible for sync, falling back to default user scope', { selectedAccountId });
     } else if (selectedAccountId && !effectiveAccountId) {
       log('Ignoring x-selected-account-id for personal sync', { selectedAccountId });
     }
 
     const now = Date.now();
-    const currentSyncStatus = getSyncStatusPayload(syncKey, now);
+    const currentSyncStatus = await getSyncStatusPayload(syncKey, now);
 
     if (currentSyncStatus.inProgress) {
       return res.status(409).json({
@@ -353,11 +522,22 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       });
     }
 
-    setSyncState(syncKey, {
-      inProgress: true,
-      startedAt: now,
-      lastResult: 'running',
+    const lockAcquired = await acquireSyncLock({
+      syncKey,
+      userId,
+      accountId: effectiveAccountId,
     });
+
+    if (!lockAcquired) {
+      const latestSyncStatus = await getSyncStatusPayload(syncKey, now);
+      return res.status(409).json({
+        success: false,
+        error: 'Analytics sync already in progress',
+        message: 'A sync request is already running for this account. Please wait for it to finish.',
+        type: 'sync_in_progress',
+        syncStatus: latestSyncStatus,
+      });
+    }
     ownsSyncLock = true;
 
     log('Sync lock acquired', { syncKey });
@@ -368,12 +548,16 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
         twitterClient = new TwitterApi(twitterAccount.access_token);
       } catch (oauth2Error) {
         console.error('OAuth 2.0 initialization failed:', oauth2Error);
-        setSyncState(syncKey, { inProgress: false, lastResult: 'auth_error' });
+        await setSyncState(syncKey, {
+          userId,
+          accountId: effectiveAccountId,
+          patch: { inProgress: false, lastResult: 'auth_error' },
+        });
         return res.status(401).json({
           error: 'Twitter authentication failed',
           message: 'Please reconnect your Twitter account.',
           type: 'twitter_auth_error',
-          syncStatus: getSyncStatusPayload(syncKey),
+          syncStatus: await getSyncStatusPayload(syncKey),
         });
       }
     } else {
@@ -381,13 +565,17 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
     }
 
     const syncScopeParams = [userId];
-    const { clause: syncScopeClause, params: syncScopeFilterParams } = buildTeamAccountFilter({
-      scope: teamAccountScope,
+    let syncWhereClause = 'WHERE user_id = $1';
+    const { clause: syncScopeClause, params: syncScopeFilterParams } = buildTwitterScopeFilter({
+      scope: twitterScope,
       startIndex: syncScopeParams.length + 1,
-      includeOrphanFallback: true,
+      includeLegacyPersonalFallback: twitterScope.mode !== 'team',
+      includeTeamOrphanFallback: twitterScope.mode === 'team',
       orphanUserId: userId,
     });
     syncScopeParams.push(...syncScopeFilterParams);
+    syncWhereClause += syncScopeClause;
+
     const lookbackDaysIndex = syncScopeParams.push(SYNC_LOOKBACK_DAYS);
     const forceRefreshCountIndex = syncScopeParams.push(SYNC_FORCE_REFRESH_COUNT);
     const staleAfterMinutesIndex = syncScopeParams.push(SYNC_STALE_AFTER_MINUTES);
@@ -412,8 +600,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
           impressions,
           COALESCE(external_created_at, created_at) AS sort_ts
         FROM tweets
-        WHERE user_id = $1
-        ${syncScopeClause}
+        ${syncWhereClause}
         AND status = 'posted'
         AND source IN ('platform', 'external')
         AND tweet_id IS NOT NULL
@@ -461,13 +648,17 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
 
     if (tweetsToUpdate.length === 0) {
       const diagParams = [userId];
-      const { clause: diagScopeClause, params: diagScopeFilterParams } = buildTeamAccountFilter({
-        scope: teamAccountScope,
+      let diagWhereClause = 'WHERE user_id = $1';
+      const { clause: diagScopeClause, params: diagScopeFilterParams } = buildTwitterScopeFilter({
+        scope: twitterScope,
         startIndex: diagParams.length + 1,
-        includeOrphanFallback: true,
+        includeLegacyPersonalFallback: twitterScope.mode !== 'team',
+        includeTeamOrphanFallback: twitterScope.mode === 'team',
         orphanUserId: userId,
       });
       diagParams.push(...diagScopeFilterParams);
+      diagWhereClause += diagScopeClause;
+
       const diagLookbackDaysIndex = diagParams.push(SYNC_LOOKBACK_DAYS);
       const diagStaleAfterMinutesIndex = diagParams.push(SYNC_STALE_AFTER_MINUTES);
 
@@ -477,12 +668,11 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
           COUNT(*) FILTER (WHERE source = 'platform')::int AS platform_count,
           COUNT(*) FILTER (WHERE source = 'external')::int AS external_count,
           COUNT(*) FILTER (WHERE impressions IS NULL OR impressions = 0)::int AS zero_metrics_count,
-          COUNT(*) FILTER (
+         COUNT(*) FILTER (
             WHERE updated_at IS NULL OR updated_at < NOW() - ($${diagStaleAfterMinutesIndex}::int * INTERVAL '1 minute')
           )::int AS stale_count
          FROM tweets
-         WHERE user_id = $1
-         ${diagScopeClause}
+         ${diagWhereClause}
          AND status = 'posted'
          AND source IN ('platform', 'external')
          AND tweet_id IS NOT NULL
@@ -502,11 +692,15 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       log('No candidates found for sync', debugInfo);
 
       const completedAt = Date.now();
-      setSyncState(syncKey, {
-        inProgress: false,
-        lastSyncAt: completedAt,
-        nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
-        lastResult: 'noop',
+      await setSyncState(syncKey, {
+        userId,
+        accountId: effectiveAccountId,
+        patch: {
+          inProgress: false,
+          lastSyncAt: completedAt,
+          nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+          lastResult: 'noop',
+        },
       });
 
       return res.json({
@@ -521,7 +715,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
         },
         debugInfo,
         runId: syncRunId,
-        syncStatus: getSyncStatusPayload(syncKey),
+        syncStatus: await getSyncStatusPayload(syncKey),
       });
     }
 
@@ -565,11 +759,15 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
           errorCount += rateLimitedCount;
 
           const completedAt = Date.now();
-          setSyncState(syncKey, {
-            inProgress: false,
-            lastSyncAt: completedAt,
-            nextAllowedAt: Math.max(resetTimestamp, completedAt + SYNC_COOLDOWN_MS),
-            lastResult: 'rate_limited',
+          await setSyncState(syncKey, {
+            userId,
+            accountId: effectiveAccountId,
+            patch: {
+              inProgress: false,
+              lastSyncAt: completedAt,
+              nextAllowedAt: Math.max(resetTimestamp, completedAt + SYNC_COOLDOWN_MS),
+              lastResult: 'rate_limited',
+            },
           });
 
           const payload = {
@@ -593,7 +791,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
             },
             debugInfo,
             runId: syncRunId,
-            syncStatus: getSyncStatusPayload(syncKey),
+            syncStatus: await getSyncStatusPayload(syncKey),
           };
 
           log('Rate limit encountered during batch sync', {
@@ -695,11 +893,15 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
     }
 
     const completedAt = Date.now();
-    setSyncState(syncKey, {
-      inProgress: false,
-      lastSyncAt: completedAt,
-      nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
-      lastResult: errorCount > 0 ? 'completed_with_errors' : 'completed',
+    await setSyncState(syncKey, {
+      userId,
+      accountId: effectiveAccountId,
+      patch: {
+        inProgress: false,
+        lastSyncAt: completedAt,
+        nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+        lastResult: errorCount > 0 ? 'completed_with_errors' : 'completed',
+      },
     });
 
     log('Sync complete', {
@@ -726,7 +928,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       },
       debugInfo,
       runId: syncRunId,
-      syncStatus: getSyncStatusPayload(syncKey),
+      syncStatus: await getSyncStatusPayload(syncKey),
     });
 
   } catch (error) {
@@ -749,11 +951,15 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       }
 
       if (syncKey) {
-        setSyncState(syncKey, {
-          inProgress: false,
-          lastSyncAt: completedAt,
-          nextAllowedAt: Math.max(resetTimestamp, completedAt + SYNC_COOLDOWN_MS),
-          lastResult: 'rate_limited',
+        await setSyncState(syncKey, {
+          userId,
+          accountId: effectiveAccountId,
+          patch: {
+            inProgress: false,
+            lastSyncAt: completedAt,
+            nextAllowedAt: Math.max(resetTimestamp, completedAt + SYNC_COOLDOWN_MS),
+            lastResult: 'rate_limited',
+          },
         });
       }
 
@@ -778,7 +984,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
         },
         debugInfo,
         runId: syncRunId,
-        syncStatus: syncKey ? getSyncStatusPayload(syncKey) : null,
+        syncStatus: syncKey ? await getSyncStatusPayload(syncKey) : null,
       };
 
       return updatedCount > 0 ? res.status(200).json(payload) : res.status(429).json(payload);
@@ -786,11 +992,15 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
 
     if (syncKey) {
       const completedAt = Date.now();
-      setSyncState(syncKey, {
-        inProgress: false,
-        lastSyncAt: completedAt,
-        nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
-        lastResult: 'error',
+      await setSyncState(syncKey, {
+        userId,
+        accountId: effectiveAccountId,
+        patch: {
+          inProgress: false,
+          lastSyncAt: completedAt,
+          nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+          lastResult: 'error',
+        },
       });
     }
 
@@ -810,11 +1020,15 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       },
       debugInfo,
       runId: syncRunId,
-      syncStatus: syncKey ? getSyncStatusPayload(syncKey) : null,
+      syncStatus: syncKey ? await getSyncStatusPayload(syncKey) : null,
     });
   } finally {
     if (syncKey && ownsSyncLock) {
-      setSyncState(syncKey, { inProgress: false });
+      await setSyncState(syncKey, {
+        userId: syncUserId || req.user.id,
+        accountId: syncAccountId,
+        patch: { inProgress: false },
+      });
     }
   }
 });
@@ -840,24 +1054,48 @@ router.get('/engagement', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
+    const requestTeamId = req.headers['x-team-id'] || null;
     const parsedDays = Number.parseInt(req.query.days, 10);
-    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
-    const teamAccountScope = await resolveTeamAccountScope(pool, userId, selectedAccountId);
+    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 50;
+    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
+
+    if (!twitterScope.connected && twitterScope.mode === 'personal') {
+      return res.json({
+        disconnected: true,
+        engagement_patterns: [],
+        optimal_times: [],
+        content_insights: [],
+      });
+    }
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
     const buildScopedStatement = (baseSql, baseParams, alias = '') => {
-      const { clause, params } = buildTeamAccountFilter({
-        scope: teamAccountScope,
+      const { clause, params } = buildTwitterScopeFilter({
+        scope: twitterScope,
         alias,
         startIndex: baseParams.length + 1,
-        includeOrphanFallback: true,
+        includeLegacyPersonalFallback: true,
+        includeTeamOrphanFallback: true,
         orphanUserId: userId,
       });
 
+      const injectScopeClause = (sql, scopeClause) => {
+        if (!scopeClause) return sql;
+        const marker = '/*__SCOPE__*/';
+        if (sql.includes(marker)) {
+          return sql.replace(marker, scopeClause);
+        }
+        const boundaryMatch = sql.match(/\b(GROUP BY|ORDER BY|LIMIT|HAVING|UNION)\b/i);
+        if (!boundaryMatch || boundaryMatch.index === undefined) {
+          return `${sql}${scopeClause}`;
+        }
+        return `${sql.slice(0, boundaryMatch.index).trimEnd()}${scopeClause} ${sql.slice(boundaryMatch.index)}`;
+      };
+
       return {
-        sql: `${baseSql}${clause}`,
+        sql: injectScopeClause(baseSql, clause),
         params: [...baseParams, ...params],
       };
     };
@@ -944,6 +1182,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
     const { rows: contentInsights } = await pool.query(contentInsightsStatement.sql, contentInsightsStatement.params);
 
     res.json({
+      disconnected: false,
       engagement_patterns: engagementPatterns,
       optimal_times: timeAnalysis,
       content_insights: contentInsights
@@ -960,24 +1199,47 @@ router.get('/audience', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
+    const requestTeamId = req.headers['x-team-id'] || null;
     const parsedDays = Number.parseInt(req.query.days, 10);
-    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
-    const teamAccountScope = await resolveTeamAccountScope(pool, userId, selectedAccountId);
+    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 50;
+    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
+
+    if (!twitterScope.connected && twitterScope.mode === 'personal') {
+      return res.json({
+        disconnected: true,
+        reach_metrics: [],
+        engagement_distribution: [],
+      });
+    }
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
     const buildScopedStatement = (baseSql, baseParams, alias = '') => {
-      const { clause, params } = buildTeamAccountFilter({
-        scope: teamAccountScope,
+      const { clause, params } = buildTwitterScopeFilter({
+        scope: twitterScope,
         alias,
         startIndex: baseParams.length + 1,
-        includeOrphanFallback: true,
+        includeLegacyPersonalFallback: true,
+        includeTeamOrphanFallback: true,
         orphanUserId: userId,
       });
 
+      const injectScopeClause = (sql, scopeClause) => {
+        if (!scopeClause) return sql;
+        const marker = '/*__SCOPE__*/';
+        if (sql.includes(marker)) {
+          return sql.replace(marker, scopeClause);
+        }
+        const boundaryMatch = sql.match(/\b(GROUP BY|ORDER BY|LIMIT|HAVING|UNION)\b/i);
+        if (!boundaryMatch || boundaryMatch.index === undefined) {
+          return `${sql}${scopeClause}`;
+        }
+        return `${sql.slice(0, boundaryMatch.index).trimEnd()}${scopeClause} ${sql.slice(boundaryMatch.index)}`;
+      };
+
       return {
-        sql: `${baseSql}${clause}`,
+        sql: injectScopeClause(baseSql, clause),
         params: [...baseParams, ...params],
       };
     };
@@ -1025,6 +1287,7 @@ router.get('/audience', authenticateToken, async (req, res) => {
     const { rows: engagementDistribution } = await pool.query(engagementDistributionStatement.sql, engagementDistributionStatement.params);
 
     res.json({
+      disconnected: false,
       reach_metrics: reachMetrics,
       engagement_distribution: engagementDistribution
     });
@@ -1036,5 +1299,6 @@ router.get('/audience', authenticateToken, async (req, res) => {
 });
 
 export default router;
+
 
 

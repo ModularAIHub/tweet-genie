@@ -14,6 +14,7 @@ import twitterRoutes from './routes/twitter.js';
 import tweetsRoutes from './routes/tweets.js';
 import schedulingRoutes from './routes/scheduling.js';
 import analyticsRoutes from './routes/analytics.js';
+import dashboardRoutes from './routes/dashboard.js';
 import creditsRoutes from './routes/credits.js';
 import providersRoutes from './routes/providers.js';
 import aiRoutes from './routes/ai.js';
@@ -27,7 +28,10 @@ import { authenticateToken, getAuthPerfStats, resetAuthPerfStats } from './middl
 // import { errorHandler } from './middleware/errorHandler.js';
 
 // Service imports
-// import { scheduledTweetService } from './services/scheduledTweetService.js';
+import { scheduledTweetService } from './services/scheduledTweetService.js';
+import { getScheduledQueueHealth, isScheduledQueueAvailable } from './services/queueService.js';
+import { startScheduledTweetWorker } from './workers/scheduledTweetWorker.js';
+import { runStartupScheduledTweetSync } from './workers/startupScheduledTweetSync.js';
 
 dotenv.config();
 
@@ -48,6 +52,11 @@ const CORS_DEBUG = process.env.CORS_DEBUG === 'true';
 const AUTH_PERF_ROUTE_ENABLED =
   process.env.AUTH_PERF_ROUTE_ENABLED === 'true' ||
   (process.env.AUTH_PERF_ROUTE_ENABLED !== 'false' && process.env.NODE_ENV !== 'production');
+const SCHEDULED_DB_POLLER_ENABLED = process.env.SCHEDULED_DB_POLLER_ENABLED !== 'false';
+const SCHEDULED_DB_POLLER_INTERVAL_MS = Number.parseInt(process.env.SCHEDULED_DB_POLLER_INTERVAL_MS || '30000', 10);
+
+let scheduledDbPoller = null;
+let scheduledDbPollerInFlight = false;
 
 const requestLog = (...args) => {
   if (REQUEST_DEBUG) {
@@ -211,6 +220,7 @@ app.use('/api/pro-team', proTeamRoutes); // <-- Register proTeam routes here
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);
 app.use('/api/analytics', authenticateToken, analyticsRoutes);
+app.use('/api/dashboard', authenticateToken, dashboardRoutes);
 app.use('/api/credits', authenticateToken, creditsRoutes);
 app.use('/api/providers', authenticateToken, providersRoutes);
 app.use('/api/ai', authenticateToken, aiRoutes);
@@ -238,14 +248,72 @@ app.use((err, req, res, next) => {
   return res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
 });
 
-// Start BullMQ worker for scheduled tweets
-import './workers/scheduledTweetWorker.js';
-// Sync orphaned scheduled tweets on startup
-import './workers/startupScheduledTweetSync.js';
+function startScheduledDbPoller(reason = 'queue_unavailable') {
+  if (!SCHEDULED_DB_POLLER_ENABLED) {
+    console.warn('[Startup] DB poller fallback is disabled (SCHEDULED_DB_POLLER_ENABLED=false).');
+    return;
+  }
+
+  if (scheduledDbPoller) {
+    return;
+  }
+
+  const intervalMs =
+    Number.isFinite(SCHEDULED_DB_POLLER_INTERVAL_MS) && SCHEDULED_DB_POLLER_INTERVAL_MS >= 5000
+      ? SCHEDULED_DB_POLLER_INTERVAL_MS
+      : 30000;
+
+  console.warn(
+    `[Startup] Using DB poller fallback for scheduled tweets (every ${intervalMs}ms). Reason: ${reason}`
+  );
+
+  scheduledDbPoller = setInterval(async () => {
+    if (isScheduledQueueAvailable()) {
+      console.log('[ScheduledPoller] Queue is available again. Stopping DB poller fallback.');
+      clearInterval(scheduledDbPoller);
+      scheduledDbPoller = null;
+      return;
+    }
+
+    if (scheduledDbPollerInFlight) {
+      return;
+    }
+
+    scheduledDbPollerInFlight = true;
+    try {
+      await scheduledTweetService.processScheduledTweets();
+    } catch (error) {
+      console.error('[ScheduledPoller] Error processing scheduled tweets:', error?.message || error);
+    } finally {
+      scheduledDbPollerInFlight = false;
+    }
+  }, intervalMs);
+
+  if (typeof scheduledDbPoller.unref === 'function') {
+    scheduledDbPoller.unref();
+  }
+}
 
 // Honeybadger error handler (must be after all routes/middleware)
 app.use(Honeybadger.errorHandler);
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Tweet Genie server running on port ${PORT}`);
+
+  const queueHealth = getScheduledQueueHealth();
+  console.log('[Startup] Scheduled queue health:', queueHealth);
+
+  try {
+    await startScheduledTweetWorker();
+
+    if (isScheduledQueueAvailable()) {
+      await runStartupScheduledTweetSync();
+    } else {
+      const degradedQueueHealth = getScheduledQueueHealth();
+      startScheduledDbPoller(degradedQueueHealth.reason || queueHealth.reason || 'queue_not_ready');
+    }
+  } catch (error) {
+    console.error('[Startup] Scheduler initialization error:', error?.message || error);
+    startScheduledDbPoller('worker_init_failed');
+  }
 });

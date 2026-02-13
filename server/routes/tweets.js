@@ -1,6 +1,6 @@
 const router = express.Router();
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
-import { buildTeamAccountFilter, resolveTeamAccountScope } from '../utils/teamAccountScope.js';
+import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 
 // Bulk save generated tweets/threads as drafts
 router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
@@ -15,16 +15,17 @@ router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
     
     // Only set account_id for team accounts
     const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
+    const authorId = twitterAccount.twitter_user_id || null;
     
     const saved = [];
     for (const item of items) {
       // Save as draft (status = 'draft')
       const { text, isThread, threadParts } = item;
       const { rows } = await pool.query(
-        `INSERT INTO tweets (user_id, account_id, content, is_thread, thread_parts, status, created_at)
-         VALUES ($1, $2, $3, $4, $5, 'draft', NOW())
+        `INSERT INTO tweets (user_id, account_id, author_id, content, is_thread, thread_parts, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'draft', NOW())
          RETURNING *`,
-        [userId, accountId, text, !!isThread, isThread ? JSON.stringify(threadParts) : null]
+        [userId, accountId, authorId, text, !!isThread, isThread ? JSON.stringify(threadParts) : null]
       );
       saved.push(rows[0]);
     }
@@ -337,17 +338,19 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
               
               // Store each thread tweet in database as it's posted
               const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
+              const authorId = twitterAccount.twitter_user_id || null;
               const threadTweetMediaUrls = threadMedia && threadMedia[i] ? threadMedia[i] : [];
               
               await pool.query(
                 `INSERT INTO tweets (
-                  user_id, account_id, tweet_id, content, 
+                  user_id, account_id, author_id, tweet_id, content, 
                   media_urls, credits_used, 
                   impressions, likes, retweets, replies, status, source
-                ) VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, 'posted', 'platform')`,
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0, 'posted', 'platform')`,
                 [
                   userId,
                   accountId,
+                  authorId,
                   threadResponse.data.id,
                   threadTweetText,
                   JSON.stringify(threadTweetMediaUrls),
@@ -407,18 +410,20 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       // Only set account_id for team accounts (isTeamAccount = true)
       // Personal accounts (isTeamAccount = false or undefined) will have NULL account_id
       const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
+      const authorId = twitterAccount.twitter_user_id || null;
       
       // Insert main tweet
       const { rows } = await pool.query(
         `INSERT INTO tweets (
-          user_id, account_id, tweet_id, content, 
+          user_id, account_id, author_id, tweet_id, content, 
           media_urls, thread_tweets, credits_used, 
           impressions, likes, retweets, replies, status, source
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0, 'posted', 'platform')
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, 0, 'posted', 'platform')
         RETURNING *`,
         [
           userId,
           accountId,  // NULL for personal accounts, integer ID for team accounts
+          authorId,
           tweetResponse.data.id,
           mainContent,
           JSON.stringify(thread && thread.length > 0 && threadMedia && threadMedia[0] ? threadMedia[0] : (media || [])),
@@ -627,138 +632,103 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
 
 // Get user's tweets - alias as /history for backwards compatibility
 router.get(['/history', '/'], async (req, res) => {
-  let sqlQuery = ''; // Declare outside try block for error logging
+  let sqlQuery = '';
   let countQuery = '';
   let queryParams = [];
   
   try {
-    console.log('[GET /tweets/history] Request received', {
-      user: req.user,
-      query: req.query,
-      headers: {
-        'x-selected-account-id': req.headers['x-selected-account-id'],
-        authorization: req.headers.authorization ? 'present' : 'missing'
-      }
-    });
-
-    if (!req.user || !req.user.id) {
-      console.error('[GET /tweets/history] No user ID found in request');
+    if (!req.user?.id) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
     const { page = 1, limit = 20, status } = req.query;
+    const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    const parsedLimit = parseInt(limit);
-    const parsedOffset = parseInt(offset);
-    
-    queryParams = [req.user.id];
-    let countParams = [req.user.id];
+    const requestTeamId = req.headers['x-team-id'] || null;
+    const parsedPage = Number.parseInt(page, 10);
+    const parsedLimit = Number.parseInt(limit, 10);
+    const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 20;
+    const parsedOffset = (safePage - 1) * safeLimit;
+    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
 
-    if (selectedAccountId) {
-      console.log('[GET /tweets/history] Selected account ID:', selectedAccountId);
+    if (!twitterScope.connected && twitterScope.mode === 'personal') {
+      return res.json({
+        disconnected: true,
+        tweets: [],
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total: 0,
+          pages: 0,
+        },
+      });
+    }
 
-      const teamAccountScope = await resolveTeamAccountScope(pool, req.user.id, selectedAccountId);
+    let countParams = [];
 
-      if (teamAccountScope) {
-        queryParams = [];
-        countParams = [];
+    if (twitterScope.mode === 'team') {
+      const { clause: teamScopeClause, params: teamScopeParams } = buildTwitterScopeFilter({
+        scope: twitterScope,
+        alias: 't',
+        startIndex: 1,
+        includeLegacyPersonalFallback: false,
+        includeTeamOrphanFallback: true,
+        orphanUserId: userId,
+      });
 
-        const { clause: teamScopeClause, params: teamScopeParams } = buildTeamAccountFilter({
-          scope: teamAccountScope,
-          alias: 't',
-          startIndex: 1,
-          includeAuthorFallback: false,
-          includeOrphanFallback: true,
-          orphanUserId: req.user.id,
-        });
+      let whereClause = `WHERE 1=1${teamScopeClause}`;
+      queryParams = [...teamScopeParams];
+      countParams = [...teamScopeParams];
 
-        let whereClause = `WHERE 1=1${teamScopeClause}`;
-        queryParams.push(...teamScopeParams);
-        countParams.push(...teamScopeParams);
-
-        if (status) {
-          whereClause += ` AND t.status = $${queryParams.length + 1}`;
-          queryParams.push(status);
-          countParams.push(status);
-        }
-
-        console.log('[GET /tweets/history] Team scope resolved', {
-          selectedAccountId,
-          twitterUserId: teamAccountScope.twitterUserId,
-          relatedAccountIds: teamAccountScope.relatedAccountIds,
-          allowOrphanFallback: teamAccountScope.allowOrphanFallback,
-        });
-
-        sqlQuery = `
-          SELECT t.*, 
-                  ta.twitter_username as username, 
-                  ta.twitter_display_name as display_name,
-                  CASE 
-                    WHEN t.source = 'external' THEN t.external_created_at
-                    ELSE t.created_at
-                  END as display_created_at
-          FROM tweets t
-          LEFT JOIN team_accounts ta ON t.account_id::TEXT = ta.id::TEXT
-          ${whereClause}
-          ORDER BY 
-            CASE 
-              WHEN t.source = 'external' THEN t.external_created_at
-              ELSE t.created_at
-            END DESC
-          LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
-        `;
-
-        countQuery = `
-          SELECT COUNT(*) FROM tweets t
-          ${whereClause}
-        `;
-
-        queryParams.push(parsedLimit, parsedOffset);
-      } else {
-        // Not a team account or user doesn't have access - treat as personal account
-        console.log('[GET /tweets/history] Selected account not accessible as team scope, treating as personal');
-        queryParams = [req.user.id];
-        countParams = [req.user.id];
-        
-        let whereClause = 'WHERE t.user_id = $1 AND (t.account_id IS NULL OR t.account_id = 0)';
-        if (status) {
-          whereClause += ` AND t.status = $2`;
-          queryParams.push(status);
-          countParams.push(status);
-        }
-
-        sqlQuery = `
-          SELECT t.*, 
-                  ta.twitter_username as username, 
-                  ta.twitter_display_name as display_name,
-                  CASE 
-                    WHEN t.source = 'external' THEN t.external_created_at
-                    ELSE t.created_at
-                  END as display_created_at
-          FROM tweets t
-          LEFT JOIN twitter_auth ta ON t.user_id = ta.user_id
-          ${whereClause}
-          ORDER BY 
-            CASE 
-              WHEN t.source = 'external' THEN t.external_created_at
-              ELSE t.created_at
-            END DESC
-          LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
-        `;
-
-        countQuery = `
-          SELECT COUNT(*) FROM tweets t
-          ${whereClause}
-        `;
-
-        queryParams.push(parsedLimit, parsedOffset);
-      }
-    } else {
-      // Personal mode: join with twitter_auth, filter out team tweets
-      let whereClause = 'WHERE t.user_id = $1 AND (t.account_id IS NULL OR t.account_id = 0)';
       if (status) {
-        whereClause += ` AND t.status = $2`;
+        whereClause += ` AND t.status = $${queryParams.length + 1}`;
+        queryParams.push(status);
+        countParams.push(status);
+      }
+
+      sqlQuery = `
+        SELECT t.*, 
+                ta.twitter_username as username, 
+                ta.twitter_display_name as display_name,
+                CASE 
+                  WHEN t.source = 'external' THEN t.external_created_at
+                  ELSE t.created_at
+                END as display_created_at
+        FROM tweets t
+        LEFT JOIN team_accounts ta ON t.account_id::TEXT = ta.id::TEXT
+        ${whereClause}
+        ORDER BY 
+          CASE 
+            WHEN t.source = 'external' THEN t.external_created_at
+            ELSE t.created_at
+          END DESC
+        LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
+      `;
+
+      countQuery = `
+        SELECT COUNT(*) FROM tweets t
+        ${whereClause}
+      `;
+
+      queryParams.push(safeLimit, parsedOffset);
+    } else {
+      queryParams = [userId];
+      countParams = [userId];
+      const { clause: personalScopeClause, params: personalScopeParams } = buildTwitterScopeFilter({
+        scope: twitterScope,
+        alias: 't',
+        startIndex: queryParams.length + 1,
+        includeLegacyPersonalFallback: true,
+        includeTeamOrphanFallback: false,
+        orphanUserId: userId,
+      });
+      queryParams.push(...personalScopeParams);
+      countParams.push(...personalScopeParams);
+
+      let whereClause = `WHERE t.user_id = $1${personalScopeClause}`;
+      if (status) {
+        whereClause += ` AND t.status = $${queryParams.length + 1}`;
         queryParams.push(status);
         countParams.push(status);
       }
@@ -787,19 +757,21 @@ router.get(['/history', '/'], async (req, res) => {
         ${whereClause}
       `;
 
-      queryParams.push(parsedLimit, parsedOffset);
+      queryParams.push(safeLimit, parsedOffset);
     }
 
     const { rows } = await pool.query(sqlQuery, queryParams);
     const countResult = await pool.query(countQuery, countParams);
+    const totalCount = Number.parseInt(countResult.rows[0].count, 10) || 0;
 
     res.json({
+      disconnected: false,
       tweets: rows,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: parseInt(countResult.rows[0].count),
-        pages: Math.ceil(countResult.rows[0].count / limit)
+        page: safePage,
+        limit: safeLimit,
+        total: totalCount,
+        pages: totalCount > 0 ? Math.ceil(totalCount / safeLimit) : 0,
       }
     });
 

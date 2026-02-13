@@ -25,21 +25,31 @@ api.interceptors.request.use(
       config.headers['Authorization'] = `Bearer ${token}`;
     }
     
-    // Add selected account ID header for team account switching
+    // Team scope headers are sent only in team mode.
     const selectedAccount = localStorage.getItem('selectedTwitterAccount');
     if (selectedAccount) {
       try {
         const account = JSON.parse(selectedAccount);
-        if (account.id) {
+        const hasTeamScope = Boolean(account?.team_id);
+        if (hasTeamScope && account?.id) {
           config.headers['X-Selected-Account-Id'] = account.id;
+        } else {
+          delete config.headers['X-Selected-Account-Id'];
         }
-        // Attach x-team-id header if team_id exists
-        if (account.team_id) {
+
+        if (hasTeamScope) {
           config.headers['x-team-id'] = account.team_id;
+        } else {
+          delete config.headers['x-team-id'];
         }
       } catch (error) {
         console.error('Failed to parse selected account:', error);
+        delete config.headers['X-Selected-Account-Id'];
+        delete config.headers['x-team-id'];
       }
+    } else {
+      delete config.headers['X-Selected-Account-Id'];
+      delete config.headers['x-team-id'];
     }
     
     return config;
@@ -78,6 +88,20 @@ api.interceptors.response.use(
         { duration: 8000, id: 'twitter-expired' }
       );
       // Don't retry these requests
+      return Promise.reject(error);
+    }
+
+    // Twitter reconnect-required errors should never trigger platform re-auth redirects.
+    if (
+      error.response?.data?.code === 'TWITTER_RECONNECT_REQUIRED' ||
+      error.response?.data?.reconnect === true
+    ) {
+      console.error('⚠️ Twitter reconnect required:', error.response.data);
+      const { toast } = await import('react-hot-toast');
+      toast.error(
+        error.response.data.error || 'Twitter is disconnected. Please reconnect your Twitter account.',
+        { duration: 8000, id: 'twitter-reconnect-required' }
+      );
       return Promise.reject(error);
     }
 
@@ -220,6 +244,11 @@ export const analytics = {
   getHashtags: (params) => api.get('/api/analytics/hashtags', { params }),
   getEngagement: (params) => api.get('/api/analytics/engagement', { params }),
   getAudience: (params) => api.get('/api/analytics/audience', { params }),
+};
+
+// Dashboard endpoints
+export const dashboard = {
+  bootstrap: (params) => api.get('/api/dashboard/bootstrap', { params }),
 };
 
 // Credits endpoints
