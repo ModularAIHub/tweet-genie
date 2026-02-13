@@ -225,14 +225,22 @@ export async function disconnectTeamTwitterAccount(req, res) {
       return res.status(404).json({ error: 'Account not found or already disconnected' });
     }
 
-    // Delete the Twitter account from team_accounts
+    // Soft-disconnect account to preserve historical tweet/account mapping
     const { rowCount } = await db.query(
-      'DELETE FROM team_accounts WHERE id = $1 AND team_id = $2',
+      `UPDATE team_accounts
+       SET active = false,
+           access_token = NULL,
+           refresh_token = NULL,
+           token_expires_at = NULL,
+           oauth1_access_token = NULL,
+           oauth1_access_token_secret = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND team_id = $2`,
       [accountId, teamId]
     );
-    console.log('[disconnectTeamTwitterAccount] delete rowCount:', rowCount);
+    console.log('[disconnectTeamTwitterAccount] disconnect rowCount:', rowCount);
     if (rowCount === 0) {
-      console.log('[disconnectTeamTwitterAccount] Delete failed, account not found:', accountId, teamId);
+      console.log('[disconnectTeamTwitterAccount] Disconnect failed, account not found:', accountId, teamId);
       return res.status(404).json({ error: 'Account not found or already disconnected' });
     }
     return res.json({ success: true, message: 'Twitter account disconnected successfully' });

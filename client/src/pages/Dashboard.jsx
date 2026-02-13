@@ -59,7 +59,7 @@ const Dashboard = () => {
       
       try {
         const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
-          isTeamUser ? accountAPI.getAnalytics('30d').catch(e => ({ error: true })) : analyticsAPI.getOverview({ days: 30 }),
+          isTeamUser ? accountAPI.getAnalytics('50d').catch(e => ({ error: true })) : analyticsAPI.getOverview({ days: 50 }),
           isTeamUser ? accountAPI.getTweetHistory(1, 5).catch(e => ({ error: true })) : tweets.list({ limit: 5 }).catch(e => ({ error: true })),
           credits.getBalance().catch(e => ({ error: true })), // Credits are user-level, not account-specific
         ]);

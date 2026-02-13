@@ -3,6 +3,11 @@
 
 import pool from '../config/database.js';
 
+const tableExists = async (client, tableName) => {
+    const { rows } = await client.query('SELECT to_regclass($1) AS table_name', [tableName]);
+    return !!rows[0]?.table_name;
+};
+
 export const cleanupController = {
     // Clean up all Twitter data for a deleted user
     async cleanupUserData(req, res) {
@@ -37,12 +42,26 @@ export const cleanupController = {
                 );
                 console.log(`   ✓ Deleted ${teamAccountsResult.rowCount} team Twitter accounts`);
 
-                // 3. Delete personal Twitter OAuth1 accounts
-                const oauth1AccountsResult = await client.query(
-                    'DELETE FROM twitter_oauth1_tokens WHERE user_id = $1',
+                // 3. Delete personal Twitter auth data (current table)
+                const personalAuthResult = await client.query(
+                    'DELETE FROM twitter_auth WHERE user_id = $1',
                     [userId]
                 );
-                console.log(`   ✓ Deleted ${oauth1AccountsResult.rowCount} OAuth1 Twitter accounts`);
+                console.log(`   ✓ Deleted ${personalAuthResult.rowCount} personal Twitter auth records`);
+
+                // 4. Best-effort cleanup for legacy table if it still exists
+                let legacyOauth1Deleted = 0;
+                const hasLegacyOauth1Table = await tableExists(client, 'twitter_oauth1_tokens');
+                if (hasLegacyOauth1Table) {
+                    const legacyResult = await client.query(
+                        'DELETE FROM twitter_oauth1_tokens WHERE user_id = $1',
+                        [userId]
+                    );
+                    legacyOauth1Deleted = legacyResult.rowCount;
+                    console.log(`   ✓ Deleted ${legacyOauth1Deleted} legacy OAuth1 Twitter records`);
+                } else {
+                    console.log('   ↷ Skipped legacy cleanup: twitter_oauth1_tokens table does not exist');
+                }
 
                 await client.query('COMMIT');
                 console.log(`✅ [Twitter] User data cleanup completed`);
@@ -53,7 +72,8 @@ export const cleanupController = {
                     deletedCounts: {
                         scheduledTweets: scheduledTweetsResult.rowCount,
                         teamAccounts: teamAccountsResult.rowCount,
-                        oauth1Accounts: oauth1AccountsResult.rowCount
+                        personalAuth: personalAuthResult.rowCount,
+                        oauth1Accounts: legacyOauth1Deleted
                     }
                 });
 

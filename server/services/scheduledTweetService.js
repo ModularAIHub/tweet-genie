@@ -3,6 +3,98 @@ import { TwitterApi } from 'twitter-api-v2';
 import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
+import { scheduledTweetQueue } from './queueService.js';
+
+const THREAD_REPLY_DELAY_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_MS || '600', 10);
+const THREAD_REPLY_DELAY_JITTER_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_JITTER_MS || '250', 10);
+const SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD = Number.parseInt(process.env.SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD || '6', 10);
+const SCHEDULED_RATE_LIMIT_MAX_RETRIES = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_MAX_RETRIES || '2', 10);
+const SCHEDULED_RATE_LIMIT_WAIT_MS = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_WAIT_MS || '90000', 10);
+const SCHEDULED_RATE_LIMIT_MAX_WAIT_MS = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_MAX_WAIT_MS || '600000', 10);
+
+function getScheduledThreadDelayMs() {
+  const baseDelay = Number.isFinite(THREAD_REPLY_DELAY_MS) ? Math.max(0, THREAD_REPLY_DELAY_MS) : 600;
+  const jitter = Number.isFinite(THREAD_REPLY_DELAY_JITTER_MS) ? Math.max(0, THREAD_REPLY_DELAY_JITTER_MS) : 250;
+  if (!jitter) return baseDelay;
+  return baseDelay + Math.floor(Math.random() * (jitter + 1));
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getHeaderValue(headers, headerName) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') {
+    return headers.get(headerName) ?? headers.get(headerName.toLowerCase());
+  }
+  return headers[headerName] ?? headers[headerName.toLowerCase()];
+}
+
+function isRateLimitedError(error) {
+  const message = `${error?.message || ''} ${error?.data?.detail || ''}`.toLowerCase();
+  return (
+    error?.code === 429 ||
+    error?.status === 429 ||
+    error?.data?.status === 429 ||
+    message.includes('rate limit') ||
+    message.includes('too many requests') ||
+    message.includes(' 429')
+  );
+}
+
+function getRateLimitWaitMs(error, fallbackMs = SCHEDULED_RATE_LIMIT_WAIT_MS) {
+  const headers = error?.headers || error?.response?.headers || null;
+  const retryAfterRaw = Number(getHeaderValue(headers, 'retry-after'));
+  if (Number.isFinite(retryAfterRaw) && retryAfterRaw > 0) {
+    return Math.min(retryAfterRaw * 1000, SCHEDULED_RATE_LIMIT_MAX_WAIT_MS);
+  }
+
+  const resetRaw = Number(error?.rateLimit?.reset || getHeaderValue(headers, 'x-rate-limit-reset'));
+  if (Number.isFinite(resetRaw) && resetRaw > 0) {
+    const resetMs = Math.max(1000, resetRaw * 1000 - Date.now());
+    return Math.min(resetMs, SCHEDULED_RATE_LIMIT_MAX_WAIT_MS);
+  }
+
+  const safeFallback = Number.isFinite(fallbackMs) && fallbackMs > 0 ? fallbackMs : 90000;
+  return Math.min(safeFallback, SCHEDULED_RATE_LIMIT_MAX_WAIT_MS);
+}
+
+async function withRateLimitRetry(operation, { label, retries = SCHEDULED_RATE_LIMIT_MAX_RETRIES, fallbackWaitMs = SCHEDULED_RATE_LIMIT_WAIT_MS } = {}) {
+  const maxRetries = Number.isFinite(retries) && retries >= 0 ? retries : 0;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isRateLimitedError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      const waitMs = getRateLimitWaitMs(error, fallbackWaitMs);
+      console.warn(`[ScheduledRateLimit][${label || 'tweet'}] 429 on attempt ${attempt + 1}/${maxRetries + 1}. Waiting ${waitMs}ms before retry.`);
+      await wait(waitMs);
+    }
+  }
+}
+
+function getAdaptiveScheduledThreadDelayMs({ index, totalParts, mediaCount = 0 }) {
+  let delayMs = getScheduledThreadDelayMs();
+
+  if (Number.isFinite(totalParts) && totalParts > SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD) {
+    delayMs += Math.min(3000, (totalParts - SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD) * 300);
+  }
+
+  if (Number.isFinite(mediaCount) && mediaCount > 0) {
+    delayMs += Math.min(2400, mediaCount * 450);
+  }
+
+  if (Number.isFinite(index) && index > 5) {
+    delayMs += 350;
+  }
+
+  return Math.min(delayMs, SCHEDULED_RATE_LIMIT_MAX_WAIT_MS);
+}
 
 
 // Helper function to strip markdown formatting
@@ -320,9 +412,6 @@ class ScheduledTweetService {
         } else {
           throw new Error('No valid Twitter credentials found. Please reconnect your Twitter account.');
         }
-        // Test the connection
-        const me = await twitterClient.v2.me();
-        console.log(`✅ Authenticated as @${me.data.username}`);
       } catch (authError) {
         if (authError.code === 401 || authError.status === 401) {
           throw new Error('Twitter authentication failed (401). Token may be expired. Please reconnect your Twitter account.');
@@ -383,7 +472,10 @@ class ScheduledTweetService {
       };
 
 
-      const tweetResponse = await twitterClient.v2.tweet(tweetData);
+      const tweetResponse = await withRateLimitRetry(
+        () => twitterClient.v2.tweet(tweetData),
+        { label: 'scheduled-main-post' }
+      );
       console.log(`✅ Main tweet posted successfully: ${tweetResponse.data.id}`);
 
 
@@ -396,19 +488,32 @@ class ScheduledTweetService {
         let previousTweetId = tweetResponse.data.id;
         for (let i = 0; i < scheduledTweet.thread_tweets.length; i++) {
           try {
-            if (i > 0) {
-              await new Promise(resolve => setTimeout(resolve, 2000));
+            let threadMediaIds = Array.isArray(threadMediaArr) && threadMediaArr[i + 1] ? threadMediaArr[i + 1] : [];
+            const mediaCountForTweet = Array.isArray(threadMediaIds) ? threadMediaIds.length : 0;
+            const totalParts = scheduledTweet.thread_tweets.length + 1;
+            const shouldThrottle = i > 0 || totalParts > SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD || mediaCountForTweet > 0;
+
+            if (shouldThrottle) {
+              const delayMs = getAdaptiveScheduledThreadDelayMs({
+                index: i + 1,
+                totalParts,
+                mediaCount: mediaCountForTweet,
+              });
+              console.log(`[Thread ${i + 1}/${scheduledTweet.thread_tweets.length}] Waiting ${delayMs}ms before next reply`);
+              await wait(delayMs);
             }
             const threadTweet = scheduledTweet.thread_tweets[i];
             const cleanThreadContent = stripMarkdown(threadTweet.content);
             console.log(`[Thread ${i + 1}/${scheduledTweet.thread_tweets.length}] Posting:`, cleanThreadContent);
-            let threadMediaIds = Array.isArray(threadMediaArr) && threadMediaArr[i + 1] ? threadMediaArr[i + 1] : [];
             const threadTweetData = {
               text: decodeHTMLEntities(cleanThreadContent),
               reply: { in_reply_to_tweet_id: previousTweetId },
               ...(Array.isArray(threadMediaIds) && threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
             };
-            const threadResponse = await twitterClient.v2.tweet(threadTweetData);
+            const threadResponse = await withRateLimitRetry(
+              () => twitterClient.v2.tweet(threadTweetData),
+              { label: `scheduled-thread-post-${i + 1}` }
+            );
             previousTweetId = threadResponse.data.id;
             threadTweetIds.push({
               tweetId: threadResponse.data.id,
@@ -420,6 +525,11 @@ class ScheduledTweetService {
             console.error(`❌ Error posting thread tweet ${i + 1}:`, threadErr);
             threadSuccess = false;
             threadError = threadErr;
+            if (isRateLimitedError(threadErr)) {
+              const waitMs = getRateLimitWaitMs(threadErr);
+              const waitSeconds = Math.ceil(waitMs / 1000);
+              console.error(`Stopping remaining thread tweets after rate limit on part ${i + 1}. Retry after ~${waitSeconds}s.`);
+            }
             if (threadErr.code === 403 || (threadErr.data && threadErr.data.status === 403)) {
               console.error('⚠️ Thread failed with 403 - likely duplicate content. Main tweet was posted successfully.');
             }
@@ -483,9 +593,24 @@ class ScheduledTweetService {
         );
         console.log('🛑 Not retrying 403 error (likely duplicate content)');
         return;
-      } else if (error.code === 429) {
-        console.error('❌ Twitter 429 Error - Rate limit exceeded');
-        errorMessage = 'Twitter rate limit exceeded. Will retry later.';
+      } else if (isRateLimitedError(error)) {
+        const retryDelayMs = getRateLimitWaitMs(error);
+        const retryAt = new Date(Date.now() + retryDelayMs);
+        errorMessage = `Twitter rate limit exceeded. Auto-retrying at ${retryAt.toISOString()}.`;
+
+        await pool.query(
+          'UPDATE scheduled_tweets SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+          ['pending', errorMessage, scheduledTweet.id]
+        );
+
+        await scheduledTweetQueue.add(
+          'scheduled-tweet',
+          { scheduledTweetId: scheduledTweet.id },
+          { delay: retryDelayMs }
+        );
+
+        console.warn(`[ScheduledRateLimit] Requeued scheduled tweet ${scheduledTweet.id} to retry at ${retryAt.toISOString()}`);
+        return;
       } else if (error.message && error.message.includes('Invalid consumer tokens')) {
         console.error('❌ Twitter API configuration error');
         errorMessage = 'Twitter API configuration error. Please check TWITTER_API_KEY and TWITTER_API_SECRET environment variables.';

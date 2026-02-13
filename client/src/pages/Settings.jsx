@@ -36,24 +36,36 @@ const Settings = () => {
 
   const refreshAfterOauth = async () => {
     await fetchData();
-    setTimeout(() => {
-      fetchData().catch(() => {});
-    }, 1200);
   };
 
   useEffect(() => {
     fetchData();
     
-    // Check for OAuth 1.0a success parameter
+    // Check for OAuth success/failure parameters from callback redirects
     const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('twitter_connected') === 'true') {
+      toast.success('Twitter account connected successfully!');
+      fetchData().catch(() => {});
+      window.history.replaceState({}, document.title, window.location.pathname);
+      return;
+    }
+
     if (urlParams.get('oauth1_connected') === 'true') {
       toast.success('Media upload permissions enabled successfully!');
       // Clean URL
       window.history.replaceState({}, document.title, window.location.pathname);
+      return;
     }
     
-    if (urlParams.get('error') === 'oauth1_connection_failed') {
-      toast.error('Failed to enable media permissions. Please try again.');
+    const callbackError = urlParams.get('error');
+    if (callbackError) {
+      const errorMessages = {
+        oauth1_connection_failed: 'Failed to enable media permissions. Please try again.',
+        connection_failed: 'Failed to connect Twitter account. Please try again.',
+        oauth_denied: 'Twitter authorization was denied.',
+        no_code: 'Twitter callback did not return an authorization code.',
+      };
+      toast.error(errorMessages[callbackError] || 'Twitter connection failed. Please try again.');
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
@@ -61,25 +73,14 @@ const Settings = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [accountsRes, providersRes] = await Promise.allSettled([
-        twitter.getStatus(),
-        providers.list(),
-      ]);
-
-      if (accountsRes.status === 'fulfilled') {
-        // getStatus returns { account: ... } or { accounts: [...] }
-        const data = accountsRes.value.data;
-        if (Array.isArray(data.accounts)) {
-          setTwitterAccounts(data.accounts);
-        } else if (data.account) {
-          setTwitterAccounts([data.account]);
-        } else {
-          setTwitterAccounts([]);
-        }
-      }
-
-      if (providersRes.status === 'fulfilled') {
-        setAiProviders(providersRes.value.data.providers || []);
+      const accountsRes = await twitter.getStatus();
+      const data = accountsRes.data;
+      if (Array.isArray(data.accounts)) {
+        setTwitterAccounts(data.accounts);
+      } else if (data.account) {
+        setTwitterAccounts([data.account]);
+      } else {
+        setTwitterAccounts([]);
       }
     } catch (error) {
       console.error('Failed to fetch settings data:', error);
