@@ -14,6 +14,7 @@ const Scheduling = lazy(() => import('./pages/Scheduling'));
 const History = lazy(() => import('./pages/History'));
 const Analytics = lazy(() => import('./pages/Analytics'));
 const Settings = lazy(() => import('./pages/Settings'));
+const StrategyBuilder = lazy(() => import('./pages/StrategyBuilder'));
 const AuthCallback = lazy(() => import('./pages/AuthCallback'));
 const Features = lazy(() => import('./pages/Features'));
 const Pricing = lazy(() => import('./pages/Pricing'));
@@ -57,6 +58,7 @@ function App() {
                         <Route path="/scheduling" element={<Scheduling />} />
                         <Route path="/history" element={<History />} />
                         <Route path="/analytics" element={<Analytics />} />
+                        <Route path="/strategy" element={<StrategyBuilder />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/features" element={<Features />} />
                         <Route path="/pricing" element={<Pricing />} />

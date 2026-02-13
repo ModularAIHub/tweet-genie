@@ -25,10 +25,15 @@ const dbError = (...args) => {
   console.error(...args);
 };
 
-const config = process.env.DATABASE_URL
+const databaseUrl = process.env.DATABASE_URL || '';
+const isSupabaseConnection = databaseUrl.includes('supabase.com');
+
+const config = databaseUrl
   ? {
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+      connectionString: databaseUrl,
+      ssl: (process.env.NODE_ENV === 'production' || isSupabaseConnection) 
+        ? { rejectUnauthorized: false } 
+        : false,
     }
   : {
       host: process.env.DB_HOST || 'localhost',
