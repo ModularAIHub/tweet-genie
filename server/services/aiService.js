@@ -140,18 +140,22 @@ class AIService {
       }
     }
 
-    // Build providers array
+    // Build providers array (Priority: Perplexity > Google > OpenAI)
     const providers = [];
+    
+    // 1. Perplexity (Primary for regular content)
     let perplexityKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'perplexity')?.apiKey) : this.perplexityApiKey;
     if (perplexityKey) {
       providers.push({ name: 'perplexity', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey) });
     }
     
+    // 2. Google Gemini (Fallback)
     let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
     if (googleKey) {
       providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
     }
     
+    // 3. OpenAI (Final fallback)
     let openaiKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'openai')?.apiKey) : process.env.OPENAI_API_KEY;
     if (openaiKey) {
       providers.push({ name: 'openai', keyType: preference === 'byok' ? 'BYOOK' : 'platform', method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey) });
@@ -183,6 +187,86 @@ class AIService {
         };
       } catch (error) {
         console.error(`❌ ${provider.name} generation failed:`, error.message);
+        lastError = error;
+        continue;
+      }
+    }
+
+    throw new Error(`All AI providers failed. Last error: ${lastError?.message || 'Unknown error'}`);
+  }
+
+  // Strategy Builder specific generation (prioritizes Gemini for better structured outputs)
+  async generateStrategyContent(prompt, style = 'professional', userToken = null, userId = null) {
+    const sanitizedPrompt = this.validatePrompt(prompt);
+    
+    if (userId) {
+      const rateCheck = checkRateLimit(userId);
+      if (!rateCheck.allowed) {
+        throw new Error(rateCheck.error);
+      }
+    }
+
+    // Fetch user preference
+    let preference = 'platform';
+    let userKeys = [];
+    if (userToken) {
+      try {
+        const prefResult = await getUserPreferenceAndKeys(userToken);
+        preference = prefResult.preference;
+        userKeys = prefResult.userKeys;
+        console.log('[BYOK] Fetched keys for providers:', userKeys.map(k => k.provider).join(', '));
+      } catch (err) {
+        console.error('Failed to fetch user BYOK preference/keys:', err.message);
+      }
+    }
+
+    // Build providers array (Priority: Gemini > Perplexity > OpenAI for Strategy Builder)
+    const providers = [];
+    
+    // 1. Google Gemini (PRIMARY for strategy - best for creative & structured outputs)
+    let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
+    if (googleKey) {
+      providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
+    }
+    
+    // 2. Perplexity (Fallback)
+    let perplexityKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'perplexity')?.apiKey) : this.perplexityApiKey;
+    if (perplexityKey) {
+      providers.push({ name: 'perplexity', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey) });
+    }
+    
+    // 3. OpenAI (Final fallback)
+    let openaiKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'openai')?.apiKey) : process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+      providers.push({ name: 'openai', keyType: preference === 'byok' ? 'BYOOK' : 'platform', method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey) });
+    }
+
+    if (providers.length === 0) {
+      throw new Error('No AI providers configured');
+    }
+
+    console.log(`[Strategy Builder] Available AI providers: ${providers.map(p => p.name).join(', ')}`);
+
+    let lastError = null;
+    for (const provider of providers) {
+      try {
+        if (userId) {
+          console.log(`[AI Key Usage - Strategy] userId=${userId} provider=${provider.name} keyType=${provider.keyType}`);
+        }
+        console.log(`[Strategy Builder] Attempting generation with ${provider.name}...`);
+        const result = await provider.method(sanitizedPrompt, style, null);
+        console.log(`✅ [Strategy Builder] Content generated successfully with ${provider.name}`);
+        
+        const cleanedContent = this.cleanAIOutput(result);
+        
+        return {
+          content: cleanedContent,
+          provider: provider.name,
+          keyType: provider.keyType,
+          success: true
+        };
+      } catch (error) {
+        console.error(`❌ [Strategy Builder] ${provider.name} generation failed:`, error.message);
         lastError = error;
         continue;
       }

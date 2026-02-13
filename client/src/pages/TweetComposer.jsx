@@ -25,6 +25,7 @@ const TweetComposer = () => {
     });
     return () => { mounted = false; };
   }, []);
+
   const {
     // State
     content,
@@ -74,6 +75,21 @@ const TweetComposer = () => {
     handleImageButtonClick,
     fetchScheduledTweets
   } = useTweetComposer();
+
+  // Check for prompt from Strategy Builder (after hook initialization)
+  useEffect(() => {
+    const storedPrompt = localStorage.getItem('composerPrompt');
+    if (storedPrompt && setAiPrompt && handleAIButtonClick) {
+      setAiPrompt(storedPrompt);
+      localStorage.removeItem('composerPrompt'); // Clear after loading
+      // Auto-open AI prompt panel
+      setTimeout(() => {
+        if (!showAIPrompt) {
+          handleAIButtonClick();
+        }
+      }, 100);
+    }
+  }, [setAiPrompt, handleAIButtonClick, showAIPrompt]);
 
   // Show loading state while checking Twitter account
   if (isLoadingTwitterAccounts) {

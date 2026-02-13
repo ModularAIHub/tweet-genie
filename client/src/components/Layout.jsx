@@ -18,6 +18,7 @@ import {
   ChevronDown,
   CreditCard,
   History,
+  Sparkles,
 } from 'lucide-react';
 
 const Layout = ({ children }) => {
@@ -32,6 +33,7 @@ const Layout = ({ children }) => {
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Compose', href: '/compose', icon: Edit3 },
+    { name: 'Strategy Builder', href: '/strategy', icon: Sparkles, badge: 'New' },
     { name: 'Bulk Generation', href: '/bulk-generation', icon: BarChart3 },
     { name: 'Scheduling', href: '/scheduling', icon: Calendar },
     { name: 'History', href: '/history', icon: History },
@@ -119,15 +121,22 @@ const Layout = ({ children }) => {
                 <li key={item.name}>
                   <Link
                     to={item.href}
-                    className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                    className={`flex items-center justify-between px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
                       isActive(item.href)
                         ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-700'
                         : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                     }`}
                     onClick={() => setIsSidebarOpen(false)}
                   >
-                    <Icon className="mr-3 h-5 w-5" />
-                    {item.name}
+                    <div className="flex items-center">
+                      <Icon className="mr-3 h-5 w-5" />
+                      {item.name}
+                    </div>
+                    {item.badge && (
+                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-full">
+                        {item.badge}
+                      </span>
+                    )}
                   </Link>
                 </li>
               );

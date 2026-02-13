@@ -4,6 +4,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 // import cron from 'node-cron';
 
 // Route imports
@@ -22,6 +24,7 @@ import imageGenerationRoutes from './routes/imageGeneration.js';
 import teamRoutes from './routes/team.js';
 import approvalRoutes from './routes/approval.js';
 import cleanupRoutes from './routes/cleanup.js';
+import strategyBuilderRoutes from './routes/strategyBuilder.js';
 
 // Middleware imports
 import { authenticateToken, getAuthPerfStats, resetAuthPerfStats } from './middleware/auth.js';
@@ -34,7 +37,8 @@ import { startScheduledTweetWorker } from './workers/scheduledTweetWorker.js';
 import { runStartupScheduledTweetSync } from './workers/startupScheduledTweetSync.js';
 import { getAnalyticsAutoSyncStatus, startAnalyticsAutoSyncWorker } from './workers/analyticsSyncWorker.js';
 
-dotenv.config();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, './.env') });
 
 // Honeybadger configuration
 Honeybadger.configure({
@@ -229,6 +233,7 @@ app.use('/api/image-generation', authenticateToken, imageGenerationRoutes);
 app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
 app.use('/api/approval', authenticateToken, approvalRoutes);
+app.use('/api/strategy', authenticateToken, strategyBuilderRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
 // Global error handler to always set CORS headers, even for body parser errors (e.g., 413)
