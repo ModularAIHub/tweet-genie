@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Star, Search, Filter, Sparkles, Copy, Check, ExternalLink } from 'lucide-react';
+import { Star, Search, Filter, Sparkles, Copy, Check, ExternalLink, CheckCircle2 } from 'lucide-react';
 import { strategy as strategyApi } from '../../utils/api';
 
 const PromptLibrary = ({ strategyId }) => {
@@ -150,6 +150,13 @@ const PromptLibrary = ({ strategyId }) => {
               key={prompt.id}
               className="bg-white rounded-xl p-5 border border-gray-200 hover:shadow-lg transition-all group relative"
             >
+              {/* Used Checkmark - Large */}
+              {prompt.usage_count > 0 && (
+                <div className="absolute -top-3 -right-3 bg-green-500 rounded-full p-2 shadow-lg border-4 border-white">
+                  <CheckCircle2 className="w-6 h-6 text-white" />
+                </div>
+              )}
+
               {/* Favorite Button */}
               <button
                 onClick={() => toggleFavorite(prompt.id)}
@@ -177,11 +184,14 @@ const PromptLibrary = ({ strategyId }) => {
 
               {/* Usage Stats */}
               {prompt.usage_count > 0 && (
-                <div className="flex items-center gap-2 text-xs text-gray-500 mb-4">
-                  <span>Used {prompt.usage_count} times</span>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 px-2 py-1 rounded-lg font-medium">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Used {prompt.usage_count} {prompt.usage_count === 1 ? 'time' : 'times'}
+                  </div>
                   {prompt.performance_score > 0 && (
-                    <span className="text-green-600 font-medium">
-                      • {prompt.performance_score}% performance
+                    <span className="text-xs text-green-600 font-medium bg-green-50 px-2 py-1 rounded-lg">
+                      {prompt.performance_score}% performance
                     </span>
                   )}
                 </div>

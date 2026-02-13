@@ -25,6 +25,8 @@ import teamRoutes from './routes/team.js';
 import approvalRoutes from './routes/approval.js';
 import cleanupRoutes from './routes/cleanup.js';
 import strategyBuilderRoutes from './routes/strategyBuilder.js';
+import strategyAnalyticsRoutes from './routes/strategy-analytics.js';
+import autopilotRoutes from './routes/autopilot.js';
 
 // Middleware imports
 import { authenticateToken, getAuthPerfStats, resetAuthPerfStats } from './middleware/auth.js';
@@ -36,6 +38,7 @@ import { getScheduledQueueHealth, isScheduledQueueAvailable } from './services/q
 import { startScheduledTweetWorker } from './workers/scheduledTweetWorker.js';
 import { runStartupScheduledTweetSync } from './workers/startupScheduledTweetSync.js';
 import { getAnalyticsAutoSyncStatus, startAnalyticsAutoSyncWorker } from './workers/analyticsSyncWorker.js';
+import { startAutopilotWorker, getAutopilotWorkerStatus } from './workers/autopilotWorker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, './.env') });
@@ -234,6 +237,8 @@ app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
 app.use('/api/approval', authenticateToken, approvalRoutes);
 app.use('/api/strategy', authenticateToken, strategyBuilderRoutes);
+app.use('/api/strategy-analytics', authenticateToken, strategyAnalyticsRoutes);
+app.use('/api/autopilot', authenticateToken, autopilotRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
 // Global error handler to always set CORS headers, even for body parser errors (e.g., 413)
@@ -310,6 +315,10 @@ app.listen(PORT, async () => {
   console.log('[Startup] Scheduled queue health:', queueHealth);
   startAnalyticsAutoSyncWorker();
   console.log('[Startup] Analytics auto sync status:', getAnalyticsAutoSyncStatus());
+  
+  // Start autopilot worker for Strategy Builder
+  startAutopilotWorker();
+  console.log('[Startup] Autopilot worker status:', getAutopilotWorkerStatus());
 
   try {
     await startScheduledTweetWorker();

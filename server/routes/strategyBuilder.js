@@ -24,6 +24,33 @@ router.get('/current', authenticateToken, async (req, res) => {
   }
 });
 
+// Create new strategy
+router.post('/', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const teamId = req.headers['x-team-id'] || null;
+    const { niche, target_audience, posting_frequency, content_goals, topics, status = 'draft' } = req.body;
+
+    if (!niche || !niche.trim()) {
+      return res.status(400).json({ error: 'Niche/strategy name is required' });
+    }
+
+    const strategy = await strategyService.createStrategy(userId, teamId, {
+      niche: niche.trim(),
+      target_audience: target_audience?.trim() || '',
+      posting_frequency: posting_frequency?.trim() || '',
+      content_goals: Array.isArray(content_goals) ? content_goals : [],
+      topics: Array.isArray(topics) ? topics : [],
+      status
+    });
+
+    res.status(201).json(strategy);
+  } catch (error) {
+    console.error('Error creating strategy:', error);
+    res.status(500).json({ error: 'Failed to create strategy' });
+  }
+});
+
 // Send chat message
 router.post('/chat', authenticateToken, async (req, res) => {
   try {

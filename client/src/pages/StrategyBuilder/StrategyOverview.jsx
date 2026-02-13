@@ -179,7 +179,7 @@ const StrategyOverview = ({ strategy, onGeneratePrompts }) => {
               </p>
             </div>
             <button 
-              onClick={() => window.location.href = '#prompts'}
+              onClick={onGeneratePrompts}
               className="px-6 py-3 bg-green-600 text-white rounded-xl font-semibold hover:bg-green-700 transition-colors flex items-center gap-2"
             >
               View Prompts
