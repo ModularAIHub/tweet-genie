@@ -9,19 +9,60 @@ import moment from 'moment-timezone';
 
 const router = express.Router();
 
+const SCHEDULED_STATUS_GROUPS = {
+  pending: ['pending', 'processing'],
+  processing: ['processing'],
+  completed: ['completed', 'partially_completed'],
+  complete: ['completed', 'partially_completed'],
+  posted: ['completed', 'partially_completed'],
+  done: ['completed', 'partially_completed'],
+  partially_completed: ['partially_completed'],
+  failed: ['failed'],
+  error: ['failed'],
+  cancelled: ['cancelled'],
+  canceled: ['cancelled'],
+};
+
+function getNormalizedPagination(page, limit) {
+  const parsedPage = Number.parseInt(page, 10);
+  const parsedLimit = Number.parseInt(limit, 10);
+
+  const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 20;
+
+  return {
+    safePage,
+    safeLimit,
+    offset: (safePage - 1) * safeLimit,
+  };
+}
+
+function resolveScheduledStatuses(rawStatus) {
+  const normalized = String(rawStatus || 'pending').trim().toLowerCase();
+  if (normalized === 'all') {
+    return { requestedStatus: normalized, statuses: null };
+  }
+  return {
+    requestedStatus: normalized,
+    statuses: SCHEDULED_STATUS_GROUPS[normalized] || [normalized],
+  };
+}
+
 // Get scheduled tweets (frontend expects /scheduled)
 router.get('/scheduled', async (req, res) => {
   try {
     const { page = 1, limit = 20, status = 'pending' } = req.query;
-    const offset = (page - 1) * limit;
+    const { safePage, safeLimit, offset } = getNormalizedPagination(page, limit);
+    const { requestedStatus, statuses } = resolveScheduledStatuses(status);
     const teamId = req.headers['x-team-id'] || null;
 
     console.log('[ScheduledTweets] Request:', {
       userId: req.user.id,
       teamId,
-      page,
-      limit,
-      status,
+      page: safePage,
+      limit: safeLimit,
+      status: requestedStatus,
+      statuses,
       headers: req.headers
     });
 
@@ -40,6 +81,13 @@ router.get('/scheduled', async (req, res) => {
       }
 
       // Fetch ALL scheduled tweets for the team (not just user's own)
+      const teamStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
+      const teamParams = statuses
+        ? [teamId, statuses, safeLimit, offset]
+        : [teamId, safeLimit, offset];
+      const teamLimitIdx = statuses ? 3 : 2;
+      const teamOffsetIdx = statuses ? 4 : 3;
+
       const result = await pool.query(
         `SELECT st.*, 
                 ta.twitter_username as account_username,
@@ -48,24 +96,31 @@ router.get('/scheduled', async (req, res) => {
          FROM scheduled_tweets st
          LEFT JOIN team_accounts ta ON st.account_id = ta.id
          LEFT JOIN users u ON st.user_id = u.id
-         WHERE st.team_id = $1 AND st.status = $2
+         WHERE st.team_id = $1 ${teamStatusClause}
          ORDER BY st.scheduled_for ASC
-         LIMIT $3 OFFSET $4`,
-        [teamId, status, limit, offset]
+         LIMIT $${teamLimitIdx} OFFSET $${teamOffsetIdx}`,
+        teamParams
       );
       console.log('[ScheduledTweets] Team scheduled tweets found:', result.rows.length);
       rows = result.rows;
     } else {
       // Fetch only user's personal scheduled tweets (no team_id)
+      const personalStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
+      const personalParams = statuses
+        ? [req.user.id, statuses, safeLimit, offset]
+        : [req.user.id, safeLimit, offset];
+      const personalLimitIdx = statuses ? 3 : 2;
+      const personalOffsetIdx = statuses ? 4 : 3;
+
       const result = await pool.query(
         `SELECT st.*, ta.twitter_username
          FROM scheduled_tweets st
          LEFT JOIN twitter_auth ta ON st.user_id = ta.user_id
          WHERE st.user_id = $1 AND (st.team_id IS NULL OR st.team_id::text = '')
-         AND st.status = $2
+         ${personalStatusClause}
          ORDER BY st.scheduled_for ASC
-         LIMIT $3 OFFSET $4`,
-        [req.user.id, status, limit, offset]
+         LIMIT $${personalLimitIdx} OFFSET $${personalOffsetIdx}`,
+        personalParams
       );
       console.log('[ScheduledTweets] Personal scheduled tweets found:', result.rows.length);
       rows = result.rows;
@@ -436,15 +491,6 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
 
   } catch (error) {
     console.error('Schedule tweet error:', error);
-        if (!teamId && selectedAccountId) {
-          const { rows } = await pool.query(
-            'SELECT team_id FROM team_accounts WHERE id = $1 AND active = true',
-            [selectedAccountId]
-          );
-          if (rows.length > 0) {
-            teamId = rows[0].team_id;
-          }
-        }
     res.status(500).json({ error: 'Failed to schedule tweet' });
   }
 });
@@ -453,7 +499,8 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
 router.get('/', async (req, res) => {
   try {
     const { page = 1, limit = 20, status = 'pending' } = req.query;
-    const offset = (page - 1) * limit;
+    const { safePage, safeLimit, offset } = getNormalizedPagination(page, limit);
+    const { requestedStatus, statuses } = resolveScheduledStatuses(status);
     const teamId = req.headers['x-team-id'] || null;
 
     let rows;
@@ -469,6 +516,13 @@ router.get('/', async (req, res) => {
       }
 
       // Fetch ALL team scheduled tweets
+      const teamStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
+      const teamParams = statuses
+        ? [teamId, statuses, safeLimit, offset]
+        : [teamId, safeLimit, offset];
+      const teamLimitIdx = statuses ? 3 : 2;
+      const teamOffsetIdx = statuses ? 4 : 3;
+
       const result = await pool.query(
         `SELECT st.*, 
                 ta.twitter_username as account_username,
@@ -477,26 +531,43 @@ router.get('/', async (req, res) => {
          FROM scheduled_tweets st
          LEFT JOIN team_accounts ta ON st.account_id = ta.id
          LEFT JOIN users u ON st.user_id = u.id
-         WHERE st.team_id = $1 AND st.status = $2
+         WHERE st.team_id = $1 ${teamStatusClause}
          ORDER BY st.scheduled_for ASC
-         LIMIT $3 OFFSET $4`,
-        [teamId, status, limit, offset]
+         LIMIT $${teamLimitIdx} OFFSET $${teamOffsetIdx}`,
+        teamParams
       );
       rows = result.rows;
     } else {
       // Fetch personal scheduled tweets only
+      const personalStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
+      const personalParams = statuses
+        ? [req.user.id, statuses, safeLimit, offset]
+        : [req.user.id, safeLimit, offset];
+      const personalLimitIdx = statuses ? 3 : 2;
+      const personalOffsetIdx = statuses ? 4 : 3;
+
       const result = await pool.query(
         `SELECT st.*, ta.twitter_username
          FROM scheduled_tweets st
          LEFT JOIN twitter_auth ta ON st.user_id = ta.user_id
          WHERE st.user_id = $1 AND (st.team_id IS NULL OR st.team_id::text = '')
-         AND st.status = $2
+         ${personalStatusClause}
          ORDER BY st.scheduled_for ASC
-         LIMIT $3 OFFSET $4`,
-        [req.user.id, status, limit, offset]
+         LIMIT $${personalLimitIdx} OFFSET $${personalOffsetIdx}`,
+        personalParams
       );
       rows = result.rows;
     }
+
+    console.log('[ScheduledTweets] List query:', {
+      userId: req.user.id,
+      teamId,
+      page: safePage,
+      limit: safeLimit,
+      requestedStatus,
+      statuses,
+      resultCount: rows.length
+    });
 
     res.json({ scheduled_tweets: rows });
 

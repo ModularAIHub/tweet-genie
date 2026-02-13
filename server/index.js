@@ -23,7 +23,7 @@ import approvalRoutes from './routes/approval.js';
 import cleanupRoutes from './routes/cleanup.js';
 
 // Middleware imports
-import { authenticateToken } from './middleware/auth.js';
+import { authenticateToken, getAuthPerfStats, resetAuthPerfStats } from './middleware/auth.js';
 // import { errorHandler } from './middleware/errorHandler.js';
 
 // Service imports
@@ -34,7 +34,7 @@ dotenv.config();
 // Honeybadger configuration
 Honeybadger.configure({
   apiKey: 'hbp_A8vjKimYh8OnyV8J3djwKrpqc4OniI3a4MJg', // Replace with your real key
-  environment: process.env.NODE_ENV || 'development'
+  environment: process.env.NODE_ENV || 'development',
 });
 
 import proTeamRoutes from './routes/proTeam.js';
@@ -43,20 +43,45 @@ const app = express();
 // Honeybadger request handler (must be first middleware)
 app.use(Honeybadger.requestHandler);
 const PORT = process.env.PORT || 3002;
+const REQUEST_DEBUG = process.env.REQUEST_DEBUG === 'true';
+const CORS_DEBUG = process.env.CORS_DEBUG === 'true';
+const AUTH_PERF_ROUTE_ENABLED =
+  process.env.AUTH_PERF_ROUTE_ENABLED === 'true' ||
+  (process.env.AUTH_PERF_ROUTE_ENABLED !== 'false' && process.env.NODE_ENV !== 'production');
+
+const requestLog = (...args) => {
+  if (REQUEST_DEBUG) {
+    console.log(...args);
+  }
+};
+
+const corsLog = (...args) => {
+  if (CORS_DEBUG) {
+    console.log(...args);
+  }
+};
+
+const corsWarn = (...args) => {
+  if (CORS_DEBUG) {
+    console.warn(...args);
+  }
+};
 
 // Basic middleware with CSP configuration for development
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: ["'self'", "http://localhost:*", "https://api.twitter.com", "https://upload.twitter.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "https:", "http:"],
-      fontSrc: ["'self'", "https:", "data:"],
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        connectSrc: ["'self'", 'http://localhost:*', 'https://api.twitter.com', 'https://upload.twitter.com'],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:', 'http:'],
+        fontSrc: ["'self'", 'https:', 'data:'],
+      },
     },
-  },
-}));
+  })
+);
 
 // --- CORS: must be first middleware! ---
 const allowedOrigins = [
@@ -65,6 +90,7 @@ const allowedOrigins = [
   'https://api.suitegenie.in',
   'https://tweetapi.suitegenie.in',
 ];
+
 function isAllowedOrigin(origin) {
   if (!origin) return false;
   try {
@@ -80,23 +106,27 @@ function isAllowedOrigin(origin) {
     return false;
   }
 }
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  console.log('🌐 CORS request from origin:', origin);
-  
+  corsLog('[cors] request origin:', origin);
+
   if (isAllowedOrigin(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id'
+    );
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
-    console.log('✅ CORS headers set for:', origin);
+    corsLog('[cors] headers set for:', origin);
   } else {
-    console.warn('⚠️ Origin not allowed:', origin);
+    corsWarn('[cors] origin not allowed:', origin);
   }
-  
+
   if (req.method === 'OPTIONS') {
-    console.log('✅ Preflight OPTIONS request handled');
+    corsLog('[cors] preflight handled');
     return res.sendStatus(200);
   }
   next();
@@ -112,51 +142,71 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', service: 'Tweet Genie' });
 });
 
+// Auth middleware performance debug endpoint
+app.get('/api/perf/auth-stats', authenticateToken, (req, res) => {
+  if (!AUTH_PERF_ROUTE_ENABLED) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
+  const shouldReset = String(req.query.reset || '').toLowerCase() === 'true';
+  if (shouldReset) {
+    resetAuthPerfStats();
+  }
+
+  return res.json({
+    success: true,
+    reset: shouldReset,
+    stats: getAuthPerfStats(),
+  });
+});
+
 // CSRF token endpoint (for frontend compatibility)
 app.get('/api/csrf-token', (req, res) => {
   try {
-    console.log('🔐 CSRF token requested');
-    res.json({ 
+    res.json({
       csrfToken: 'dummy-csrf-token',
-      message: 'CSRF protection not implemented in Tweet Genie' 
+      message: 'CSRF protection not implemented in Tweet Genie',
     });
   } catch (error) {
-    console.error('❌ CSRF token error:', error);
+    console.error('CSRF token error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // Routes
-
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', secureAuthRoutes);
 app.use('/', ssoRoutes); // SSO routes at root level
 
 // Twitter routes with conditional authentication
-app.use('/api/twitter', (req, res, next) => {
-  // Public OAuth endpoints that don't need authentication
-  const publicEndpoints = [
-    '/team-connect',
-    '/team-connect-oauth1', 
-    '/callback',
-    '/connect',
-    '/connect-oauth1',
-    '/test-team-accounts'
-  ];
-  
-  // Check if this is a public endpoint
-  const isPublicEndpoint = publicEndpoints.some(endpoint => req.path === endpoint);
-  
-  if (isPublicEndpoint) {
-    // Skip authentication for public OAuth endpoints
-    console.log(`🔓 Public endpoint accessed: ${req.path}`);
-    next();
-  } else {
-    // Apply authentication for all other endpoints
-    console.log(`🔐 Protected endpoint accessed: ${req.path}`);
-    authenticateToken(req, res, next);
-  }
-}, twitterRoutes);
+app.use(
+  '/api/twitter',
+  (req, res, next) => {
+    // Public OAuth endpoints that don't need authentication
+    const publicEndpoints = [
+      '/team-connect',
+      '/team-connect-oauth1',
+      '/callback',
+      '/connect',
+      '/connect-oauth1',
+      '/test-team-accounts',
+    ];
+
+    // Check if this is a public endpoint
+    const isPublicEndpoint = publicEndpoints.some((endpoint) => req.path === endpoint);
+
+    if (isPublicEndpoint) {
+      // Skip authentication for public OAuth endpoints
+      requestLog(`[router] public endpoint: ${req.path}`);
+      next();
+    } else {
+      // Apply authentication for all other endpoints
+      requestLog(`[router] protected endpoint: ${req.path}`);
+      authenticateToken(req, res, next);
+    }
+  },
+  twitterRoutes
+);
 app.use('/api/pro-team', proTeamRoutes); // <-- Register proTeam routes here
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);
@@ -169,7 +219,6 @@ app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
 app.use('/api/approval', authenticateToken, approvalRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
-
 
 // Global error handler to always set CORS headers, even for body parser errors (e.g., 413)
 app.use((err, req, res, next) => {
@@ -186,9 +235,8 @@ app.use((err, req, res, next) => {
     return res.status(413).json({ error: 'Request entity too large', details: err.message });
   }
   // Default to 500
-  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+  return res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
 });
-
 
 // Start BullMQ worker for scheduled tweets
 import './workers/scheduledTweetWorker.js';

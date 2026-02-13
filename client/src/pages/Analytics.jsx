@@ -73,12 +73,26 @@ const Analytics = () => {
   const [analyticsData, setAnalyticsData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [timeframe, setTimeframe] = useState('30');
+  const [timeframe, setTimeframe] = useState('50');
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   // Store updated/skipped tweet IDs as Sets for O(1) lookup
   const [updatedTweetIds, setUpdatedTweetIds] = useState(new Set());
   const [skippedTweetIds, setSkippedTweetIds] = useState(new Set());
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  const [syncSummary, setSyncSummary] = useState(null);
+
+  const fetchSyncStatus = async () => {
+    try {
+      const response = await api.get('/api/analytics/sync-status');
+      if (response.data?.syncStatus) {
+        setSyncStatus(response.data.syncStatus);
+      }
+    } catch (syncStatusError) {
+      console.error('Failed to fetch sync status:', syncStatusError);
+    }
+  };
 
   const fetchAnalytics = async () => {
     try {
@@ -102,30 +116,118 @@ const Analytics = () => {
   };
 
   const syncAnalytics = async () => {
+    const nextAllowedAtMs = syncStatus?.nextAllowedAt ? new Date(syncStatus.nextAllowedAt).getTime() : 0;
+    if (nextAllowedAtMs && nextAllowedAtMs > Date.now()) {
+      const waitMinutes = Math.max(1, Math.ceil((nextAllowedAtMs - Date.now()) / 60000));
+      setError(`Sync cooldown active. Please wait about ${waitMinutes} minutes.`);
+      return;
+    }
+
     try {
       setSyncing(true);
       setError(null);
-      const response = await api.post('/api/analytics/sync');
+      const response = await api.post('/api/analytics/sync', {}, { timeout: 120000 });
+      if (response.data?.syncStatus) {
+        setSyncStatus(response.data.syncStatus);
+      }
+      if (response.data?.stats) {
+        setSyncSummary({
+          runId: response.data.runId || null,
+          updated: response.data.stats.metrics_updated || 0,
+          errors: response.data.stats.errors || 0,
+          processed: response.data.stats.total_processed || 0,
+          totalCandidates: response.data.stats.total_candidates ?? null,
+          remaining: response.data.stats.remaining ?? null,
+          skipReasons: response.data.stats.skip_reasons || null,
+          debugInfo: response.data.debugInfo || null,
+          at: new Date().toISOString(),
+        });
+      }
+
       if (response.data.success) {
-        // Show success message with stats
-        const stats = response.data.stats;
-        alert(`Sync completed!\n📊 Metrics updated: ${stats.metrics_updated}\n${stats.errors > 0 ? `❌ Errors: ${stats.errors}` : ''}`);
-        // Store updated/skipped tweet IDs as Sets
+        const stats = response.data.stats || { metrics_updated: 0, errors: 0 };
+        const resetTime = response.data.resetTime ? new Date(response.data.resetTime) : null;
+        const resetTimeLocal = resetTime ? resetTime.toLocaleString() : null;
+
+        if (response.data.rateLimited) {
+          setError(
+            resetTimeLocal
+              ? `Rate limit reached after syncing ${stats.metrics_updated} tweets. Try again after ${resetTimeLocal}.`
+              : `Rate limit reached after syncing ${stats.metrics_updated} tweets. Please try again later.`
+          );
+        } else if ((stats.metrics_updated || 0) === 0) {
+          const debugInfo = response.data.debugInfo;
+          const details = debugInfo
+            ? `Posted tweets with IDs: ${debugInfo.totalPostedWithTweetId}, stale: ${debugInfo.staleCount}, zero metrics: ${debugInfo.zeroMetricsCount}.`
+            : 'No eligible tweets matched current sync criteria.';
+          setError(`Sync completed but updated 0 tweets. ${details}`);
+        } else {
+          alert(`Sync completed!\nMetrics updated: ${stats.metrics_updated}\n${stats.errors > 0 ? `Errors: ${stats.errors}` : ''}`);
+        }
+
         setUpdatedTweetIds(new Set(response.data.updatedTweetIds || []));
         setSkippedTweetIds(new Set(response.data.skippedTweetIds || []));
-        // Refresh analytics data
         await fetchAnalytics();
       }
     } catch (error) {
       console.error('Failed to sync analytics:', error);
-      if (error.response?.status === 429) {
+
+      if (error.code === 'ECONNABORTED') {
+        setError('Sync is taking longer than expected. Please wait and refresh analytics in a minute.');
+      } else if (error.response?.status === 409) {
         const errorData = error.response.data;
-        if (errorData.type === 'rate_limit') {
+        if (errorData?.syncStatus) {
+          setSyncStatus(errorData.syncStatus);
+        }
+        if (errorData?.stats) {
+          setSyncSummary({
+            runId: errorData.runId || null,
+            updated: errorData.stats.metrics_updated || 0,
+            errors: errorData.stats.errors || 0,
+            processed: errorData.stats.total_processed || 0,
+            totalCandidates: errorData.stats.total_candidates ?? null,
+            remaining: errorData.stats.remaining ?? null,
+            skipReasons: errorData.stats.skip_reasons || null,
+            debugInfo: errorData.debugInfo || null,
+            at: new Date().toISOString(),
+          });
+        }
+        if (errorData?.type === 'sync_in_progress') {
+          setError('A sync is already running for this account. Please wait for it to finish.');
+        } else {
+          setError('Sync is already in progress.');
+        }
+      } else if (error.response?.status === 429) {
+        const errorData = error.response.data;
+        if (errorData?.syncStatus) {
+          setSyncStatus(errorData.syncStatus);
+        }
+        if (errorData?.stats) {
+          setSyncSummary({
+            runId: errorData.runId || null,
+            updated: errorData.stats.metrics_updated || 0,
+            errors: errorData.stats.errors || 0,
+            processed: errorData.stats.total_processed || 0,
+            totalCandidates: errorData.stats.total_candidates ?? null,
+            remaining: errorData.stats.remaining ?? null,
+            skipReasons: errorData.stats.skip_reasons || null,
+            debugInfo: errorData.debugInfo || null,
+            at: new Date().toISOString(),
+          });
+        }
+        if (errorData.type === 'sync_cooldown') {
+          const nextAllowedAt = errorData.syncStatus?.nextAllowedAt;
+          const nextTime = nextAllowedAt ? new Date(nextAllowedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+          const waitMinutes = errorData.waitMinutes || 1;
+          setError(nextTime
+            ? `Sync cooldown active. Try again at ${nextTime} (about ${waitMinutes} minutes).`
+            : `Sync cooldown active. Please wait about ${waitMinutes} minutes.`);
+        } else if (errorData.type === 'rate_limit') {
           const resetTime = new Date(errorData.resetTime);
           const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
           const resetTimeLocal = resetTime.toLocaleString(undefined, { timeZone: userTimezone });
           const waitMinutes = errorData.waitMinutes;
-          setError(`🐦 Twitter API rate limit exceeded. Your external tweets will sync automatically at ${resetTimeLocal} (in about ${waitMinutes} minutes). Please try again then.`);
+          setError(`Twitter API rate limit exceeded. Please try again around ${resetTimeLocal} (about ${waitMinutes} minutes).`);
           setUpdatedTweetIds(new Set(errorData.updatedTweetIds || []));
           setSkippedTweetIds(new Set(errorData.skippedTweetIds || []));
         } else {
@@ -138,12 +240,19 @@ const Analytics = () => {
       }
     } finally {
       setSyncing(false);
+      await fetchSyncStatus();
     }
   };
 
   useEffect(() => {
     fetchAnalytics();
+    fetchSyncStatus();
   }, [timeframe, selectedAccount]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   if (loading) {
     return (
@@ -337,6 +446,21 @@ const Analytics = () => {
     { id: 'recommendations', label: 'Recommendations', icon: Target }
   ];
 
+  const nextAllowedAtMs = syncStatus?.nextAllowedAt ? new Date(syncStatus.nextAllowedAt).getTime() : 0;
+  const cooldownRemainingMs = Math.max(0, nextAllowedAtMs - currentTime);
+  const cooldownMinutes = Math.max(1, Math.ceil(cooldownRemainingMs / 60000));
+  const isCooldownActive = cooldownRemainingMs > 0;
+  const syncButtonDisabled = syncing || syncStatus?.inProgress || isCooldownActive;
+  const syncStatusLabel = syncStatus?.lastResult === 'rate_limited'
+    ? 'Rate limited by Twitter'
+    : syncStatus?.lastResult || null;
+  const nextAllowedLabel = syncStatus?.nextAllowedAt
+    ? new Date(syncStatus.nextAllowedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+  const lastSyncLabel = syncStatus?.lastSyncAt
+    ? new Date(syncStatus.lastSyncAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -350,33 +474,86 @@ const Analytics = () => {
         <div className="flex items-center space-x-4">
           <select
             value={timeframe}
-            onChange={(e) => setTimeframe(parseInt(e.target.value))}
+            onChange={(e) => setTimeframe(String(e.target.value))}
             className="input w-auto"
           >
-            <option value={7}>Last 7 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={90}>Last 90 days</option>
+            <option value={14}>Last 14 days</option>
+            <option value={50}>Last 50 days</option>
+            <option value={120}>Last 120 days</option>
             <option value={365}>Last year</option>
           </select>
-          <button
-            onClick={syncAnalytics}
-            disabled={syncing}
-            className="btn btn-secondary btn-md"
-          >
-            {syncing ? (
-              <>
-                <LoadingSpinner size="sm" className="mr-2" />
-                Syncing...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Sync Latest
-              </>
+          <div className="flex flex-col items-start">
+            <button
+              onClick={syncAnalytics}
+              disabled={syncButtonDisabled}
+              className="btn btn-secondary btn-md disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {syncing ? (
+                <>
+                  <LoadingSpinner size="sm" className="mr-2" />
+                  Syncing...
+                </>
+              ) : syncStatus?.inProgress ? (
+                <>
+                  <LoadingSpinner size="sm" className="mr-2" />
+                  Sync In Progress
+                </>
+              ) : isCooldownActive ? (
+                <>
+                  <Clock className="h-4 w-4 mr-2" />
+                  Wait {cooldownMinutes}m
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Sync Latest
+                </>
+              )}
+            </button>
+            {(syncStatus?.inProgress || isCooldownActive || nextAllowedLabel) && (
+              <p className="text-xs text-gray-500 mt-1">
+                {syncStatus?.inProgress
+                  ? 'Sync already running for this account.'
+                  : isCooldownActive && nextAllowedLabel
+                    ? `Next sync at ${nextAllowedLabel}`
+                    : nextAllowedLabel
+                      ? `Last sync cooldown ended at ${nextAllowedLabel}`
+                      : ''}
+              </p>
             )}
-          </button>
+          </div>
         </div>
       </div>
+
+      {(syncSummary || syncStatus) && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex flex-wrap items-center gap-4 text-sm text-blue-900">
+            {syncSummary && (
+              <>
+                <span><strong>Updated:</strong> {syncSummary.updated}</span>
+                <span><strong>Errors:</strong> {syncSummary.errors}</span>
+                <span><strong>Processed:</strong> {syncSummary.processed}</span>
+                {syncSummary.totalCandidates !== null && <span><strong>Candidates:</strong> {syncSummary.totalCandidates}</span>}
+                {syncSummary.remaining !== null && <span><strong>Left:</strong> {syncSummary.remaining}</span>}
+                {syncSummary.runId && <span><strong>Run:</strong> {syncSummary.runId}</span>}
+              </>
+            )}
+            {lastSyncLabel && <span><strong>Last Sync:</strong> {lastSyncLabel}</span>}
+            {nextAllowedLabel && <span><strong>Next Sync:</strong> {nextAllowedLabel}</span>}
+            {syncStatusLabel && <span><strong>Status:</strong> {syncStatusLabel}</span>}
+          </div>
+          {syncSummary?.skipReasons && (
+            <p className="text-xs text-blue-700 mt-2">
+              Skip reasons: {Object.entries(syncSummary.skipReasons).map(([k, v]) => `${k}=${v}`).join(', ')}
+            </p>
+          )}
+          {syncSummary?.debugInfo && (
+            <p className="text-xs text-blue-700 mt-1">
+              Debug: posted_with_ids={syncSummary.debugInfo.totalPostedWithTweetId}, stale={syncSummary.debugInfo.staleCount}, zero_metrics={syncSummary.debugInfo.zeroMetricsCount}, platform={syncSummary.debugInfo.platformCount}, external={syncSummary.debugInfo.externalCount}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Navigation Tabs */}
       <div className="border-b border-gray-200">
@@ -1559,3 +1736,4 @@ const Analytics = () => {
 };
 
 export default Analytics;
+

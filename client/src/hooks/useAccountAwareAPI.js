@@ -78,8 +78,10 @@ export const useAccountAwareAPI = () => {
   /**
    * Get analytics for the currently selected account
    */
-  const getAnalytics = async (timeRange = '7d') => {
-    return fetchForCurrentAccount(`/api/analytics/overview?timeRange=${timeRange}`);
+  const getAnalytics = async (timeRange = '50d') => {
+    const parsedDays = parseInt(String(timeRange).replace(/d$/i, ''), 10);
+    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 50;
+    return fetchForCurrentAccount(`/api/analytics/overview?days=${days}`);
   };
 
   /**

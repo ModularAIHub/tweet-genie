@@ -2,24 +2,99 @@ import express from 'express';
 import pool from '../config/database.js';
 import { TwitterApi } from 'twitter-api-v2';
 import { authenticateToken, validateTwitterConnection } from '../middleware/auth.js';
+import { buildTeamAccountFilter, resolveTeamAccountScope } from '../utils/teamAccountScope.js';
 
 const router = express.Router();
+const SYNC_COOLDOWN_MS = Number(process.env.ANALYTICS_SYNC_COOLDOWN_MS || 3 * 60 * 1000);
+const SYNC_CANDIDATE_LIMIT = Number(process.env.ANALYTICS_SYNC_CANDIDATE_LIMIT || 20);
+const SYNC_LOOKBACK_DAYS = Number(process.env.ANALYTICS_SYNC_LOOKBACK_DAYS || 30);
+const SYNC_STALE_AFTER_MINUTES = Number(process.env.ANALYTICS_SYNC_STALE_AFTER_MINUTES || 360);
+const SYNC_FORCE_REFRESH_COUNT = Number(process.env.ANALYTICS_SYNC_FORCE_REFRESH_COUNT || 0);
+const syncState = new Map();
+
+const getSyncKey = (userId, accountId) => `${userId}:${accountId || 'personal'}`;
+
+const getSyncStatusPayload = (key, now = Date.now()) => {
+  const state = syncState.get(key) || {};
+  const nextAllowedAt = Number.isFinite(state.nextAllowedAt) ? state.nextAllowedAt : null;
+  const lastSyncAt = Number.isFinite(state.lastSyncAt) ? state.lastSyncAt : null;
+
+  return {
+    inProgress: !!state.inProgress,
+    cooldownMs: SYNC_COOLDOWN_MS,
+    nextAllowedAt: nextAllowedAt ? new Date(nextAllowedAt).toISOString() : null,
+    cooldownRemainingMs: nextAllowedAt && nextAllowedAt > now ? nextAllowedAt - now : 0,
+    lastSyncAt: lastSyncAt ? new Date(lastSyncAt).toISOString() : null,
+    lastResult: state.lastResult || null,
+  };
+};
+
+const setSyncState = (key, patch) => {
+  const existing = syncState.get(key) || {};
+  syncState.set(key, { ...existing, ...patch });
+};
+
+const isRateLimitError = (error) => {
+  const status = error?.code || error?.status || error?.response?.status;
+  if (status === 429 || status === '429') return true;
+
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('429') || message.includes('rate limit');
+};
+
+const getRateLimitResetInfo = (error) => {
+  const fallbackTimestamp = Date.now() + 15 * 60 * 1000;
+  const candidates = [
+    error?.rateLimit?.reset ? Number(error.rateLimit.reset) * 1000 : null,
+    error?.headers?.['x-rate-limit-reset'] ? Number(error.headers['x-rate-limit-reset']) * 1000 : null,
+    error?.response?.headers?.['x-rate-limit-reset'] ? Number(error.response.headers['x-rate-limit-reset']) * 1000 : null,
+  ].filter((value) => Number.isFinite(value) && value > Date.now());
+
+  const resetTimestamp = candidates.length > 0 ? candidates[0] : fallbackTimestamp;
+  const waitMinutes = Math.max(1, Math.ceil((resetTimestamp - Date.now()) / 60000));
+
+  return { resetTimestamp, waitMinutes };
+};
 
 // Get analytics overview
 router.get('/overview', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { days = 30 } = req.query;
-    const accountId = req.headers['x-selected-account-id'];
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const parsedDays = Number.parseInt(req.query.days, 10);
+    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
+    const teamAccountScope = await resolveTeamAccountScope(pool, userId, selectedAccountId);
 
-    console.log('📊 Fetching analytics overview for user:', userId, 'account:', accountId, 'days:', days);
+    if (selectedAccountId && !teamAccountScope) {
+      console.warn('[analytics/overview] Selected account not accessible, using default user scope', {
+        userId,
+        selectedAccountId,
+      });
+    }
+
+    console.log('📊 Fetching analytics overview for user:', userId, 'account:', selectedAccountId, 'days:', days, 'scopeIds:', teamAccountScope?.relatedAccountIds || null);
 
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    startDate.setDate(startDate.getDate() - days);
+
+    const buildScopedStatement = (baseSql, baseParams, alias = '') => {
+      const { clause, params } = buildTeamAccountFilter({
+        scope: teamAccountScope,
+        alias,
+        startIndex: baseParams.length + 1,
+        includeOrphanFallback: true,
+        orphanUserId: userId,
+      });
+
+      return {
+        sql: `${baseSql}${clause}`,
+        params: [...baseParams, ...params],
+      };
+    };
 
     // Get comprehensive tweet metrics (both platform and external tweets)
-    const { rows: tweetMetrics } = await pool.query(
-      `SELECT 
+    const tweetMetricsStatement = buildScopedStatement(
+      `SELECT
         COUNT(*) as total_tweets,
         COUNT(CASE WHEN source = 'platform' THEN 1 END) as platform_tweets,
         COUNT(CASE WHEN source = 'external' THEN 1 END) as external_tweets,
@@ -34,8 +109,8 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(AVG(retweets), 0) as avg_retweets,
         COALESCE(AVG(replies), 0) as avg_replies,
         COALESCE(SUM(likes + retweets + replies + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0)), 0) as total_engagement,
-        CASE WHEN COALESCE(SUM(impressions), 0) > 0 THEN 
-          ROUND((COALESCE(SUM(likes + retweets + replies + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0)), 0)::DECIMAL / COALESCE(SUM(impressions), 1)::DECIMAL) * 100, 2) 
+        CASE WHEN COALESCE(SUM(impressions), 0) > 0 THEN
+          ROUND((COALESCE(SUM(likes + retweets + replies + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0)), 0)::DECIMAL / COALESCE(SUM(impressions), 1)::DECIMAL) * 100, 2)
         ELSE 0 END as engagement_rate,
         COUNT(CASE WHEN likes > 0 OR retweets > 0 OR replies > 0 OR COALESCE(quote_count, 0) > 0 OR COALESCE(bookmark_count, 0) > 0 THEN 1 END) as engaging_tweets,
         COALESCE(MAX(impressions), 0) as max_impressions,
@@ -44,17 +119,17 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(MAX(replies), 0) as max_replies,
         COALESCE(MAX(quote_count), 0) as max_quotes,
         COALESCE(MAX(bookmark_count), 0) as max_bookmarks
-       FROM tweets 
-       WHERE user_id = $1 
-       AND (created_at >= $2 OR external_created_at >= $2) 
-       AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+       FROM tweets
+       WHERE user_id = $1
+       AND (created_at >= $2 OR external_created_at >= $2)
+       AND status = 'posted'`,
+      [userId, startDate]
     );
+    const { rows: tweetMetrics } = await pool.query(tweetMetricsStatement.sql, tweetMetricsStatement.params);
 
     // Get daily metrics for chart
-    const { rows: dailyMetrics } = await pool.query(
-      `SELECT 
+    const dailyMetricsStatement = buildScopedStatement(
+      `SELECT
         DATE(COALESCE(external_created_at, created_at)) as date,
         COUNT(*) as tweets_count,
         COUNT(CASE WHEN source = 'platform' THEN 1 END) as platform_tweets,
@@ -66,49 +141,49 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(SUM(quote_count), 0) as quotes,
         COALESCE(SUM(bookmark_count), 0) as bookmarks,
         COALESCE(SUM(likes + retweets + replies + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0)), 0) as total_engagement,
-        CASE WHEN COALESCE(SUM(impressions), 0) > 0 THEN 
-          ROUND((COALESCE(SUM(likes + retweets + replies + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0)), 0)::DECIMAL / COALESCE(SUM(impressions), 1)::DECIMAL) * 100, 2) 
+        CASE WHEN COALESCE(SUM(impressions), 0) > 0 THEN
+          ROUND((COALESCE(SUM(likes + retweets + replies + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0)), 0)::DECIMAL / COALESCE(SUM(impressions), 1)::DECIMAL) * 100, 2)
         ELSE 0 END as engagement_rate,
         COALESCE(AVG(impressions), 0) as avg_impressions_per_tweet,
         COALESCE(AVG(likes), 0) as avg_likes_per_tweet
-       FROM tweets 
-       WHERE user_id = $1 
-       AND (created_at >= $2 OR external_created_at >= $2) 
+       FROM tweets
+       WHERE user_id = $1
+       AND (created_at >= $2 OR external_created_at >= $2)
        AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY DATE(COALESCE(external_created_at, created_at))
        ORDER BY date DESC
        LIMIT 30`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: dailyMetrics } = await pool.query(dailyMetricsStatement.sql, dailyMetricsStatement.params);
 
     // Get all tweets for analytics (not just top performing)
-    const { rows: tweets } = await pool.query(
-      `SELECT 
-        id, content, 
-        COALESCE(impressions, 0) as impressions, 
-        COALESCE(likes, 0) as likes, 
-        COALESCE(retweets, 0) as retweets, 
-        COALESCE(replies, 0) as replies, 
-        COALESCE(quote_count, 0) as quote_count, 
+    const tweetsStatement = buildScopedStatement(
+      `SELECT
+        id, content,
+        COALESCE(impressions, 0) as impressions,
+        COALESCE(likes, 0) as likes,
+        COALESCE(retweets, 0) as retweets,
+        COALESCE(replies, 0) as replies,
+        COALESCE(quote_count, 0) as quote_count,
         COALESCE(bookmark_count, 0) as bookmark_count,
         source, COALESCE(external_created_at, created_at) as created_at,
         (COALESCE(impressions, 0) + COALESCE(likes, 0) * 2 + COALESCE(retweets, 0) * 3 + COALESCE(replies, 0) * 2 + COALESCE(quote_count, 0) * 2 + COALESCE(bookmark_count, 0)) as engagement_score,
-        CASE WHEN COALESCE(impressions, 0) > 0 THEN 
-          ROUND(((COALESCE(likes, 0) + COALESCE(retweets, 0) + COALESCE(replies, 0) + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0))::DECIMAL / impressions::DECIMAL) * 100, 2) 
+        CASE WHEN COALESCE(impressions, 0) > 0 THEN
+          ROUND(((COALESCE(likes, 0) + COALESCE(retweets, 0) + COALESCE(replies, 0) + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0))::DECIMAL / impressions::DECIMAL) * 100, 2)
         ELSE 0 END as tweet_engagement_rate
-       FROM tweets 
-       WHERE user_id = $1 
-       AND (created_at >= $2 OR external_created_at >= $2) 
+       FROM tweets
+       WHERE user_id = $1
+       AND (created_at >= $2 OR external_created_at >= $2)
        AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        ORDER BY created_at DESC`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: tweets } = await pool.query(tweetsStatement.sql, tweetsStatement.params);
 
     // Get hourly engagement patterns
-    const { rows: hourlyEngagement } = await pool.query(
-      `SELECT 
+    const hourlyEngagementStatement = buildScopedStatement(
+      `SELECT
         EXTRACT(HOUR FROM created_at) as hour,
         COUNT(*) as tweets_count,
         COALESCE(AVG(impressions), 0) as avg_impressions,
@@ -116,17 +191,17 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(AVG(retweets), 0) as avg_retweets,
         COALESCE(AVG(replies), 0) as avg_replies,
         COALESCE(AVG(likes + retweets + replies), 0) as avg_engagement
-       FROM tweets 
+       FROM tweets
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY EXTRACT(HOUR FROM created_at)
        ORDER BY avg_engagement DESC`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: hourlyEngagement } = await pool.query(hourlyEngagementStatement.sql, hourlyEngagementStatement.params);
 
     // Get content type performance
-    const { rows: contentTypeMetrics } = await pool.query(
-      `SELECT 
+    const contentTypeStatement = buildScopedStatement(
+      `SELECT
         CASE WHEN content IS NOT NULL AND array_length(string_to_array(content, '---'), 1) > 1 THEN 'thread' ELSE 'single' END as content_type,
         COUNT(*) as tweets_count,
         COALESCE(AVG(impressions), 0) as avg_impressions,
@@ -134,29 +209,29 @@ router.get('/overview', authenticateToken, async (req, res) => {
         COALESCE(AVG(retweets), 0) as avg_retweets,
         COALESCE(AVG(replies), 0) as avg_replies,
         COALESCE(AVG(likes + retweets + replies), 0) as avg_total_engagement
-       FROM tweets 
+       FROM tweets
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted' AND content IS NOT NULL
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY CASE WHEN content IS NOT NULL AND array_length(string_to_array(content, '---'), 1) > 1 THEN 'thread' ELSE 'single' END`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: contentTypeMetrics } = await pool.query(contentTypeStatement.sql, contentTypeStatement.params);
 
     // Get growth metrics (compare with previous period)
     const previousStartDate = new Date(startDate);
-    previousStartDate.setDate(previousStartDate.getDate() - parseInt(days));
+    previousStartDate.setDate(previousStartDate.getDate() - days);
 
-    const { rows: previousMetrics } = await pool.query(
-      `SELECT 
+    const previousMetricsStatement = buildScopedStatement(
+      `SELECT
         COUNT(*) as prev_total_tweets,
         COALESCE(SUM(impressions), 0) as prev_total_impressions,
         COALESCE(SUM(likes), 0) as prev_total_likes,
         COALESCE(SUM(retweets), 0) as prev_total_retweets,
         COALESCE(SUM(replies), 0) as prev_total_replies
-       FROM tweets 
-       WHERE user_id = $1 AND created_at >= $2 AND created_at < $3 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $4::TEXT' : ''}`,
-      accountId ? [userId, previousStartDate, startDate, accountId] : [userId, previousStartDate, startDate]
+       FROM tweets
+       WHERE user_id = $1 AND created_at >= $2 AND created_at < $3 AND status = 'posted'`,
+      [userId, previousStartDate, startDate]
     );
+    const { rows: previousMetrics } = await pool.query(previousMetricsStatement.sql, previousMetricsStatement.params);
 
     console.log('✅ Analytics overview data fetched successfully');
 
@@ -168,15 +243,35 @@ router.get('/overview', authenticateToken, async (req, res) => {
       content_type_metrics: contentTypeMetrics || [],
       growth: {
         current: tweetMetrics[0] || {},
-        previous: previousMetrics[0] || {}
-      }
+        previous: previousMetrics[0] || {},
+      },
     });
 
   } catch (error) {
     console.error('❌ Analytics overview error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch analytics overview',
-      message: error.message 
+      message: error.message,
+    });
+  }
+});
+
+router.get('/sync-status', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const key = getSyncKey(userId, selectedAccountId);
+
+    return res.json({
+      success: true,
+      syncStatus: getSyncStatusPayload(key),
+    });
+  } catch (error) {
+    console.error('Sync status error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to fetch sync status',
+      message: error.message,
     });
   }
 });
@@ -186,242 +281,541 @@ router.get('/overview', authenticateToken, async (req, res) => {
 router.post('/sync', validateTwitterConnection, async (req, res) => {
   let updatedCount = 0;
   let errorCount = 0;
-  let rateLimitExceeded = false;
-  const updatedTweetIds = [];
-  const skippedTweetIds = [];
+  const updatedTweetIds = new Set();
+  const skippedTweetIds = new Set();
+  const skipReasons = {
+    missing_tweet_id: 0,
+    not_found: 0,
+    lookup_error: 0,
+    no_public_metrics: 0,
+    rate_limited: 0,
+  };
+  let syncKey = null;
+  let ownsSyncLock = false;
+  let tweetsToUpdate = [];
+  let debugInfo = null;
+  const syncRunId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const log = (message, extra = null) => {
+    if (extra) {
+      console.log(`[ANALYTICS_SYNC][${syncRunId}] ${message}`, extra);
+    } else {
+      console.log(`[ANALYTICS_SYNC][${syncRunId}] ${message}`);
+    }
+  };
 
   try {
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const teamAccountScope = twitterAccount?.isTeamAccount
+      ? await resolveTeamAccountScope(pool, userId, selectedAccountId)
+      : null;
+    const effectiveAccountId = teamAccountScope?.selectedAccountId || null;
+    syncKey = getSyncKey(userId, effectiveAccountId);
 
-    console.log('� Starting ENHANCED Twitter sync with rate limiting...');
+    log('Sync requested', {
+      userId,
+      selectedAccountId,
+      effectiveAccountId,
+      isTeamAccount: !!twitterAccount?.isTeamAccount,
+      scopeAccountIds: teamAccountScope?.relatedAccountIds || null,
+      allowOrphanFallback: !!teamAccountScope?.allowOrphanFallback,
+    });
 
-    // Initialize Twitter client
+    if (selectedAccountId && twitterAccount?.isTeamAccount && !teamAccountScope) {
+      log('Selected team account not accessible for sync, falling back to default user scope', { selectedAccountId });
+    } else if (selectedAccountId && !effectiveAccountId) {
+      log('Ignoring x-selected-account-id for personal sync', { selectedAccountId });
+    }
+
+    const now = Date.now();
+    const currentSyncStatus = getSyncStatusPayload(syncKey, now);
+
+    if (currentSyncStatus.inProgress) {
+      return res.status(409).json({
+        success: false,
+        error: 'Analytics sync already in progress',
+        message: 'A sync request is already running for this account. Please wait for it to finish.',
+        type: 'sync_in_progress',
+        syncStatus: currentSyncStatus,
+      });
+    }
+
+    if (currentSyncStatus.cooldownRemainingMs > 0) {
+      const waitMinutes = Math.max(1, Math.ceil(currentSyncStatus.cooldownRemainingMs / 60000));
+      return res.status(429).json({
+        success: false,
+        error: 'Sync cooldown active',
+        message: `Please wait about ${waitMinutes} minutes before syncing again.`,
+        type: 'sync_cooldown',
+        waitMinutes,
+        syncStatus: currentSyncStatus,
+      });
+    }
+
+    setSyncState(syncKey, {
+      inProgress: true,
+      startedAt: now,
+      lastResult: 'running',
+    });
+    ownsSyncLock = true;
+
+    log('Sync lock acquired', { syncKey });
+
     let twitterClient;
     if (twitterAccount.access_token) {
       try {
         twitterClient = new TwitterApi(twitterAccount.access_token);
       } catch (oauth2Error) {
         console.error('OAuth 2.0 initialization failed:', oauth2Error);
+        setSyncState(syncKey, { inProgress: false, lastResult: 'auth_error' });
         return res.status(401).json({
           error: 'Twitter authentication failed',
           message: 'Please reconnect your Twitter account.',
-          type: 'twitter_auth_error'
+          type: 'twitter_auth_error',
+          syncStatus: getSyncStatusPayload(syncKey),
         });
       }
     } else {
       throw new Error('No OAuth 2.0 access token found');
     }
 
-    // Test connection with rate limit awareness
-    try {
-      await twitterClient.v2.me();
-      console.log('✅ Connection test successful');
-    } catch (testError) {
-      if (testError.code === 429) {
-        // ENHANCED: Use real reset time here too
-        let resetTimestamp = Date.now() + 15 * 60 * 1000;
-        if (testError.rateLimit?.reset) {
-          resetTimestamp = testError.rateLimit.reset * 1000;
-        } else if (testError.headers?.['x-rate-limit-reset']) {
-          resetTimestamp = parseInt(testError.headers['x-rate-limit-reset'], 10) * 1000;
-        } else if (testError.response?.headers?.['x-rate-limit-reset']) {
-          resetTimestamp = parseInt(testError.response.headers['x-rate-limit-reset'], 10) * 1000;
-        }
-        const resetTime = new Date(resetTimestamp);
-        const waitMinutes = Math.ceil((resetTimestamp - Date.now()) / 60000);
-        return res.status(429).json({
-          error: 'Twitter API rate limit exceeded during connection test',
-          message: `Please wait until ${resetTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST before trying again.`,
-          resetTime: resetTime.toISOString(),
-          waitMinutes: waitMinutes,
-          type: 'rate_limit'
-        });
-      }
-      throw testError;
-    }
+    const syncScopeParams = [userId];
+    const { clause: syncScopeClause, params: syncScopeFilterParams } = buildTeamAccountFilter({
+      scope: teamAccountScope,
+      startIndex: syncScopeParams.length + 1,
+      includeOrphanFallback: true,
+      orphanUserId: userId,
+    });
+    syncScopeParams.push(...syncScopeFilterParams);
+    const lookbackDaysIndex = syncScopeParams.push(SYNC_LOOKBACK_DAYS);
+    const forceRefreshCountIndex = syncScopeParams.push(SYNC_FORCE_REFRESH_COUNT);
+    const staleAfterMinutesIndex = syncScopeParams.push(SYNC_STALE_AFTER_MINUTES);
+    const candidateLimitIndex = syncScopeParams.push(SYNC_CANDIDATE_LIMIT);
 
-    // Get tweets to sync with conservative limits to avoid rate limits
-    const { rows: tweetsToUpdate } = await pool.query(
-      `SELECT id, tweet_id, content, created_at FROM tweets 
-       WHERE user_id = $1 AND status = 'posted' AND source = 'platform'
-       AND created_at >= NOW() - INTERVAL '7 days'
-       AND tweet_id IS NOT NULL
-       AND (impressions IS NULL OR impressions = 0 OR updated_at < NOW() - INTERVAL '6 hours')
-       ORDER BY created_at DESC LIMIT 15`,  // Reduced from 20 to 15 tweets per sync
-      [userId]
-    );
+    log('Sync candidate config', {
+      lookbackDays: SYNC_LOOKBACK_DAYS,
+      staleAfterMinutes: SYNC_STALE_AFTER_MINUTES,
+      forceRefreshCount: SYNC_FORCE_REFRESH_COUNT,
+      candidateLimit: SYNC_CANDIDATE_LIMIT,
+    });
 
-    console.log(`Found ${tweetsToUpdate.length} tweets to sync`);
+    const syncQuery = `
+      WITH scoped_tweets AS (
+        SELECT
+          id,
+          tweet_id,
+          content,
+          created_at,
+          external_created_at,
+          updated_at,
+          impressions,
+          COALESCE(external_created_at, created_at) AS sort_ts
+        FROM tweets
+        WHERE user_id = $1
+        ${syncScopeClause}
+        AND status = 'posted'
+        AND source IN ('platform', 'external')
+        AND tweet_id IS NOT NULL
+        AND COALESCE(external_created_at, created_at) >= NOW() - ($${lookbackDaysIndex}::int * INTERVAL '1 day')
+      ),
+      force_candidates AS (
+        SELECT id, tweet_id, content, created_at, sort_ts
+        FROM scoped_tweets
+        ORDER BY sort_ts DESC
+        LIMIT $${forceRefreshCountIndex}
+      ),
+      stale_candidates AS (
+        SELECT id, tweet_id, content, created_at, sort_ts
+        FROM scoped_tweets
+        WHERE
+          impressions IS NULL
+          OR impressions = 0
+          OR updated_at IS NULL
+          OR updated_at < NOW() - ($${staleAfterMinutesIndex}::int * INTERVAL '1 minute')
+        ORDER BY sort_ts DESC
+        LIMIT $${candidateLimitIndex}
+      )
+      SELECT id, tweet_id, content, created_at
+      FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY id ORDER BY sort_ts DESC) AS rn
+        FROM (
+          SELECT * FROM force_candidates
+          UNION ALL
+          SELECT * FROM stale_candidates
+        ) AS unioned
+      ) AS deduped
+      WHERE rn = 1
+      ORDER BY created_at DESC
+      LIMIT $${candidateLimitIndex}
+    `;
+
+    const syncResult = await pool.query(syncQuery, syncScopeParams);
+    tweetsToUpdate = syncResult.rows || [];
+
+    log('Tweets selected for sync', {
+      totalCandidates: tweetsToUpdate.length,
+      sampleTweetIds: tweetsToUpdate.slice(0, 5).map((row) => row.tweet_id),
+    });
 
     if (tweetsToUpdate.length === 0) {
+      const diagParams = [userId];
+      const { clause: diagScopeClause, params: diagScopeFilterParams } = buildTeamAccountFilter({
+        scope: teamAccountScope,
+        startIndex: diagParams.length + 1,
+        includeOrphanFallback: true,
+        orphanUserId: userId,
+      });
+      diagParams.push(...diagScopeFilterParams);
+      const diagLookbackDaysIndex = diagParams.push(SYNC_LOOKBACK_DAYS);
+      const diagStaleAfterMinutesIndex = diagParams.push(SYNC_STALE_AFTER_MINUTES);
+
+      const diagnosticsResult = await pool.query(
+        `SELECT
+          COUNT(*)::int AS total_posted_with_tweet_id,
+          COUNT(*) FILTER (WHERE source = 'platform')::int AS platform_count,
+          COUNT(*) FILTER (WHERE source = 'external')::int AS external_count,
+          COUNT(*) FILTER (WHERE impressions IS NULL OR impressions = 0)::int AS zero_metrics_count,
+          COUNT(*) FILTER (
+            WHERE updated_at IS NULL OR updated_at < NOW() - ($${diagStaleAfterMinutesIndex}::int * INTERVAL '1 minute')
+          )::int AS stale_count
+         FROM tweets
+         WHERE user_id = $1
+         ${diagScopeClause}
+         AND status = 'posted'
+         AND source IN ('platform', 'external')
+         AND tweet_id IS NOT NULL
+         AND COALESCE(external_created_at, created_at) >= NOW() - ($${diagLookbackDaysIndex}::int * INTERVAL '1 day')`,
+        diagParams
+      );
+
+      const diagnostics = diagnosticsResult.rows?.[0] || {};
+      debugInfo = {
+        totalPostedWithTweetId: diagnostics.total_posted_with_tweet_id || 0,
+        platformCount: diagnostics.platform_count || 0,
+        externalCount: diagnostics.external_count || 0,
+        zeroMetricsCount: diagnostics.zero_metrics_count || 0,
+        staleCount: diagnostics.stale_count || 0,
+      };
+
+      log('No candidates found for sync', debugInfo);
+
+      const completedAt = Date.now();
+      setSyncState(syncKey, {
+        inProgress: false,
+        lastSyncAt: completedAt,
+        nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+        lastResult: 'noop',
+      });
+
       return res.json({
         success: true,
         message: 'No tweets need syncing at this time',
-        stats: { metrics_updated: 0, errors: 0, total_processed: 0 }
+        stats: {
+          metrics_updated: 0,
+          errors: 0,
+          total_processed: 0,
+          total_candidates: 0,
+          skip_reasons: skipReasons,
+        },
+        debugInfo,
+        runId: syncRunId,
+        syncStatus: getSyncStatusPayload(syncKey),
       });
     }
 
-    // Conservative batching to avoid rate limits
-    const batchSize = 3; // Reduced from 5 to 3
-    const requestDelay = 2000; // 2 seconds between requests (increased from 1s)
-    const batchDelay = 5000;  // 5 seconds between batches (increased from 3s)
+    // Use batch lookups to keep calls low and avoid client timeouts.
+    const batchSize = 50;
 
     for (let i = 0; i < tweetsToUpdate.length; i += batchSize) {
       const batch = tweetsToUpdate.slice(i, i + batchSize);
-      console.log(`Processing tweet ${i + 1}/${tweetsToUpdate.length}`);
+      const tweetIds = batch
+        .map((tweet) => String(tweet.tweet_id || '').trim())
+        .filter(Boolean);
+
+      if (tweetIds.length === 0) {
+        skipReasons.missing_tweet_id += batch.length;
+        for (const tweet of batch) skippedTweetIds.add(tweet.id);
+        log('Batch skipped due to missing tweet IDs', { batchSize: batch.length });
+        continue;
+      }
+
+      log('Fetching batch metrics', {
+        batchIndex: Math.floor(i / batchSize) + 1,
+        batchSize: tweetIds.length,
+        firstTweetId: tweetIds[0],
+      });
+
+      let batchLookup;
+      try {
+        batchLookup = await twitterClient.v2.tweets(tweetIds, {
+          'tweet.fields': ['public_metrics', 'created_at'],
+        });
+      } catch (batchError) {
+        if (isRateLimitError(batchError)) {
+          const { resetTimestamp, waitMinutes } = getRateLimitResetInfo(batchError);
+          const resetTime = new Date(resetTimestamp);
+          const rateLimitedCount = Math.max(0, tweetsToUpdate.length - i);
+
+          for (let j = i; j < tweetsToUpdate.length; j++) {
+            skippedTweetIds.add(tweetsToUpdate[j].id);
+          }
+          skipReasons.rate_limited += rateLimitedCount;
+          errorCount += rateLimitedCount;
+
+          const completedAt = Date.now();
+          setSyncState(syncKey, {
+            inProgress: false,
+            lastSyncAt: completedAt,
+            nextAllowedAt: Math.max(resetTimestamp, completedAt + SYNC_COOLDOWN_MS),
+            lastResult: 'rate_limited',
+          });
+
+          const payload = {
+            success: updatedCount > 0,
+            partial: updatedCount > 0,
+            rateLimited: true,
+            error: 'Twitter API rate limit exceeded',
+            message: `Rate limit reached after updating ${updatedCount} tweets. Please retry in about ${waitMinutes} minutes.`,
+            type: 'rate_limit',
+            resetTime: resetTime.toISOString(),
+            waitMinutes,
+            updatedTweetIds: Array.from(updatedTweetIds),
+            skippedTweetIds: Array.from(skippedTweetIds),
+            stats: {
+              metrics_updated: updatedCount,
+              errors: errorCount,
+              total_processed: updatedCount + skippedTweetIds.size,
+              total_candidates: tweetsToUpdate.length,
+              remaining: Math.max(0, tweetsToUpdate.length - (updatedCount + skippedTweetIds.size)),
+              skip_reasons: skipReasons,
+            },
+            debugInfo,
+            runId: syncRunId,
+            syncStatus: getSyncStatusPayload(syncKey),
+          };
+
+          log('Rate limit encountered during batch sync', {
+            waitMinutes,
+            updatedCount,
+            skippedCount: skippedTweetIds.size,
+          });
+
+          return updatedCount > 0 ? res.status(200).json(payload) : res.status(429).json(payload);
+        }
+
+        throw batchError;
+      }
+
+      const tweetData = Array.isArray(batchLookup?.data) ? batchLookup.data : [];
+      const lookupErrors = Array.isArray(batchLookup?.errors) ? batchLookup.errors : [];
+      log('Batch lookup complete', {
+        returnedData: tweetData.length,
+        returnedErrors: lookupErrors.length,
+      });
+      const metricsByTweetId = new Map(
+        tweetData
+          .filter((item) => item?.id && item?.public_metrics)
+          .map((item) => [String(item.id), item.public_metrics])
+      );
+      const errorByTweetId = new Map(
+        lookupErrors
+          .filter((item) => item?.resource_id || item?.value)
+          .map((item) => [String(item.resource_id || item.value), item])
+      );
+
       for (const tweet of batch) {
-        if (!tweet.tweet_id || rateLimitExceeded) {
-          skippedTweetIds.push(tweet.id);
+        const tweetId = String(tweet.tweet_id || '');
+        const publicMetrics = metricsByTweetId.get(tweetId);
+
+        if (publicMetrics) {
+          await pool.query(
+            `UPDATE tweets SET
+              impressions = $1,
+              likes = $2,
+              retweets = $3,
+              replies = $4,
+              quote_count = $5,
+              bookmark_count = $6,
+              updated_at = CURRENT_TIMESTAMP
+             WHERE id = $7`,
+            [
+              publicMetrics.impression_count || 0,
+              publicMetrics.like_count || 0,
+              publicMetrics.retweet_count || 0,
+              publicMetrics.reply_count || 0,
+              publicMetrics.quote_count || 0,
+              publicMetrics.bookmark_count || 0,
+              tweet.id
+            ]
+          );
+          updatedCount++;
+          updatedTweetIds.add(tweet.id);
+          log('Tweet metrics updated', {
+            tweetId,
+            dbId: tweet.id,
+            impressions: publicMetrics.impression_count || 0,
+            likes: publicMetrics.like_count || 0,
+            retweets: publicMetrics.retweet_count || 0,
+            replies: publicMetrics.reply_count || 0,
+          });
           continue;
         }
-        try {
-          // Add random jitter to avoid predictable patterns (1-2 seconds)
-          const jitter = 1000 + Math.random() * 1000;
-          await new Promise(resolve => setTimeout(resolve, requestDelay + jitter));
-          console.log(`⏳ [${i + 1}/${tweetsToUpdate.length}] Fetching metrics for tweet ${tweet.tweet_id}...`);
-          const tweetData = await twitterClient.v2.singleTweet(tweet.tweet_id, {
-            'tweet.fields': ['public_metrics', 'created_at']
-          });
-          if (tweetData.data && tweetData.data.public_metrics) {
-            const publicMetrics = tweetData.data.public_metrics;
-            await pool.query(
-              `UPDATE tweets SET 
-                impressions = $1,
-                likes = $2,
-                retweets = $3,
-                replies = $4,
-                quote_count = $5,
-                bookmark_count = $6,
-                updated_at = CURRENT_TIMESTAMP
-               WHERE id = $7`,
-              [
-                publicMetrics.impression_count || 0,
-                publicMetrics.like_count || 0,
-                publicMetrics.retweet_count || 0,
-                publicMetrics.reply_count || 0,
-                publicMetrics.quote_count || 0,
-                publicMetrics.bookmark_count || 0,
-                tweet.id
-              ]
-            );
-            updatedCount++;
-            updatedTweetIds.push(tweet.id);
-            console.log(`✅ Updated tweet ${tweet.tweet_id}: ${publicMetrics.impression_count} impressions`);
-          } else {
-            console.log(`⚠️ No metrics data for tweet ${tweet.tweet_id}`);
-            skippedTweetIds.push(tweet.id);
-          }
-        } catch (tweetError) {
-          console.error(`❌ Error for tweet ${tweet.tweet_id}:`, {
-            message: tweetError.message,
-            code: tweetError.code,
-            status: tweetError.status
-          });
+
+        const tweetLookupError = errorByTweetId.get(tweetId);
+        const isNotFoundError =
+          tweetLookupError?.type?.includes('resource-not-found') ||
+          String(tweetLookupError?.title || '').toLowerCase().includes('not found');
+
+        if (isNotFoundError) {
+          await pool.query(
+            `UPDATE tweets SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+            [tweet.id]
+          );
+          skipReasons.not_found++;
+          log('Tweet not found on Twitter, marked deleted', { tweetId, dbId: tweet.id });
+        } else if (tweetLookupError) {
           errorCount++;
-          if (tweetError.code === 429) {
-            console.log('🛑 Rate limit hit, stopping sync completely');
-            // Debug logging to see what headers we get
-            console.log('Available reset sources:', {
-              rateLimit: !!tweetError.rateLimit?.reset,
-              headers: !!tweetError.headers?.['x-rate-limit-reset'],
-              responseHeaders: !!tweetError.response?.headers?.['x-rate-limit-reset']
-            });
-            rateLimitExceeded = true;
-            // Mark all remaining tweets as skipped
-            for (let j = i + 1; j < tweetsToUpdate.length; j++) {
-              skippedTweetIds.push(tweetsToUpdate[j].id);
-            }
-            // Try to get x-rate-limit-reset from error headers
-            let resetTimestamp = Date.now() + 15 * 60 * 1000;
-            if (tweetError.rateLimit?.reset) {
-              resetTimestamp = tweetError.rateLimit.reset * 1000;
-            } else if (tweetError.headers?.['x-rate-limit-reset']) {
-              resetTimestamp = parseInt(tweetError.headers['x-rate-limit-reset'], 10) * 1000;
-            } else if (tweetError.response?.headers?.['x-rate-limit-reset']) {
-              resetTimestamp = parseInt(tweetError.response.headers['x-rate-limit-reset'], 10) * 1000;
-            }
-            const resetTime = new Date(resetTimestamp);
-            const waitMinutes = Math.ceil((resetTimestamp - Date.now()) / 60000);
-            return res.status(429).json({
-              error: 'Twitter API rate limit exceeded',
-              message: `Sync stopped due to rate limits. ${updatedCount} tweets were updated successfully. Please wait ${waitMinutes} minutes before trying again.`,
-              type: 'rate_limit',
-              resetTime: resetTime.toISOString(),
-              waitMinutes: waitMinutes,
-              updatedTweetIds,
-              skippedTweetIds,
-              stats: {
-                metrics_updated: updatedCount,
-                errors: errorCount,
-                total_processed: i + 1
-              }
-            });
-          } else if (tweetError.code === 144 || tweetError.status === 404) {
-            console.log(`Tweet ${tweet.tweet_id} not found, marking as deleted`);
-            await pool.query(
-              `UPDATE tweets SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-              [tweet.id]
-            );
-            skippedTweetIds.push(tweet.id);
-          } else {
-            skippedTweetIds.push(tweet.id);
-          }
+          skipReasons.lookup_error++;
+          log('Tweet lookup error', {
+            tweetId,
+            dbId: tweet.id,
+            title: tweetLookupError.title,
+            detail: tweetLookupError.detail,
+            type: tweetLookupError.type,
+          });
+        } else {
+          skipReasons.no_public_metrics++;
+          log('Tweet skipped: no public metrics in lookup response', { tweetId, dbId: tweet.id });
         }
-      }
-      // Long delay between batches to respect rate limits
-      if (i + batchSize < tweetsToUpdate.length && !rateLimitExceeded) {
-        const nextBatch = Math.min(i + batchSize, tweetsToUpdate.length);
-        console.log(`⏸️ Batch complete (${i + batch.length}/${tweetsToUpdate.length}). Waiting ${batchDelay/1000}s before next batch...`);
-        await new Promise(resolve => setTimeout(resolve, batchDelay));
+
+        skippedTweetIds.add(tweet.id);
       }
     }
 
-    console.log(`✅ Sync complete: ${updatedCount} updated, ${errorCount} errors`);
+    const completedAt = Date.now();
+    setSyncState(syncKey, {
+      inProgress: false,
+      lastSyncAt: completedAt,
+      nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+      lastResult: errorCount > 0 ? 'completed_with_errors' : 'completed',
+    });
+
+    log('Sync complete', {
+      updatedCount,
+      errorCount,
+      skippedCount: skippedTweetIds.size,
+      totalCandidates: tweetsToUpdate.length,
+      remaining: Math.max(0, tweetsToUpdate.length - (updatedCount + skippedTweetIds.size)),
+      skipReasons,
+    });
 
     res.json({
       success: true,
       message: `Analytics sync completed! Updated ${updatedCount} tweets${errorCount > 0 ? `, ${errorCount} errors` : ''}`,
-      updatedTweetIds,
-      skippedTweetIds,
+      updatedTweetIds: Array.from(updatedTweetIds),
+      skippedTweetIds: Array.from(skippedTweetIds),
       stats: {
         metrics_updated: updatedCount,
         errors: errorCount,
-        total_processed: tweetsToUpdate.length
-      }
+        total_processed: updatedCount + skippedTweetIds.size,
+        total_candidates: tweetsToUpdate.length,
+        remaining: Math.max(0, tweetsToUpdate.length - (updatedCount + skippedTweetIds.size)),
+        skip_reasons: skipReasons,
+      },
+      debugInfo,
+      runId: syncRunId,
+      syncStatus: getSyncStatusPayload(syncKey),
     });
 
   } catch (error) {
-    console.error('❌ Sync error:', error);
-    
-    if (error.code === 429) {
-      // Try to get x-rate-limit-reset from error headers
-      let resetTimestamp = Date.now() + 15 * 60 * 1000;
-      if (error.rateLimit?.reset) {
-        resetTimestamp = error.rateLimit.reset * 1000;
-      } else if (error.headers?.['x-rate-limit-reset']) {
-        resetTimestamp = parseInt(error.headers['x-rate-limit-reset'], 10) * 1000;
-      } else if (error.response?.headers?.['x-rate-limit-reset']) {
-        resetTimestamp = parseInt(error.response.headers['x-rate-limit-reset'], 10) * 1000;
-      }
+    log('Sync error', {
+      message: error?.message,
+      code: error?.code,
+      status: error?.status || error?.response?.status,
+    });
+
+    if (isRateLimitError(error)) {
+      const { resetTimestamp, waitMinutes } = getRateLimitResetInfo(error);
       const resetTime = new Date(resetTimestamp);
-      const waitMinutes = Math.ceil((resetTimestamp - Date.now()) / 60000);
-      return res.status(429).json({ 
+      const completedAt = Date.now();
+      const rateLimitedRemainder = Math.max(0, tweetsToUpdate.length - (updatedCount + skippedTweetIds.size));
+      if (rateLimitedRemainder > 0) {
+        errorCount += rateLimitedRemainder;
+        skipReasons.rate_limited += rateLimitedRemainder;
+      } else if (errorCount === 0 && updatedCount === 0) {
+        errorCount = 1;
+      }
+
+      if (syncKey) {
+        setSyncState(syncKey, {
+          inProgress: false,
+          lastSyncAt: completedAt,
+          nextAllowedAt: Math.max(resetTimestamp, completedAt + SYNC_COOLDOWN_MS),
+          lastResult: 'rate_limited',
+        });
+      }
+
+      const payload = {
+        success: updatedCount > 0,
+        partial: updatedCount > 0,
+        rateLimited: true,
         error: 'Twitter API rate limit exceeded',
-        message: `Please wait ${waitMinutes} minutes before trying again. We updated ${updatedCount} tweets so far.`,
+        message: `Please wait ${waitMinutes} minutes before trying again. Updated ${updatedCount} tweets so far.`,
         resetTime: resetTime.toISOString(),
-        waitMinutes: waitMinutes,
+        waitMinutes,
         type: 'rate_limit',
-        stats: { metrics_updated: updatedCount, errors: errorCount }
+        updatedTweetIds: Array.from(updatedTweetIds),
+        skippedTweetIds: Array.from(skippedTweetIds),
+        stats: {
+          metrics_updated: updatedCount,
+          errors: errorCount,
+          total_processed: updatedCount + skippedTweetIds.size,
+          total_candidates: tweetsToUpdate.length,
+          remaining: Math.max(0, tweetsToUpdate.length - (updatedCount + skippedTweetIds.size)),
+          skip_reasons: skipReasons,
+        },
+        debugInfo,
+        runId: syncRunId,
+        syncStatus: syncKey ? getSyncStatusPayload(syncKey) : null,
+      };
+
+      return updatedCount > 0 ? res.status(200).json(payload) : res.status(429).json(payload);
+    }
+
+    if (syncKey) {
+      const completedAt = Date.now();
+      setSyncState(syncKey, {
+        inProgress: false,
+        lastSyncAt: completedAt,
+        nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+        lastResult: 'error',
       });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       error: 'Failed to sync analytics data',
       message: error.message || 'Unknown error occurred',
       type: 'server_error',
-      stats: { metrics_updated: updatedCount, errors: errorCount }
+      updatedTweetIds: Array.from(updatedTweetIds),
+      skippedTweetIds: Array.from(skippedTweetIds),
+      stats: {
+        metrics_updated: updatedCount,
+        errors: errorCount,
+        total_processed: updatedCount + skippedTweetIds.size,
+        total_candidates: tweetsToUpdate.length,
+        remaining: Math.max(0, tweetsToUpdate.length - (updatedCount + skippedTweetIds.size)),
+        skip_reasons: skipReasons,
+      },
+      debugInfo,
+      runId: syncRunId,
+      syncStatus: syncKey ? getSyncStatusPayload(syncKey) : null,
     });
+  } finally {
+    if (syncKey && ownsSyncLock) {
+      setSyncState(syncKey, { inProgress: false });
+    }
   }
 });
 
@@ -445,14 +839,31 @@ router.get('/debug-tokens', validateTwitterConnection, async (req, res) => {
 router.get('/engagement', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { days = 30 } = req.query;
-    const accountId = req.headers['x-selected-account-id'];
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const parsedDays = Number.parseInt(req.query.days, 10);
+    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
+    const teamAccountScope = await resolveTeamAccountScope(pool, userId, selectedAccountId);
 
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    startDate.setDate(startDate.getDate() - days);
+
+    const buildScopedStatement = (baseSql, baseParams, alias = '') => {
+      const { clause, params } = buildTeamAccountFilter({
+        scope: teamAccountScope,
+        alias,
+        startIndex: baseParams.length + 1,
+        includeOrphanFallback: true,
+        orphanUserId: userId,
+      });
+
+      return {
+        sql: `${baseSql}${clause}`,
+        params: [...baseParams, ...params],
+      };
+    };
 
     // Get engagement patterns by content type
-    const { rows: engagementPatterns } = await pool.query(
+    const engagementPatternsStatement = buildScopedStatement(
       `SELECT 
         CASE 
           WHEN content LIKE '%#%' THEN 'with_hashtags'
@@ -478,14 +889,14 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         ELSE 0 END as avg_engagement_rate
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY hashtag_usage, content_type, content_length
        ORDER BY avg_total_engagement DESC`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: engagementPatterns } = await pool.query(engagementPatternsStatement.sql, engagementPatternsStatement.params);
 
     // Get best performing times
-    const { rows: timeAnalysis } = await pool.query(
+    const timeAnalysisStatement = buildScopedStatement(
       `SELECT 
         EXTRACT(DOW FROM created_at) as day_of_week,
         EXTRACT(HOUR FROM created_at) as hour_of_day,
@@ -497,16 +908,16 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         ELSE 0 END as avg_engagement_rate
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY EXTRACT(DOW FROM created_at), EXTRACT(HOUR FROM created_at)
        HAVING COUNT(*) >= 2
        ORDER BY avg_engagement DESC
        LIMIT 20`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: timeAnalysis } = await pool.query(timeAnalysisStatement.sql, timeAnalysisStatement.params);
 
     // Get content performance insights
-    const { rows: contentInsights } = await pool.query(
+    const contentInsightsStatement = buildScopedStatement(
       `SELECT 
         'hashtag_performance' as insight_type,
         CASE WHEN content LIKE '%#%' THEN 'with_hashtags' ELSE 'without_hashtags' END as category,
@@ -515,9 +926,8 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         AVG(likes + retweets + replies) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY CASE WHEN content LIKE '%#%' THEN 'with_hashtags' ELSE 'without_hashtags' END
-       
+        
        UNION ALL
        
        SELECT 
@@ -528,10 +938,10 @@ router.get('/engagement', authenticateToken, async (req, res) => {
         AVG(likes + retweets + replies) as avg_engagement
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY CASE WHEN array_length(string_to_array(content, '---'), 1) > 1 THEN 'threads' ELSE 'single_tweets' END`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: contentInsights } = await pool.query(contentInsightsStatement.sql, contentInsightsStatement.params);
 
     res.json({
       engagement_patterns: engagementPatterns,
@@ -549,14 +959,31 @@ router.get('/engagement', authenticateToken, async (req, res) => {
 router.get('/audience', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { days = 30 } = req.query;
-    const accountId = req.headers['x-selected-account-id'];
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const parsedDays = Number.parseInt(req.query.days, 10);
+    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
+    const teamAccountScope = await resolveTeamAccountScope(pool, userId, selectedAccountId);
 
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    startDate.setDate(startDate.getDate() - days);
+
+    const buildScopedStatement = (baseSql, baseParams, alias = '') => {
+      const { clause, params } = buildTeamAccountFilter({
+        scope: teamAccountScope,
+        alias,
+        startIndex: baseParams.length + 1,
+        includeOrphanFallback: true,
+        orphanUserId: userId,
+      });
+
+      return {
+        sql: `${baseSql}${clause}`,
+        params: [...baseParams, ...params],
+      };
+    };
 
     // Get reach and impression distribution
-    const { rows: reachMetrics } = await pool.query(
+    const reachMetricsStatement = buildScopedStatement(
       `SELECT 
         DATE(created_at) as date,
         SUM(impressions) as total_impressions,
@@ -568,14 +995,14 @@ router.get('/audience', authenticateToken, async (req, res) => {
         MIN(impressions) as min_impressions
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY DATE(created_at)
        ORDER BY date DESC`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: reachMetrics } = await pool.query(reachMetricsStatement.sql, reachMetricsStatement.params);
 
     // Get engagement distribution
-    const { rows: engagementDistribution } = await pool.query(
+    const engagementDistributionStatement = buildScopedStatement(
       `SELECT 
         CASE 
           WHEN impressions = 0 THEN 'no_impressions'
@@ -591,11 +1018,11 @@ router.get('/audience', authenticateToken, async (req, res) => {
         AVG(impressions) as avg_impressions
        FROM tweets 
        WHERE user_id = $1 AND created_at >= $2 AND status = 'posted'
-       ${accountId ? 'AND account_id::TEXT = $3::TEXT' : ''}
        GROUP BY reach_category
        ORDER BY avg_impressions DESC`,
-      accountId ? [userId, startDate, accountId] : [userId, startDate]
+      [userId, startDate]
     );
+    const { rows: engagementDistribution } = await pool.query(engagementDistributionStatement.sql, engagementDistributionStatement.params);
 
     res.json({
       reach_metrics: reachMetrics,
@@ -609,3 +1036,5 @@ router.get('/audience', authenticateToken, async (req, res) => {
 });
 
 export default router;
+
+

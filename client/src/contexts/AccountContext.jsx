@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { useAuth } from './AuthContext';
 
 // AccountContext.jsx
 
@@ -20,18 +21,13 @@ export const useAccount = () => {
 };
 
 export const AccountProvider = ({ children }) => {
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [userTeamStatus, setUserTeamStatus] = useState(() => {
-    // Check session storage cache to avoid redundant API call
-    const cached = sessionStorage.getItem('userTeamStatus');
-    return cached ? JSON.parse(cached) : null;
-  });
-  const [csrfToken, setCsrfToken] = useState(null);
+  const [userTeamStatus, setUserTeamStatus] = useState(null);
 
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3002';
-  console.log('[AccountContext] API Base URL:', apiBaseUrl);
 
   // Load persisted account selection on app start
   useEffect(() => {
@@ -39,9 +35,10 @@ export const AccountProvider = ({ children }) => {
     if (savedAccount) {
       try {
         const parsed = JSON.parse(savedAccount);
-        console.log('Loaded saved account selection:', parsed);
+        if (parsed?.id) {
+          setSelectedAccount(parsed);
+        }
       } catch (error) {
-        console.error('Failed to parse saved account:', error);
         localStorage.removeItem('selectedTwitterAccount');
       }
     }
@@ -65,103 +62,69 @@ export const AccountProvider = ({ children }) => {
     }
   };
 
-  // Step 0: Fetch CSRF token on mount
+  // Step 1: Derive team status from the already-authenticated user payload
   useEffect(() => {
-    const fetchCsrfToken = async () => {
-      try {
-        const res = await fetch(`${apiBaseUrl}/api/csrf-token`, { credentials: 'include' });
-        if (res.ok) {
-          const data = await res.json();
-          setCsrfToken(data.csrfToken);
-        }
-      } catch (err) {
-        console.error('Failed to fetch CSRF token:', err);
-      }
-    };
-    fetchCsrfToken();
-  }, [apiBaseUrl]);
-
-  // Step 1: Check user's team status on mount
-  useEffect(() => {
-    // Skip if already have cached status
-    if (userTeamStatus !== null) {
-      console.log('[AccountContext] Using cached team status:', userTeamStatus);
+    if (authLoading) {
       return;
     }
-    
-    const checkUserTeamStatus = async () => {
-      try {
-        // Set timeout to prevent blocking (increased to 10 seconds)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
-        
-        const userResponse = await fetch(`${apiBaseUrl}/api/twitter/user/profile`, {
-          credentials: 'include',
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (userResponse.ok) {
-          const userProfile = await userResponse.json();
-          const isInTeam = userProfile.user?.team_id || (userProfile.user?.teamMemberships && userProfile.user.teamMemberships.length > 0);
-          const teamStatus = isInTeam ? true : false;
-          console.log('[AccountContext] Team status determined:', teamStatus);
-          setUserTeamStatus(teamStatus);
-          // Cache the result
-          sessionStorage.setItem('userTeamStatus', JSON.stringify(teamStatus));
-        } else {
-          console.warn('[AccountContext] User profile fetch failed with status:', userResponse.status);
-          setUserTeamStatus(false);
-          sessionStorage.setItem('userTeamStatus', JSON.stringify(false));
-        }
-      } catch (error) {
-        if (error.name === 'AbortError') {
-          console.warn('[AccountContext] Team status check timed out after 10s - assuming individual user');
-        } else {
-          console.error('[AccountContext] Error checking team status:', error);
-        }
-        setUserTeamStatus(false);
-        sessionStorage.setItem('userTeamStatus', JSON.stringify(false));
-      }
-    };
-    checkUserTeamStatus();
-  }, [apiBaseUrl]);
+
+    if (!isAuthenticated || !user) {
+      setUserTeamStatus(false);
+      return;
+    }
+
+    const hasTeamMemberships =
+      !!(user.team_id || user.teamId) ||
+      (Array.isArray(user.teamMemberships) && user.teamMemberships.length > 0);
+
+    setUserTeamStatus(hasTeamMemberships);
+  }, [authLoading, isAuthenticated, user]);
 
   // Step 2: Only fetch accounts after team status is known
   useEffect(() => {
-    if (userTeamStatus === null) {
-      console.log('[AccountContext] Waiting for team status...');
-      return; // Wait for team status
+    if (authLoading) {
+      return;
     }
-    
+
+    if (!isAuthenticated || !user) {
+      setAccounts([]);
+      setSelectedAccount(null);
+      setLoading(false);
+      return;
+    }
+
+    if (userTeamStatus === null) {
+      return;
+    }
+
     const fetchAccounts = async () => {
-      console.log('[AccountContext] fetchAccounts starting, userTeamStatus:', userTeamStatus);
       setLoading(true);
       try {
         let accountsData = [];
-        const fetchOptions = {
-          credentials: 'include',
-          headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {},
-        };
+
         if (userTeamStatus) {
-          // Team mode: fetch team accounts
           try {
-            const teamResponse = await fetch(`${apiBaseUrl}/api/team/accounts`, fetchOptions);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+            const teamResponse = await fetch(`${apiBaseUrl}/api/team/accounts`, {
+              credentials: 'include',
+              signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+
             if (teamResponse.ok) {
               const teamData = await teamResponse.json();
               accountsData = teamData.accounts || teamData.data || [];
             }
           } catch (err) {
-            console.error('[AccountContext] Error fetching team accounts:', err);
+            accountsData = [];
           }
         } else {
-          // Individual mode: no team accounts, set empty array
-          console.log('[AccountContext] Individual user - no team accounts');
           accountsData = [];
         }
+
         setAccounts(accountsData);
-        // Restore selection from localStorage, or pick first account
+
         if (accountsData.length > 0) {
           const savedAccount = localStorage.getItem('selectedTwitterAccount');
           let accountToSelect = accountsData[0]; // Default to first
@@ -172,39 +135,32 @@ export const AccountProvider = ({ children }) => {
               if (matchingAccount) {
                 accountToSelect = matchingAccount;
               }
-            } catch (error) {
-              console.error('Failed to parse saved account:', error);
-            }
+            } catch {}
           }
           setSelectedAccount(accountToSelect);
-          // Also save to localStorage
+
           localStorage.setItem('selectedTwitterAccount', JSON.stringify({
-  id: accountToSelect.id,
-  username: accountToSelect.account_username,
-  display_name: accountToSelect.account_display_name,
-  team_id: accountToSelect.team_id || accountToSelect.teamId || null,
-}));
+            id: accountToSelect.id,
+            username: accountToSelect.account_username,
+            display_name: accountToSelect.account_display_name,
+            team_id: accountToSelect.team_id || accountToSelect.teamId || null,
+          }));
         } else {
-          // No team accounts (individual user) - clear selection
-          console.log('[AccountContext] Setting selectedAccount to null for individual user');
           setSelectedAccount(null);
           localStorage.removeItem('selectedTwitterAccount');
         }
       } catch (error) {
-        console.error('[AccountContext] Error in fetchAccounts:', error);
         setAccounts([]);
         setSelectedAccount(null);
       } finally {
-        console.log('[AccountContext] Setting loading to false');
         setLoading(false);
       }
     };
     fetchAccounts();
-  }, [userTeamStatus, apiBaseUrl]);
+  }, [authLoading, isAuthenticated, user, userTeamStatus, apiBaseUrl]);
 
   // Function to refresh team status (call after connecting Twitter account)
   const refreshTeamStatus = () => {
-    sessionStorage.removeItem('userTeamStatus');
     setUserTeamStatus(null);
   };
 

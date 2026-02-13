@@ -15,11 +15,20 @@ const newPlatformPool = new Pool({
 
 const router = express.Router();
 
-function sendPopupResult(res, messageType, payload = {}, message = 'Authentication complete. You can close this window.') {
+function sendPopupResult(
+  res,
+  messageType,
+  payload = {},
+  message = 'Authentication complete. You can close this window.',
+  redirectUrl = `${process.env.CLIENT_URL}/settings`
+) {
   const eventData = JSON.stringify({ type: messageType, ...payload })
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e');
   const safeMessage = String(message).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fallbackUrl = JSON.stringify(redirectUrl || `${process.env.CLIENT_URL}/settings`)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
 
   // Allow inline callback script and keep opener available for popup callbacks.
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; base-uri 'self'; object-src 'none'");
@@ -38,7 +47,10 @@ function sendPopupResult(res, messageType, payload = {}, message = 'Authenticati
           setTimeout(function () {
             try { window.open('', '_self'); } catch (e) {}
             try { window.close(); } catch (e) {}
-          }, 20);
+            if (!window.closed) {
+              window.location.replace(${fallbackUrl});
+            }
+          }, 120);
         </script>
         <p>${safeMessage}</p>
       </body>
@@ -257,7 +269,8 @@ async function handleOAuth2Callback(req, res) {
         res,
         'TWITTER_AUTH_ERROR',
         { provider: 'twitter', oauthType: 'oauth2', error: 'oauth_denied' },
-        'Twitter authorization was denied.'
+        'Twitter authorization was denied.',
+        `${process.env.CLIENT_URL}/settings?error=oauth_denied`
       );
     }
     return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=oauth_denied`);
@@ -271,7 +284,8 @@ async function handleOAuth2Callback(req, res) {
         res,
         'TWITTER_AUTH_ERROR',
         { provider: 'twitter', oauthType: 'oauth2', error: 'no_code' },
-        'Twitter callback missing authorization code.'
+        'Twitter callback missing authorization code.',
+        `${process.env.CLIENT_URL}/settings?error=no_code`
       );
     }
     return res.redirect(`${process.env.CLIENT_URL}/dashboard?error=no_code`);
@@ -419,7 +433,8 @@ async function handleOAuth2Callback(req, res) {
             oauthType: 'oauth2',
             username: twitterUser.data.username
           },
-          `Twitter account @${twitterUser.data.username} connected successfully.`
+          `Twitter account @${twitterUser.data.username} connected successfully.`,
+          `${process.env.CLIENT_URL}/settings?twitter_connected=true`
         );
       }
       return res.redirect(`${process.env.CLIENT_URL}/settings?twitter_connected=true`);
@@ -435,7 +450,8 @@ async function handleOAuth2Callback(req, res) {
         res,
         'TWITTER_AUTH_ERROR',
         { provider: 'twitter', oauthType: 'oauth2', error: 'connection_failed' },
-        'Twitter connection failed. Please try again.'
+        'Twitter connection failed. Please try again.',
+        `${process.env.CLIENT_URL}/settings?error=connection_failed`
       );
     }
     return res.redirect(`${process.env.CLIENT_URL}/settings?error=connection_failed`);
@@ -550,7 +566,7 @@ async function handleOAuth1Callback(req, res) {
       const existingAccountResult = await pool.query(`
         SELECT id, twitter_username, twitter_display_name 
         FROM team_accounts 
-        WHERE team_id = $1 AND twitter_user_id = $2 AND active = true
+        WHERE team_id = $1 AND twitter_user_id = $2
       `, [teamId, twitterUserId]);
 
       if (existingAccountResult.rows.length > 0) {
@@ -560,8 +576,9 @@ async function handleOAuth1Callback(req, res) {
           UPDATE team_accounts
           SET oauth1_access_token = $1,
               oauth1_access_token_secret = $2,
+              active = true,
               updated_at = CURRENT_TIMESTAMP
-          WHERE team_id = $3 AND twitter_user_id = $4 AND active = true
+          WHERE team_id = $3 AND twitter_user_id = $4
           RETURNING id, twitter_username, twitter_display_name
         `, [accessToken, accessTokenSecret, teamId, twitterUserId]);
 
@@ -639,7 +656,8 @@ async function handleOAuth1Callback(req, res) {
           res,
           'TWITTER_AUTH_SUCCESS',
           { provider: 'twitter', oauthType: 'oauth1', username: screenName },
-          `Twitter media permissions enabled for @${screenName || 'your account'}.`
+          `Twitter media permissions enabled for @${screenName || 'your account'}.`,
+          `${process.env.CLIENT_URL}/settings?oauth1_connected=true`
         );
       }
       return res.redirect(`${process.env.CLIENT_URL}/settings?oauth1_connected=true`);
@@ -667,7 +685,8 @@ async function handleOAuth1Callback(req, res) {
         res,
         'TWITTER_AUTH_ERROR',
         { provider: 'twitter', oauthType: 'oauth1', error: 'oauth1_connection_failed' },
-        'Failed to enable Twitter media permissions. Please try again.'
+        'Failed to enable Twitter media permissions. Please try again.',
+        `${process.env.CLIENT_URL}/settings?error=oauth1_connection_failed`
       );
     }
 
@@ -679,11 +698,52 @@ async function handleOAuth1Callback(req, res) {
 router.post('/disconnect', async (req, res) => {
   try {
     const userId = req.user?.id;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const teamId = req.user?.teamId || req.user?.team_id;
+
     if (!userId) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    console.log('Disconnecting Twitter account for user:', userId);
+    if (selectedAccountId && teamId) {
+      const membershipResult = await pool.query(
+        `SELECT 1
+         FROM team_members
+         WHERE team_id = $1 AND user_id = $2 AND status = 'active'
+         LIMIT 1`,
+        [teamId, userId]
+      );
+
+      if (membershipResult.rows.length === 0) {
+        return res.status(403).json({ error: 'Not authorized to disconnect this team account' });
+      }
+
+      const { rowCount } = await pool.query(
+        `UPDATE team_accounts
+         SET active = false,
+             access_token = NULL,
+             refresh_token = NULL,
+             token_expires_at = NULL,
+             oauth1_access_token = NULL,
+             oauth1_access_token_secret = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND team_id = $2`,
+        [selectedAccountId, teamId]
+      );
+
+      if (rowCount === 0) {
+        return res.status(404).json({ error: 'No team Twitter account found to disconnect' });
+      }
+
+      console.log('Team Twitter account disconnected successfully:', { userId, teamId, selectedAccountId });
+      return res.json({
+        success: true,
+        message: 'Twitter account disconnected successfully',
+        accountType: 'team',
+      });
+    }
+
+    console.log('Disconnecting personal Twitter account for user:', userId);
 
     // Delete the Twitter auth record for this user
     const { rowCount } = await pool.query(
@@ -695,10 +755,11 @@ router.post('/disconnect', async (req, res) => {
       return res.status(404).json({ error: 'No Twitter account found to disconnect' });
     }
 
-    console.log('Twitter account disconnected successfully for user:', userId);
+    console.log('Personal Twitter account disconnected successfully for user:', userId);
     res.json({ 
       success: true, 
-      message: 'Twitter account disconnected successfully' 
+      message: 'Twitter account disconnected successfully',
+      accountType: 'personal',
     });
   } catch (error) {
     console.error('Twitter disconnect error:', error);

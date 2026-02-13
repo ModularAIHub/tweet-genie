@@ -6,6 +6,51 @@ import { setAuthCookies, clearAuthCookies } from '../utils/cookieUtils.js';
 
 const router = express.Router();
 
+const sendAuthCompletionPage = (
+  res,
+  redirectTo,
+  {
+    message = 'Authentication completed. Returning to Tweet Genie...',
+    eventType = 'AUTH_SUCCESS',
+    payload = {},
+  } = {}
+) => {
+  const eventData = JSON.stringify({ type: eventType, redirectTo, ...payload })
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
+  const safeMessage = String(message).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeRedirect = JSON.stringify(redirectTo)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
+
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; base-uri 'self'; object-src 'none'");
+  res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
+
+  return res.send(`
+    <html>
+      <body>
+        <script>
+          try {
+            if (window.opener && !window.opener.closed) {
+              window.opener.postMessage(${eventData}, '*');
+            }
+          } catch (e) {}
+
+          setTimeout(function () {
+            try { window.close(); } catch (e) {}
+            setTimeout(function () {
+              if (!window.closed) {
+                window.location.replace(${safeRedirect});
+              }
+            }, 80);
+          }, 20);
+        </script>
+        <p>${safeMessage}</p>
+      </body>
+    </html>
+  `);
+};
+
 // Handle auth callback from platform - sets httpOnly cookie (GET method for redirects)
 router.get('/callback', async (req, res) => {
   try {
@@ -44,38 +89,15 @@ router.get('/callback', async (req, res) => {
     }
 
     console.log('Setting auth cookies...');
-    // Set httpOnly cookies that match Platform's cookie names
-    res.cookie('accessToken', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: '/'
-    });
-
-    // Set refresh token if available
-    if (refreshToken) {
-      console.log('Setting refresh token cookie...');
-      res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-        path: '/'
-      });
-    } else {
-      console.log('No refresh token provided in callback');
-    }
+    setAuthCookies(res, finalToken, finalRefreshToken || null);
 
     // Redirect to original URL or dashboard (clean URL without tokens)
     const finalRedirectUrl = redirect || '/dashboard';
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:5174';
     const redirectTo = `${clientUrl}${finalRedirectUrl}`;
     
-    console.log('Redirecting to clean URL:', redirectTo);
-    res.redirect(redirectTo);
+    console.log('Completing auth callback, redirect target:', redirectTo);
+    return sendAuthCompletionPage(res, redirectTo);
   } catch (error) {
     console.error('Auth callback error:', error);
     const platformUrl = process.env.PLATFORM_URL || 'http://localhost:3000';
@@ -92,27 +114,7 @@ router.post('/callback', async (req, res) => {
       return res.status(400).json({ error: 'Token required' });
     }
 
-    // Set httpOnly cookies that match Platform's cookie names
-    res.cookie('accessToken', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: '/'
-    });
-
-    // Set refresh token if available
-    if (refreshToken) {
-      res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        domain: process.env.COOKIE_DOMAIN || '.suitegenie.in',
-        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-        path: '/'
-      });
-    }
+    setAuthCookies(res, token, refreshToken || null);
 
     // Note: Both tokens are now properly set for automatic refresh
 

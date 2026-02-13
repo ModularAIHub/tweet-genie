@@ -1,5 +1,6 @@
 const router = express.Router();
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
+import { buildTeamAccountFilter, resolveTeamAccountScope } from '../utils/teamAccountScope.js';
 
 // Bulk save generated tweets/threads as drafts
 router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
@@ -43,6 +44,97 @@ import { creditService } from '../services/creditService.js';
 import { aiService } from '../services/aiService.js';
 import { mediaService } from '../services/mediaService.js';
 
+const THREAD_POST_DELAY_MS = Number.parseInt(process.env.THREAD_POST_DELAY_MS || '900', 10);
+const THREAD_POST_DELAY_JITTER_MS = Number.parseInt(process.env.THREAD_POST_DELAY_JITTER_MS || '300', 10);
+const THREAD_LARGE_SIZE_THRESHOLD = Number.parseInt(process.env.THREAD_LARGE_SIZE_THRESHOLD || '6', 10);
+const TWITTER_RATE_LIMIT_MAX_RETRIES = Number.parseInt(process.env.TWITTER_RATE_LIMIT_MAX_RETRIES || '2', 10);
+const TWITTER_RATE_LIMIT_WAIT_MS = Number.parseInt(process.env.TWITTER_RATE_LIMIT_WAIT_MS || '60000', 10);
+const TWITTER_RATE_LIMIT_MAX_WAIT_MS = Number.parseInt(process.env.TWITTER_RATE_LIMIT_MAX_WAIT_MS || '300000', 10);
+
+function getThreadPostDelayMs() {
+  const baseDelay = Number.isFinite(THREAD_POST_DELAY_MS) ? Math.max(0, THREAD_POST_DELAY_MS) : 900;
+  const jitter = Number.isFinite(THREAD_POST_DELAY_JITTER_MS) ? Math.max(0, THREAD_POST_DELAY_JITTER_MS) : 300;
+  if (!jitter) return baseDelay;
+  return baseDelay + Math.floor(Math.random() * (jitter + 1));
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getHeaderValue(headers, headerName) {
+  if (!headers) return null;
+  if (typeof headers.get === 'function') {
+    return headers.get(headerName) ?? headers.get(headerName.toLowerCase());
+  }
+  return headers[headerName] ?? headers[headerName.toLowerCase()];
+}
+
+function isRateLimitedError(error) {
+  const message = `${error?.message || ''} ${error?.data?.detail || ''}`.toLowerCase();
+  return (
+    error?.code === 429 ||
+    error?.status === 429 ||
+    error?.data?.status === 429 ||
+    message.includes('rate limit') ||
+    message.includes('too many requests') ||
+    message.includes(' 429')
+  );
+}
+
+function getRateLimitWaitMs(error, fallbackMs = TWITTER_RATE_LIMIT_WAIT_MS) {
+  const headers = error?.headers || error?.response?.headers || null;
+  const retryAfterRaw = Number(getHeaderValue(headers, 'retry-after'));
+  if (Number.isFinite(retryAfterRaw) && retryAfterRaw > 0) {
+    return Math.min(retryAfterRaw * 1000, TWITTER_RATE_LIMIT_MAX_WAIT_MS);
+  }
+
+  const resetRaw = Number(error?.rateLimit?.reset || getHeaderValue(headers, 'x-rate-limit-reset'));
+  if (Number.isFinite(resetRaw) && resetRaw > 0) {
+    const resetMs = Math.max(1000, resetRaw * 1000 - Date.now());
+    return Math.min(resetMs, TWITTER_RATE_LIMIT_MAX_WAIT_MS);
+  }
+
+  const safeFallback = Number.isFinite(fallbackMs) && fallbackMs > 0 ? fallbackMs : 60000;
+  return Math.min(safeFallback, TWITTER_RATE_LIMIT_MAX_WAIT_MS);
+}
+
+async function withRateLimitRetry(operation, { label, retries = TWITTER_RATE_LIMIT_MAX_RETRIES, fallbackWaitMs = TWITTER_RATE_LIMIT_WAIT_MS } = {}) {
+  const maxRetries = Number.isFinite(retries) && retries >= 0 ? retries : 0;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isRateLimitedError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      const waitMs = getRateLimitWaitMs(error, fallbackWaitMs);
+      console.warn(`[TwitterRateLimit][${label || 'tweet'}] 429 on attempt ${attempt + 1}/${maxRetries + 1}. Waiting ${waitMs}ms before retry.`);
+      await wait(waitMs);
+    }
+  }
+}
+
+function getAdaptiveThreadDelayMs({ index, totalParts, mediaCount = 0 }) {
+  let delayMs = getThreadPostDelayMs();
+
+  if (Number.isFinite(totalParts) && totalParts > THREAD_LARGE_SIZE_THRESHOLD) {
+    delayMs += Math.min(2500, (totalParts - THREAD_LARGE_SIZE_THRESHOLD) * 250);
+  }
+
+  if (Number.isFinite(mediaCount) && mediaCount > 0) {
+    delayMs += Math.min(2000, mediaCount * 400);
+  }
+
+  if (Number.isFinite(index) && index > 5) {
+    delayMs += 300;
+  }
+
+  return Math.min(delayMs, TWITTER_RATE_LIMIT_MAX_WAIT_MS);
+}
+
 
 
 // Post a tweet
@@ -63,33 +155,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
     // Tweet posting is FREE - no credit calculation needed
 
-    // Get JWT token AFTER authentication middleware (which may have refreshed it)
-    // Check if middleware set a new token in response headers first
-    let userToken = null;
-    
-    // Try to extract token from Set-Cookie header if it was refreshed
-    const setCookieHeader = res.getHeaders()['set-cookie'];
-    if (setCookieHeader) {
-      const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-      const accessTokenCookie = cookies.find(cookie => 
-        typeof cookie === 'string' && cookie.startsWith('accessToken=')
-      );
-      if (accessTokenCookie) {
-        userToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
-        console.log('Using refreshed token from response header');
-      }
-    }
-    
-    // Fallback to request cookies or Authorization header
-    if (!userToken) {
-      userToken = req.cookies?.accessToken;
-      if (!userToken) {
-        const authHeader = req.headers['authorization'];
-        userToken = authHeader && authHeader.split(' ')[1];
-      }
-      console.log('Using token from request');
-    }
-
     // Tweet posting is now FREE - no credit deduction
     console.log('Tweet posting is free - no credits deducted');
 
@@ -101,33 +166,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
     });
     
     const twitterClient = new TwitterApi(twitterAccount.access_token);
-
-    // Test token permissions first
-    try {
-      console.log('Testing Twitter token permissions...');
-      const userTest = await twitterClient.v2.me();
-      console.log('✅ Token has read access:', !!userTest.data);
-      console.log('User data:', { id: userTest.data?.id, username: userTest.data?.username });
-      
-      // Simple test to see if we can make any API calls
-      console.log('Testing basic API access...');
-      
-    } catch (testError) {
-      console.error('❌ Token test failed:', {
-        message: testError.message,
-        code: testError.code,
-        status: testError.status,
-        data: testError.data
-      });
-      
-      // If basic API calls fail, the token is definitely invalid
-      throw {
-        code: 'TWITTER_TOKEN_INVALID',
-        message: 'Twitter token is invalid or expired. Please reconnect your account.',
-        details: testError.message
-      };
-    }
-
     let tweetResponse;
     let threadTweets = []; // Declare here so it's accessible in catch block
 
@@ -151,7 +189,10 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           accessTokenSecret: twitterAccount.oauth1_access_token_secret
         };
         
-        mediaIds = await mediaService.uploadMedia(media, twitterClient, oauth1Tokens);
+        mediaIds = await withRateLimitRetry(
+          () => mediaService.uploadMedia(media, twitterClient, oauth1Tokens),
+          { label: 'single-media-upload' }
+        );
         console.log('Media upload completed, IDs:', mediaIds);
       }
 
@@ -216,13 +257,19 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
             accessToken: twitterAccount.oauth1_access_token,
             accessTokenSecret: twitterAccount.oauth1_access_token_secret
           };
-          firstTweetMediaIds = await mediaService.uploadMedia(threadMedia[0], twitterClient, oauth1Tokens);
+          firstTweetMediaIds = await withRateLimitRetry(
+            () => mediaService.uploadMedia(threadMedia[0], twitterClient, oauth1Tokens),
+            { label: 'thread-main-media-upload' }
+          );
         }
         const firstTweetData = {
           text: decodeHTMLEntities(thread[0]),
           ...(firstTweetMediaIds.length > 0 && { media: { media_ids: firstTweetMediaIds } })
         };
-        tweetResponse = await twitterClient.v2.tweet(firstTweetData);
+        tweetResponse = await withRateLimitRetry(
+          () => twitterClient.v2.tweet(firstTweetData),
+          { label: 'thread-main-post' }
+        );
         console.log('First thread tweet posted successfully:', {
           tweetId: tweetResponse.data?.id,
           text: tweetResponse.data?.text?.substring(0, 50) + '...'
@@ -235,10 +282,19 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
           for (let i = 1; i < thread.length; i++) {
             try {
-              // Fast delays for better UX (4-6 seconds) - balances speed with rate limits
-              const delayMs = 4000 + Math.random() * 2000; // 4-6 seconds
-              console.log(`⏳ [Background] Waiting ${Math.round(delayMs/1000)}s before posting tweet ${i + 1}/${thread.length}...`);
-              await new Promise(resolve => setTimeout(resolve, delayMs));
+              const mediaCountForTweet = Array.isArray(threadMedia?.[i]) ? threadMedia[i].length : 0;
+              const shouldThrottle = i > 1 || thread.length > THREAD_LARGE_SIZE_THRESHOLD || mediaCountForTweet > 0;
+
+              // Keep small threads fast, but pace larger/media-heavy threads to avoid 429.
+              if (shouldThrottle) {
+                const delayMs = getAdaptiveThreadDelayMs({
+                  index: i,
+                  totalParts: thread.length,
+                  mediaCount: mediaCountForTweet,
+                });
+                console.log(`[Background] Waiting ${delayMs}ms before posting tweet ${i + 1}/${thread.length}...`);
+                await wait(delayMs);
+              }
 
               const threadTweetText = thread[i];
               let threadMediaIds = [];
@@ -250,7 +306,10 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                   accessToken: twitterAccount.oauth1_access_token,
                   accessTokenSecret: twitterAccount.oauth1_access_token_secret
                 };
-                threadMediaIds = await mediaService.uploadMedia(threadMedia[i], twitterClient, oauth1Tokens);
+                threadMediaIds = await withRateLimitRetry(
+                  () => mediaService.uploadMedia(threadMedia[i], twitterClient, oauth1Tokens),
+                  { label: `thread-media-upload-${i + 1}` }
+                );
                 console.log(`[Background] Media upload completed for thread tweet ${i + 1}, IDs:`, threadMediaIds);
               }
 
@@ -267,7 +326,10 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 replyingTo: previousTweetId
               });
 
-              const threadResponse = await twitterClient.v2.tweet(threadTweetData);
+              const threadResponse = await withRateLimitRetry(
+                () => twitterClient.v2.tweet(threadTweetData),
+                { label: `thread-reply-post-${i + 1}` }
+              );
               threadTweets.push(threadResponse.data);
               previousTweetId = threadResponse.data.id;
               
@@ -292,10 +354,15 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                   0
                 ]
               );
-              
             } catch (error) {
-              console.error(`❌ [Background] Failed to post thread tweet ${i + 1}:`, error.message);
-              // Continue trying to post remaining tweets even if one fails
+              console.error(`[Background] Failed to post thread tweet ${i + 1}:`, error.message);
+              if (isRateLimitedError(error)) {
+                const waitMs = getRateLimitWaitMs(error);
+                const waitSeconds = Math.ceil(waitMs / 1000);
+                console.error(`[Background] Rate limit hit while posting thread tweet ${i + 1}. Stopping remaining posts to avoid hammering Twitter. Retry after ~${waitSeconds}s.`);
+                break;
+              }
+              // Continue for non-rate-limit errors
             }
           }
           
@@ -324,7 +391,10 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           mediaIds: mediaIds
         });
 
-        tweetResponse = await twitterClient.v2.tweet(tweetData);
+        tweetResponse = await withRateLimitRetry(
+          () => twitterClient.v2.tweet(tweetData),
+          { label: 'single-post' }
+        );
         console.log('Single tweet posted successfully:', {
           tweetId: tweetResponse.data?.id,
           text: tweetResponse.data?.text?.substring(0, 50) + '...'
@@ -379,9 +449,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       console.log('Twitter API error occurred - no credits to refund since posting is free');
       
       // Check if it's a rate limit error (429)
-      const isRateLimitError = twitterError.code === 429 || 
-                              twitterError.message?.includes('429') ||
-                              twitterError.toString().includes('429');
+      const isRateLimitError = isRateLimitedError(twitterError);
       
       // Check if it's a 403 (permissions) error
       const is403Error = twitterError.code === 403 || 
@@ -392,13 +460,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         console.log('✅ Rate limit detected - Twitter API returned 429');
         
         // Calculate retry time
-        let retryAfterMinutes = 15; // Default fallback
-        let resetTime = null;
-        
-        if (twitterError.rateLimit?.reset) {
-          resetTime = new Date(twitterError.rateLimit.reset * 1000);
-          retryAfterMinutes = Math.ceil((resetTime - Date.now()) / 60000);
-        }
+        const retryAfterMs = getRateLimitWaitMs(twitterError);
+        const retryAfterMinutes = Math.max(1, Math.ceil(retryAfterMs / 60000));
+        const resetTime = new Date(Date.now() + retryAfterMs);
         
         // Safely check threadTweets length (it might not be defined if error happens in non-thread code)
         const postedCount = (threadTweets?.length || 0) + 1; // +1 for the first tweet
@@ -593,38 +657,38 @@ router.get(['/history', '/'], async (req, res) => {
 
     if (selectedAccountId) {
       console.log('[GET /tweets/history] Selected account ID:', selectedAccountId);
-      
-      // First check if this is a team account the user has access to
-      const teamCheckResult = await pool.query(`
-        SELECT ta.id, ta.team_id 
-        FROM team_accounts ta
-        INNER JOIN team_members tm ON ta.team_id = tm.team_id
-        WHERE ta.id::TEXT = $1::TEXT AND tm.user_id = $2 AND tm.status = 'active'
-      `, [selectedAccountId, req.user.id]);
-      
-      console.log('[GET /tweets/history] Team account check result:', teamCheckResult.rows);
-      
-      if (teamCheckResult.rows.length > 0) {
-        let whereClause = `WHERE t.account_id::TEXT = $1::TEXT`;
+
+      const teamAccountScope = await resolveTeamAccountScope(pool, req.user.id, selectedAccountId);
+
+      if (teamAccountScope) {
+        queryParams = [];
+        countParams = [];
+
+        const { clause: teamScopeClause, params: teamScopeParams } = buildTeamAccountFilter({
+          scope: teamAccountScope,
+          alias: 't',
+          startIndex: 1,
+          includeAuthorFallback: false,
+          includeOrphanFallback: true,
+          orphanUserId: req.user.id,
+        });
+
+        let whereClause = `WHERE 1=1${teamScopeClause}`;
+        queryParams.push(...teamScopeParams);
+        countParams.push(...teamScopeParams);
+
         if (status) {
-          whereClause += ` AND t.status = $2`;
+          whereClause += ` AND t.status = $${queryParams.length + 1}`;
           queryParams.push(status);
           countParams.push(status);
         }
-        // Log account ID and query parameters for debugging
-        console.log('[TEAM HISTORY DEBUG] SelectedAccountId:', selectedAccountId);
-        console.log('[TEAM HISTORY DEBUG] QueryParams:', queryParams);
-        console.log('[TEAM HISTORY DEBUG] CountParams:', countParams);
-        console.log('[TEAM HISTORY DEBUG] WhereClause:', whereClause);
-        // Team mode: show all tweets for the selected team account
-        queryParams = [selectedAccountId];
-        countParams = [selectedAccountId];
 
-        // Log account ID and query parameters for debugging
-        console.log('[TEAM HISTORY DEBUG] SelectedAccountId:', selectedAccountId);
-        console.log('[TEAM HISTORY DEBUG] QueryParams:', queryParams);
-        console.log('[TEAM HISTORY DEBUG] CountParams:', countParams);
-        console.log('[TEAM HISTORY DEBUG] WhereClause:', whereClause);
+        console.log('[GET /tweets/history] Team scope resolved', {
+          selectedAccountId,
+          twitterUserId: teamAccountScope.twitterUserId,
+          relatedAccountIds: teamAccountScope.relatedAccountIds,
+          allowOrphanFallback: teamAccountScope.allowOrphanFallback,
+        });
 
         sqlQuery = `
           SELECT t.*, 
@@ -653,7 +717,7 @@ router.get(['/history', '/'], async (req, res) => {
         queryParams.push(parsedLimit, parsedOffset);
       } else {
         // Not a team account or user doesn't have access - treat as personal account
-        console.log('[GET /tweets/history] Not a team account, treating as personal');
+        console.log('[GET /tweets/history] Selected account not accessible as team scope, treating as personal');
         queryParams = [req.user.id];
         countParams = [req.user.id];
         

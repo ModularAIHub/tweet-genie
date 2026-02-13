@@ -1,10 +1,26 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, Edit3, Trash2, Play, Pause } from 'lucide-react';
+import { Calendar, Clock, Edit3, Trash2 } from 'lucide-react';
 import { useAccount } from '../contexts/AccountContext';
 import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import { scheduling as schedulingAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
+
+const FILTER_OPTIONS = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'posted', label: 'Posted' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'all', label: 'All' },
+];
+
+const normalizeSchedulingFilter = (value) => {
+  const normalized = String(value || 'pending').trim().toLowerCase();
+  if (normalized === 'completed' || normalized === 'complete') return 'posted';
+  if (normalized === 'canceled') return 'cancelled';
+  if (FILTER_OPTIONS.some(option => option.value === normalized)) return normalized;
+  return 'pending';
+};
 
 const Scheduling = () => {
     const { selectedAccount, accounts } = useAccount();
@@ -23,7 +39,7 @@ const Scheduling = () => {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        setFilter(parsed.filter || 'pending');
+        setFilter(normalizeSchedulingFilter(parsed.filter || 'pending'));
       } catch (err) {
         console.error('Failed to parse saved scheduling filter', err);
         setFilter('pending');
@@ -46,23 +62,22 @@ const Scheduling = () => {
   const fetchScheduledTweets = async () => {
     try {
       setLoading(true);
+      const normalizedFilter = normalizeSchedulingFilter(filter);
       
       // Use account-aware API for team users
       if (isTeamUser && selectedAccount) {
         // Always include teamId in fetch for team users
         const teamId = selectedAccount.team_id || sessionStorage.getItem('currentTeamId') || null;
-        const apiResponse = await accountAPI.fetchForCurrentAccount('/api/scheduling/scheduled', {
+        const apiResponse = await accountAPI.fetchForCurrentAccount(`/api/scheduling/scheduled?status=${encodeURIComponent(normalizedFilter)}`, {
           headers: teamId ? { 'x-team-id': teamId } : {}
         });
         const data = await apiResponse.json();
-        let tweets = data.data?.scheduled_tweets || data.scheduled_tweets || [];
-        // Apply filter
-        if (filter !== 'all') {
-          tweets = tweets.filter(tweet => tweet.status === filter);
+        if (!apiResponse.ok) {
+          throw new Error(data.error || 'Failed to fetch scheduled tweets');
         }
-        setScheduledTweets(tweets);
+        setScheduledTweets(data.data?.scheduled_tweets || data.scheduled_tweets || []);
       } else {
-        const response = await schedulingAPI.list({ status: filter });
+        const response = await schedulingAPI.list({ status: normalizedFilter });
         setScheduledTweets(response.data.scheduled_tweets || []);
       }
     } catch (error) {
@@ -95,11 +110,19 @@ const Scheduling = () => {
   const getStatusBadge = (status) => {
     const badges = {
       pending: 'badge-info',
+      processing: 'badge-info',
       completed: 'badge-success',
+      partially_completed: 'badge-warning',
       failed: 'badge-error',
       cancelled: 'badge-warning',
     };
     return badges[status] || 'badge-info';
+  };
+
+  const getStatusLabel = (status) => {
+    if (status === 'completed') return 'posted';
+    if (status === 'partially_completed') return 'posted (partial)';
+    return status;
   };
 
   if (loading) {
@@ -129,17 +152,17 @@ const Scheduling = () => {
       <div className="card">
         <div className="flex items-center space-x-4">
           <span className="text-sm font-medium text-gray-700">Filter by status:</span>
-          {['pending', 'completed', 'failed', 'cancelled'].map((status) => (
+          {FILTER_OPTIONS.map(({ value, label }) => (
             <button
-              key={status}
-              onClick={() => setFilter(status)}
+              key={value}
+              onClick={() => setFilter(value)}
               className={`px-3 py-1 rounded-full text-sm font-medium ${
-                filter === status
+                filter === value
                   ? 'bg-primary-100 text-primary-700'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >
-              {status.charAt(0).toUpperCase() + status.slice(1)}
+              {label}
             </button>
           ))}
         </div>
@@ -154,10 +177,10 @@ const Scheduling = () => {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center space-x-3 mb-3">
                     <span className={`badge ${getStatusBadge(scheduledTweet.status)}`}>
-                      {scheduledTweet.status}
+                      {getStatusLabel(scheduledTweet.status)}
                     </span>
                     <span className="text-sm text-gray-500">
-                      @{scheduledTweet.username}
+                      @{scheduledTweet.username || scheduledTweet.account_username || 'twitter'}
                     </span>
                   </div>
                   
@@ -200,7 +223,7 @@ const Scheduling = () => {
                     </>
                   )}
                   
-                  {scheduledTweet.status === 'completed' && scheduledTweet.posted_at && (
+                  {['completed', 'partially_completed'].includes(scheduledTweet.status) && scheduledTweet.posted_at && (
                     <div className="text-xs text-gray-500">
                       Posted: {formatDate(scheduledTweet.posted_at)}
                     </div>
@@ -219,7 +242,7 @@ const Scheduling = () => {
           <div className="card text-center py-12">
             <Calendar className="h-12 w-12 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">
-              No {filter} scheduled tweets
+              {filter === 'all' ? 'No scheduled tweets' : `No ${filter} scheduled tweets`}
             </h3>
             <p className="text-gray-600 mb-6">
               {filter === 'pending' 
