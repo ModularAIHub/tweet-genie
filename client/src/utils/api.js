@@ -326,6 +326,7 @@ export const strategy = {
   getCurrent: () => api.get('/api/strategy/current'),
   getById: (id) => api.get(`/api/strategy/${id}`),
   list: () => api.get('/api/strategy/list'),
+  create: (data) => api.post('/api/strategy', data),
   chat: (message, strategyId, currentStep) => api.post('/api/strategy/chat', { message, strategyId, currentStep }),
   generatePrompts: (strategyId) => api.post(`/api/strategy/${strategyId}/generate-prompts`),
   getPrompts: (strategyId, params) => api.get(`/api/strategy/${strategyId}/prompts`, { params }),

@@ -220,19 +220,20 @@ class AIService {
       }
     }
 
-    // Build providers array (Priority: Gemini > Perplexity > OpenAI for Strategy Builder)
+    // Build providers array (Priority: Perplexity > Google > OpenAI for Strategy Builder)
+    // Using Perplexity first since it's faster and Google quota is currently exceeded
     const providers = [];
     
-    // 1. Google Gemini (PRIMARY for strategy - best for creative & structured outputs)
-    let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
-    if (googleKey) {
-      providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
-    }
-    
-    // 2. Perplexity (Fallback)
+    // 1. Perplexity (PRIMARY - fast and reliable)
     let perplexityKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'perplexity')?.apiKey) : this.perplexityApiKey;
     if (perplexityKey) {
       providers.push({ name: 'perplexity', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey) });
+    }
+    
+    // 2. Google Gemini (Fallback - currently quota exceeded)
+    let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
+    if (googleKey) {
+      providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
     }
     
     // 3. OpenAI (Final fallback)
