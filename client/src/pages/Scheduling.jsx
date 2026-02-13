@@ -31,6 +31,7 @@ const Scheduling = () => {
   const [scheduledTweets, setScheduledTweets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('pending');
+  const [isDisconnected, setIsDisconnected] = useState(false);
 
   // Load saved filter per account when account changes
   useEffect(() => {
@@ -76,13 +77,24 @@ const Scheduling = () => {
           throw new Error(data.error || 'Failed to fetch scheduled tweets');
         }
         setScheduledTweets(data.data?.scheduled_tweets || data.scheduled_tweets || []);
+        setIsDisconnected(Boolean(data?.disconnected || data?.data?.disconnected));
       } else {
         const response = await schedulingAPI.list({ status: normalizedFilter });
         setScheduledTweets(response.data.scheduled_tweets || []);
+        setIsDisconnected(Boolean(response.data?.disconnected));
       }
     } catch (error) {
       console.error('Failed to fetch scheduled tweets:', error);
-      toast.error('Failed to load scheduled tweets');
+      const reconnectRequired =
+        error?.response?.data?.code === 'TWITTER_RECONNECT_REQUIRED' ||
+        error?.response?.data?.reconnect === true;
+      if (reconnectRequired) {
+        setIsDisconnected(true);
+        setScheduledTweets([]);
+        toast.error('Twitter is disconnected. Please reconnect in Settings.');
+      } else {
+        toast.error('Failed to load scheduled tweets');
+      }
     } finally {
       setLoading(false);
     }
@@ -132,6 +144,21 @@ const Scheduling = () => {
           <LoadingSpinner size="lg" />
           <p className="mt-4 text-gray-600">Loading scheduled tweets...</p>
         </div>
+      </div>
+    );
+  }
+
+  if (isDisconnected) {
+    return (
+      <div className="card text-center py-12">
+        <Calendar className="h-12 w-12 text-orange-500 mx-auto mb-4" />
+        <h3 className="text-lg font-medium text-gray-900 mb-2">Twitter Connection Required</h3>
+        <p className="text-gray-600 mb-6">
+          Reconnect your Twitter account to view scheduled tweets.
+        </p>
+        <a href="/settings" className="btn btn-primary btn-md">
+          Go to Settings
+        </a>
       </div>
     );
   }

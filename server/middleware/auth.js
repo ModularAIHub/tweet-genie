@@ -1,20 +1,37 @@
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import { pool } from '../config/database.js';
+import { buildReconnectRequiredPayload } from '../utils/twitterScopeResolver.js';
 
 const AUTH_DEBUG = process.env.AUTH_DEBUG === 'true';
-const AUTH_PLATFORM_TIMEOUT_MS = Number(process.env.AUTH_PLATFORM_TIMEOUT_MS || 2000);
-const AUTH_PLATFORM_CACHE_TTL_MS = Number(process.env.AUTH_PLATFORM_CACHE_TTL_MS || 60 * 1000);
+const AUTH_PLATFORM_TIMEOUT_MS = Number(process.env.AUTH_PLATFORM_TIMEOUT_MS || 4000);
+const AUTH_PLATFORM_CACHE_TTL_MS = Number(process.env.AUTH_PLATFORM_CACHE_TTL_MS || 5 * 60 * 1000);
 const AUTH_PLATFORM_CACHE_MAX_ENTRIES = Number(process.env.AUTH_PLATFORM_CACHE_MAX_ENTRIES || 500);
 const AUTH_PLATFORM_STALE_FALLBACK_MS = Number(process.env.AUTH_PLATFORM_STALE_FALLBACK_MS || 10 * 60 * 1000);
-const AUTH_TEAM_CACHE_TTL_MS = Number(process.env.AUTH_TEAM_CACHE_TTL_MS || 60 * 1000);
+const AUTH_TEAM_CACHE_TTL_MS = Number(process.env.AUTH_TEAM_CACHE_TTL_MS || 5 * 60 * 1000);
 const AUTH_TEAM_CACHE_MAX_ENTRIES = Number(process.env.AUTH_TEAM_CACHE_MAX_ENTRIES || 500);
+const AUTH_WARN_LOG_THROTTLE_MS = Number(process.env.AUTH_WARN_LOG_THROTTLE_MS || 30000);
 const AUTH_PERF_ENABLED =
   process.env.AUTH_PERF_ENABLED === 'true' ||
   (process.env.AUTH_PERF_ENABLED !== 'false' && process.env.NODE_ENV !== 'production');
 
 const platformUserCache = new Map();
 const teamMembershipCache = new Map();
+const platformLookupInflight = new Map();
+const teamLookupInflight = new Map();
+const authWarnLogState = new Map();
+
+const shouldLogWithThrottle = (key) => {
+  const now = Date.now();
+  const lastLoggedAt = authWarnLogState.get(key) || 0;
+
+  if (now - lastLoggedAt < AUTH_WARN_LOG_THROTTLE_MS) {
+    return false;
+  }
+
+  authWarnLogState.set(key, now);
+  return true;
+};
 
 const createTimingBucket = () => ({
   count: 0,
@@ -111,6 +128,8 @@ export const getAuthPerfStats = () => {
     cache: {
       platformUserCacheSize: platformUserCache.size,
       teamMembershipCacheSize: teamMembershipCache.size,
+      platformLookupInflightSize: platformLookupInflight.size,
+      teamLookupInflightSize: teamLookupInflight.size,
       platformCacheTtlMs: AUTH_PLATFORM_CACHE_TTL_MS,
       teamCacheTtlMs: AUTH_TEAM_CACHE_TTL_MS,
       platformTimeoutMs: AUTH_PLATFORM_TIMEOUT_MS,
@@ -130,12 +149,26 @@ const authLog = (...args) => {
   }
 };
 
+const authWarn = (key, ...args) => {
+  if (AUTH_DEBUG || shouldLogWithThrottle(key)) {
+    console.warn(...args);
+  }
+};
+
+const authError = (key, ...args) => {
+  if (AUTH_DEBUG || shouldLogWithThrottle(key)) {
+    console.error(...args);
+  }
+};
+
 const isHtmlRequest = (req) => req.headers.accept && req.headers.accept.includes('text/html');
 
 const getCurrentUrl = (req) => `${process.env.CLIENT_URL || 'http://localhost:5174'}${req.originalUrl}`;
 
 const getPlatformLoginUrl = (req) =>
   `${process.env.PLATFORM_URL || 'http://localhost:3000'}/login?redirect=${encodeURIComponent(getCurrentUrl(req))}`;
+
+const getPlatformApiBaseUrl = () => process.env.PLATFORM_API_URL || process.env.PLATFORM_URL || 'http://localhost:3000';
 
 const hasFreshCacheEntry = (entry, now = Date.now()) =>
   !!entry && Number.isFinite(entry.expiresAt) && entry.expiresAt > now;
@@ -165,6 +198,18 @@ const pruneCache = (cache, maxEntries) => {
 const setCacheEntry = (cache, key, value, ttlMs, maxEntries) => {
   cache.set(key, { value, expiresAt: Date.now() + ttlMs });
   pruneCache(cache, maxEntries);
+};
+
+const getOrCreateInflight = (inflightMap, key, factory) => {
+  const existing = inflightMap.get(key);
+  if (existing) return existing;
+
+  const promise = Promise.resolve()
+    .then(factory)
+    .finally(() => inflightMap.delete(key));
+
+  inflightMap.set(key, promise);
+  return promise;
 };
 
 const normalizeTeamMembership = (membership = {}) => ({
@@ -238,7 +283,7 @@ export const authenticateToken = async (req, res, next) => {
       bumpPerf('jwtVerified');
       authLog('[auth] token verified for user', decoded.userId);
     } catch (jwtError) {
-      console.warn('[auth] JWT verification failed:', jwtError.name);
+      authWarn('jwt_verification_failed', '[auth] JWT verification failed:', jwtError.name);
 
       // If token expired, return 401 and let client-side handle refresh
       if (jwtError.name === 'TokenExpiredError') {
@@ -276,12 +321,14 @@ export const authenticateToken = async (req, res, next) => {
       const platformLookupStart = Date.now();
 
       try {
-        const response = await axios.get(`${process.env.PLATFORM_URL || 'http://localhost:3000'}/api/auth/me`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          timeout: AUTH_PLATFORM_TIMEOUT_MS,
-        });
+        const response = await getOrCreateInflight(platformLookupInflight, token, () =>
+          axios.get(`${getPlatformApiBaseUrl()}/api/auth/me`, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            timeout: AUTH_PLATFORM_TIMEOUT_MS,
+          })
+        );
         recordPerfDuration('platformLookup', Date.now() - platformLookupStart);
         bumpPerf('platformNetworkSuccess');
 
@@ -307,7 +354,7 @@ export const authenticateToken = async (req, res, next) => {
         const isTimeout = platformError.code === 'ECONNABORTED' || platformError.code === 'ETIMEDOUT';
         const canUseStaleCache = hasStaleFallbackEntry(platformCacheEntry, now);
 
-        console.warn('[auth] platform /api/auth/me failed', {
+        authWarn('platform_auth_me_failed', '[auth] platform /api/auth/me failed', {
           status: platformError.response?.status,
           code: platformError.code,
           isTimeout,
@@ -379,9 +426,13 @@ export const authenticateToken = async (req, res, next) => {
         const teamLookupStart = Date.now();
 
         try {
-          const teamMembershipResult = await pool.query(
-            `SELECT team_id, role, status FROM team_members WHERE user_id = $1 AND status = 'active'`,
-            [req.user.id]
+          const teamMembershipResult = await getOrCreateInflight(
+            teamLookupInflight,
+            req.user.id,
+            () => pool.query(
+              `SELECT team_id, role, status FROM team_members WHERE user_id = $1 AND status = 'active'`,
+              [req.user.id]
+            )
           );
           recordPerfDuration('teamLookup', Date.now() - teamLookupStart);
           bumpPerf('teamDbQuerySuccess');
@@ -415,7 +466,7 @@ export const authenticateToken = async (req, res, next) => {
         } catch (teamErr) {
           recordPerfDuration('teamLookup', Date.now() - teamLookupStart);
           bumpPerf('teamDbQueryError');
-          console.error('[auth] error querying team memberships:', teamErr.message);
+          authWarn('team_membership_query_failed', '[auth] error querying team memberships:', teamErr.message);
           req.user.teamId = null;
           req.user.team_id = null;
           req.user.teamMemberships = [];
@@ -462,19 +513,35 @@ export const validateTwitterConnection = async (req, res, next) => {
   try {
     let twitterAuthData;
     let isTeamAccount = false;
+    const sendReconnectRequired = (reason, details = null) =>
+      res.status(401).json(
+        buildReconnectRequiredPayload({
+          reason,
+          details: details || undefined,
+        })
+      );
     
-    // Check for selected team account first (from header)
+    // Check for selected team account first (from headers)
     const selectedAccountId = req.headers['x-selected-account-id'];
+    const requestTeamId = req.headers['x-team-id'] || null;
     const userId = req.user?.id || req.user?.userId;
-    const teamId = req.user?.teamId || req.user?.team_id || req.ssoUser?.teamId;
 
-    // Only try team account lookup if user is actually in a team AND has selected account ID
-    if (selectedAccountId && teamId) {
+    // Team scope is explicit: only when x-team-id is present.
+    if (selectedAccountId && requestTeamId) {
       try {
         // Try to get team account credentials (OAuth2)
         const { rows } = await pool.query(
-          'SELECT * FROM team_accounts WHERE id = $1 AND team_id = $2 AND active = true',
-          [selectedAccountId, teamId]
+          `SELECT ta.*
+           FROM team_accounts ta
+           INNER JOIN team_members tm
+             ON tm.team_id = ta.team_id
+            AND tm.user_id = $3
+            AND tm.status = 'active'
+           WHERE ta.id = $1
+             AND ta.team_id = $2
+             AND ta.active = true
+           LIMIT 1`,
+          [selectedAccountId, requestTeamId, userId]
         );
         if (rows.length > 0) {
           twitterAuthData = rows[0];
@@ -482,7 +549,10 @@ export const validateTwitterConnection = async (req, res, next) => {
         }
       } catch (teamQueryErr) {
         // If team account query fails (e.g., invalid UUID format), ignore and fall back to personal account
-        console.log('[validateTwitterConnection] Team account query failed, falling back to personal account:', teamQueryErr.message);
+        authLog(
+          '[validateTwitterConnection] Team account query failed, falling back to personal account:',
+          teamQueryErr.message
+        );
       }
     }
     
@@ -494,7 +564,7 @@ export const validateTwitterConnection = async (req, res, next) => {
       );
 
       if (rows.length === 0) {
-        return res.status(400).json({ error: 'Twitter account not connected' });
+        return sendReconnectRequired('not_connected');
       }
 
       twitterAuthData = rows[0];
@@ -506,7 +576,7 @@ export const validateTwitterConnection = async (req, res, next) => {
     const refreshThreshold = new Date(tokenExpiry.getTime() - (10 * 60 * 1000)); // 10 minutes before expiry
     const minutesUntilExpiry = Math.floor((tokenExpiry - now) / (60 * 1000));
     
-    console.log('[Twitter Token Status]', {
+    authLog('[Twitter Token Status]', {
       accountType: isTeamAccount ? 'team' : 'personal',
       expiresAt: tokenExpiry.toISOString(),
       minutesUntilExpiry,
@@ -516,7 +586,9 @@ export const validateTwitterConnection = async (req, res, next) => {
     
     if (tokenExpiry <= now || now >= refreshThreshold) {
       const isExpired = tokenExpiry <= now;
-      console.log(`[Twitter Token] ${isExpired ? '⚠️ Token EXPIRED' : '⏰ Token expiring soon, attempting refresh...'} (${minutesUntilExpiry} minutes until expiry)`);
+      authLog(
+        `[Twitter Token] ${isExpired ? 'Token EXPIRED' : 'Token expiring soon, attempting refresh...'} (${minutesUntilExpiry} minutes until expiry)`
+      );
       
       // Try to refresh the token if we have a refresh token
       if (twitterAuthData.refresh_token) {
@@ -539,10 +611,10 @@ export const validateTwitterConnection = async (req, res, next) => {
           const tokens = await refreshResponse.json();
           
           if (tokens.access_token) {
-            console.log('✅ Twitter token refreshed successfully');
+            authLog('Twitter token refreshed successfully');
             // Update tokens in database
             const newExpiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
-            console.log('[Twitter Token] New expiry:', newExpiresAt.toISOString());
+            authLog('[Twitter Token] New expiry:', newExpiresAt.toISOString());
             
             if (isTeamAccount) {
               // Update team_accounts table
@@ -563,54 +635,43 @@ export const validateTwitterConnection = async (req, res, next) => {
             twitterAuthData.refresh_token = tokens.refresh_token || twitterAuthData.refresh_token;
             twitterAuthData.token_expires_at = newExpiresAt;
           } else {
-            console.warn('⚠️ Twitter token refresh returned no access token:', tokens);
+            authLog('Twitter token refresh returned no access token:', tokens);
             // Only return error if token is actually expired, not just expiring soon
             if (isExpired) {
-              console.error('❌ Token expired and cannot be refreshed. User must reconnect.');
-              return res.status(401).json({ 
-                error: 'Twitter token expired and refresh failed. Please reconnect your Twitter account.',
-                code: 'TWITTER_TOKEN_EXPIRED',
-                action: 'reconnect_twitter',
-                details: tokens.error_description || tokens.error,
-                minutesUntilExpiry: 0
-              });
+              authWarn('twitter_token_expired_refresh_missing', 'Token expired and cannot be refreshed. User must reconnect.');
+              return sendReconnectRequired('token_refresh_failed', tokens.error_description || tokens.error);
             } else {
-              console.warn(`⚠️ Token refresh failed but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
+              authLog(`Token refresh failed but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
             }
           }
         } catch (refreshError) {
-          console.error('❌ Twitter token refresh error:', refreshError.message);
+          authWarn('twitter_token_refresh_error', 'Twitter token refresh error:', refreshError.message);
           // Only return error if token is actually expired, not just expiring soon
           if (isExpired) {
-            console.error('❌ Token expired and refresh failed. User must reconnect their Twitter account.');
-            return res.status(401).json({ 
-              error: 'Twitter token expired and refresh failed. Please reconnect your Twitter account.',
-              code: 'TWITTER_TOKEN_EXPIRED',
-              action: 'reconnect_twitter',
-              details: refreshError.message,
-              minutesUntilExpiry: 0
-            });
+            authWarn(
+              'twitter_token_expired_refresh_failed',
+              'Token expired and refresh failed. User must reconnect their Twitter account.'
+            );
+            return sendReconnectRequired('token_refresh_error', refreshError.message);
           } else {
-            console.warn(`⚠️ Token refresh failed but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
+            authLog(`Token refresh failed but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
           }
         }
       } else {
-        console.warn('⚠️ No refresh token available for this account');
+        authLog('No refresh token available for this account');
         // Only return error if token is actually expired, not just expiring soon
         if (isExpired) {
-          console.error('❌ Token expired and no refresh token. User must reconnect their Twitter account.');
-          return res.status(401).json({ 
-            error: 'Twitter token expired. Please reconnect your Twitter account.',
-            code: 'TWITTER_TOKEN_EXPIRED',
-            action: 'reconnect_twitter',
-            minutesUntilExpiry: 0
-          });
+          authWarn(
+            'twitter_token_expired_no_refresh',
+            'Token expired and no refresh token. User must reconnect their Twitter account.'
+          );
+          return sendReconnectRequired('token_expired_no_refresh');
         } else {
-          console.warn(`⚠️ No refresh token but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
+          authLog(`No refresh token but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
         }
       }
     } else {
-      console.log(`✅ Twitter token valid for ${minutesUntilExpiry} minutes`);
+      authLog(`Twitter token valid for ${minutesUntilExpiry} minutes`);
     }
 
     // Map the account data to the expected format for tweet posting
@@ -629,7 +690,7 @@ export const validateTwitterConnection = async (req, res, next) => {
     
     next();
   } catch (error) {
-    console.error('Twitter validation error:', error);
+    authError('twitter_validation_error', 'Twitter validation error:', error?.message || error);
     res.status(500).json({ error: 'Failed to validate Twitter connection' });
   }
 };

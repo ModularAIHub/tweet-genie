@@ -18,6 +18,7 @@ export const useAccountAwareAPI = () => {
    */
   const fetchForCurrentAccount = async (endpoint, options = {}) => {
     const accountId = getCurrentAccountId();
+    const isTeamScope = Boolean(selectedAccount?.team_id);
     // Build full URL using API base URL, not window.location.origin
     const url = new URL(endpoint, API_BASE_URL);
 
@@ -26,13 +27,12 @@ export const useAccountAwareAPI = () => {
       ...options.headers,
     };
 
-    // Add account ID header if we have one (team users)
-    if (accountId) {
+    // Team account headers are intentionally omitted in personal mode.
+    if (isTeamScope && accountId) {
       headers['X-Selected-Account-Id'] = accountId;
     }
 
-    // Add x-team-id header if selectedAccount has a team_id property
-    if (selectedAccount && selectedAccount.team_id) {
+    if (isTeamScope) {
       headers['x-team-id'] = selectedAccount.team_id;
     }
 
@@ -52,18 +52,21 @@ export const useAccountAwareAPI = () => {
    */
   const postForCurrentAccount = async (endpoint, data = {}, options = {}) => {
     const accountId = getCurrentAccountId();
+    const isTeamScope = Boolean(selectedAccount?.team_id);
     
-    // Include account ID in the data payload only if we have one
-    const payload = accountId ? { ...data, account_id: accountId } : data;
+    // Include account_id only in team mode.
+    const payload = isTeamScope && accountId ? { ...data, account_id: accountId } : data;
 
     const headers = {
       'Content-Type': 'application/json',
       ...options.headers,
     };
 
-    // Only add account ID header if we have one (team users)
-    if (accountId) {
+    if (isTeamScope && accountId) {
       headers['X-Selected-Account-Id'] = accountId;
+    }
+    if (isTeamScope) {
+      headers['x-team-id'] = selectedAccount.team_id;
     }
 
     return fetch(endpoint, {

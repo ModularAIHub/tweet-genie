@@ -14,6 +14,13 @@ const newPlatformPool = new Pool({
 });
 
 const router = express.Router();
+const TWITTER_DEBUG = process.env.TWITTER_DEBUG === 'true';
+
+const twitterDebug = (...args) => {
+  if (TWITTER_DEBUG) {
+    console.log(...args);
+  }
+};
 
 function sendPopupResult(
   res,
@@ -699,19 +706,19 @@ router.post('/disconnect', async (req, res) => {
   try {
     const userId = req.user?.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const teamId = req.user?.teamId || req.user?.team_id;
+    const requestTeamId = req.headers['x-team-id'] || null;
 
     if (!userId) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    if (selectedAccountId && teamId) {
+    if (selectedAccountId && requestTeamId) {
       const membershipResult = await pool.query(
         `SELECT 1
          FROM team_members
          WHERE team_id = $1 AND user_id = $2 AND status = 'active'
          LIMIT 1`,
-        [teamId, userId]
+        [requestTeamId, userId]
       );
 
       if (membershipResult.rows.length === 0) {
@@ -728,14 +735,14 @@ router.post('/disconnect', async (req, res) => {
              oauth1_access_token_secret = NULL,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $1 AND team_id = $2`,
-        [selectedAccountId, teamId]
+        [selectedAccountId, requestTeamId]
       );
 
       if (rowCount === 0) {
         return res.status(404).json({ error: 'No team Twitter account found to disconnect' });
       }
 
-      console.log('Team Twitter account disconnected successfully:', { userId, teamId, selectedAccountId });
+      console.log('Team Twitter account disconnected successfully:', { userId, teamId: requestTeamId, selectedAccountId });
       return res.json({
         success: true,
         message: 'Twitter account disconnected successfully',
@@ -1036,7 +1043,7 @@ router.get('/team-accounts', async (req, res) => {
       return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    console.log('[TEAM-ACCOUNTS] Fetching team Twitter accounts for user:', userId);
+    twitterDebug('[TEAM-ACCOUNTS] Fetching team Twitter accounts for user:', userId);
 
     // Get user's team (assuming they can only be in one active team)
     const teamResult = await newPlatformPool.query(`
@@ -1045,15 +1052,15 @@ router.get('/team-accounts', async (req, res) => {
       LIMIT 1
     `, [userId]);
 
-    console.log('[TEAM-ACCOUNTS] Team query result for user', userId, ':', teamResult.rows);
+    twitterDebug('[TEAM-ACCOUNTS] Team query result for user', userId, ':', teamResult.rows);
 
     if (teamResult.rows.length === 0) {
-      console.log('[TEAM-ACCOUNTS] User', userId, 'is not in any active team');
+      twitterDebug('[TEAM-ACCOUNTS] User', userId, 'is not in any active team');
       return res.json({ accounts: [] }); // User not in any team
     }
 
     const teamId = teamResult.rows[0].team_id;
-    console.log('[TEAM-ACCOUNTS] User', userId, 'is in team', teamId);
+    twitterDebug('[TEAM-ACCOUNTS] User', userId, 'is in team', teamId);
 
     // Get Twitter accounts from user_social_accounts (OAuth1)
     const oauth1AccountsResult = await newPlatformPool.query(`
@@ -1072,7 +1079,7 @@ router.get('/team-accounts', async (req, res) => {
       ORDER BY created_at ASC
     `, [teamId]);
 
-    console.log('[TEAM-ACCOUNTS] OAuth1 accounts found:', oauth1AccountsResult.rows.length);
+    twitterDebug('[TEAM-ACCOUNTS] OAuth1 accounts found:', oauth1AccountsResult.rows.length);
 
     const oauth1Accounts = oauth1AccountsResult.rows.map(account => ({
       id: account.id,
@@ -1111,7 +1118,7 @@ router.get('/team-accounts', async (req, res) => {
       ORDER BY updated_at DESC
     `, [teamId]);
 
-    console.log('[TEAM-ACCOUNTS] Team accounts found:', oauth2AccountsResult.rows.length);
+    twitterDebug('[TEAM-ACCOUNTS] Team accounts found:', oauth2AccountsResult.rows.length);
 
     const oauth2Accounts = oauth2AccountsResult.rows.map(account => ({
       id: account.id,
@@ -1134,14 +1141,15 @@ router.get('/team-accounts', async (req, res) => {
     // Merge both account types
     const accounts = [...oauth1Accounts, ...oauth2Accounts];
 
-    console.log(`[TEAM-ACCOUNTS] Response for team ${teamId}:`, JSON.stringify(accounts, null, 2));
+    twitterDebug(`[TEAM-ACCOUNTS] Response for team ${teamId}:`, JSON.stringify(accounts, null, 2));
     res.json({ 
       success: true,
       accounts,
       team_id: teamId
     });
   } catch (error) {
-    console.error('[TEAM-ACCOUNTS] Failed to fetch team Twitter accounts:', error);
+    twitterDebug('[TEAM-ACCOUNTS] Failed to fetch team Twitter accounts (detail):', error);
+    console.error('[TEAM-ACCOUNTS] Failed to fetch team Twitter accounts:', error?.message || error);
     res.status(500).json({ error: 'Failed to fetch team accounts' });
   }
 });
@@ -1150,22 +1158,30 @@ router.get('/team-accounts', async (req, res) => {
 router.get('/token-status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId;
-    const teamId = req.user?.teamId || req.user?.team_id;
+    const requestTeamId = req.headers['x-team-id'] || null;
     const selectedAccountId = req.headers['x-selected-account-id'];
     
-    console.log('[token-status] Checking for user:', userId, 'team:', teamId, 'account:', selectedAccountId);
+    twitterDebug('[token-status] Checking for user:', userId, 'team:', requestTeamId, 'account:', selectedAccountId);
     
     let tokenData = null;
     
-    // Check team account first if selected
-    if (selectedAccountId && teamId) {
+    // Team scope is explicit via x-team-id.
+    if (selectedAccountId && requestTeamId) {
       const { rows: teamRows } = await pool.query(
-        'SELECT token_expires_at, oauth1_access_token FROM team_accounts WHERE id = $1 AND team_id = $2',
-        [selectedAccountId, teamId]
+        `SELECT ta.token_expires_at, ta.oauth1_access_token
+         FROM team_accounts ta
+         INNER JOIN team_members tm
+           ON tm.team_id = ta.team_id
+          AND tm.user_id = $3
+          AND tm.status = 'active'
+         WHERE ta.id = $1
+           AND ta.team_id = $2
+         LIMIT 1`,
+        [selectedAccountId, requestTeamId, userId]
       );
       if (teamRows.length > 0) {
         tokenData = teamRows[0];
-        console.log('[token-status] Team account found:', { 
+        twitterDebug('[token-status] Team account found:', {
           hasOAuth1: !!tokenData.oauth1_access_token,
           expiresAt: tokenData.token_expires_at 
         });
@@ -1180,7 +1196,7 @@ router.get('/token-status', authenticateToken, async (req, res) => {
       );
       if (personalRows.length > 0) {
         tokenData = personalRows[0];
-        console.log('[token-status] Personal account found:', { 
+        twitterDebug('[token-status] Personal account found:', {
           hasOAuth1: !!tokenData.oauth1_access_token,
           expiresAt: tokenData.token_expires_at 
         });
@@ -1188,13 +1204,13 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     }
     
     if (!tokenData) {
-      console.log('[token-status] No token data found - not connected');
+      twitterDebug('[token-status] No token data found - not connected');
       return res.json({ connected: false });
     }
     
     // OAuth 1.0a tokens don't expire, so if present, account is always connected
     if (tokenData.oauth1_access_token) {
-      console.log('[token-status] OAuth 1.0a token present - returning non-expiring status');
+      twitterDebug('[token-status] OAuth 1.0a token present - returning non-expiring status');
       return res.json({
         connected: true,
         expiresAt: null,
@@ -1207,7 +1223,7 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     
     // Check OAuth 2.0 token expiration
     if (!tokenData.token_expires_at) {
-      console.log('[token-status] No token_expires_at found - not connected');
+      twitterDebug('[token-status] No token_expires_at found - not connected');
       return res.json({ connected: false });
     }
     
@@ -1215,7 +1231,7 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     const expiresAt = new Date(tokenData.token_expires_at);
     const minutesUntilExpiry = Math.floor((expiresAt - now) / (60 * 1000));
     
-    console.log('[token-status] OAuth 2.0 status:', {
+    twitterDebug('[token-status] OAuth 2.0 status:', {
       isExpired: expiresAt <= now,
       minutesUntilExpiry
     });
@@ -1229,7 +1245,8 @@ router.get('/token-status', authenticateToken, async (req, res) => {
       isOAuth1: false
     });
   } catch (error) {
-    console.error('Failed to check token status:', error);
+    twitterDebug('[token-status] Failed to check token status (detail):', error);
+    console.error('Failed to check token status:', error?.message || error);
     res.status(500).json({ error: 'Failed to check token status' });
   }
 });

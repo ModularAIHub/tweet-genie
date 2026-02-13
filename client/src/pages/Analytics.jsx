@@ -82,10 +82,14 @@ const Analytics = () => {
   const [syncStatus, setSyncStatus] = useState(null);
   const [currentTime, setCurrentTime] = useState(Date.now());
   const [syncSummary, setSyncSummary] = useState(null);
+  const [isDisconnected, setIsDisconnected] = useState(false);
 
   const fetchSyncStatus = async () => {
     try {
       const response = await api.get('/api/analytics/sync-status');
+      if (typeof response.data?.disconnected === 'boolean') {
+        setIsDisconnected(response.data.disconnected);
+      }
       if (response.data?.syncStatus) {
         setSyncStatus(response.data.syncStatus);
       }
@@ -102,20 +106,37 @@ const Analytics = () => {
       if (isTeamUser && selectedAccount) {
         const apiResponse = await accountAPI.getAnalytics(`${timeframe}d`);
         const data = await apiResponse.json();
-        setAnalyticsData(data.data || data);
+        const normalizedData = data.data || data;
+        setAnalyticsData(normalizedData);
+        setIsDisconnected(Boolean(normalizedData?.disconnected));
       } else {
         const response = await api.get(`/api/analytics/overview?days=${timeframe}`);
         setAnalyticsData(response.data);
+        setIsDisconnected(Boolean(response.data?.disconnected));
       }
     } catch (error) {
       console.error('Failed to fetch analytics:', error);
-      setError('Failed to load analytics data');
+      const reconnectRequired =
+        error?.response?.data?.code === 'TWITTER_RECONNECT_REQUIRED' ||
+        error?.response?.data?.reconnect === true;
+      if (reconnectRequired) {
+        setIsDisconnected(true);
+        setAnalyticsData(null);
+        setError('Twitter is disconnected. Please reconnect your account in Settings.');
+      } else {
+        setError('Failed to load analytics data');
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const syncAnalytics = async () => {
+    if (isDisconnected) {
+      setError('Twitter is disconnected. Please reconnect your account in Settings before syncing.');
+      return;
+    }
+
     const nextAllowedAtMs = syncStatus?.nextAllowedAt ? new Date(syncStatus.nextAllowedAt).getTime() : 0;
     if (nextAllowedAtMs && nextAllowedAtMs > Date.now()) {
       const waitMinutes = Math.max(1, Math.ceil((nextAllowedAtMs - Date.now()) / 60000));
@@ -129,6 +150,9 @@ const Analytics = () => {
       const response = await api.post('/api/analytics/sync', {}, { timeout: 120000 });
       if (response.data?.syncStatus) {
         setSyncStatus(response.data.syncStatus);
+      }
+      if (typeof response.data?.disconnected === 'boolean') {
+        setIsDisconnected(response.data.disconnected);
       }
       if (response.data?.stats) {
         setSyncSummary({
@@ -233,10 +257,17 @@ const Analytics = () => {
         } else {
           setError('Rate limit exceeded. Please try again later.');
         }
+      } else if (
+        (error.response?.status === 401 || error.response?.status === 400) &&
+        (error.response?.data?.code === 'TWITTER_RECONNECT_REQUIRED' || error.response?.data?.reconnect)
+      ) {
+        setIsDisconnected(true);
+        setError('Twitter is disconnected. Please reconnect your account in Settings.');
       } else if (error.response?.data?.type === 'twitter_api_error') {
         setError(`Twitter API Error: ${error.response.data.message}`);
       } else {
-        setError('Failed to sync analytics data. Please try again later.');
+        const backendError = error.response?.data?.message || error.response?.data?.error;
+        setError(backendError || 'Failed to sync analytics data. Please try again later.');
       }
     } finally {
       setSyncing(false);
@@ -258,6 +289,23 @@ const Analytics = () => {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (isDisconnected || analyticsData?.disconnected) {
+    return (
+      <div className="space-y-6">
+        <div className="card text-center py-12">
+          <AlertCircle className="h-12 w-12 text-orange-500 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold text-gray-900">Twitter Connection Required</h2>
+          <p className="text-gray-600 mt-2 mb-6">
+            Reconnect your Twitter account to view analytics and run sync.
+          </p>
+          <a href="/settings" className="btn btn-primary">
+            Go to Settings
+          </a>
+        </div>
       </div>
     );
   }

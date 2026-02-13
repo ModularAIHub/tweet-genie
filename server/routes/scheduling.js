@@ -5,9 +5,17 @@ import { validateTwitterConnection } from '../middleware/auth.js';
 import { creditService } from '../services/creditService.js';
 import { scheduledTweetService } from '../services/scheduledTweetService.js';
 import { scheduledTweetQueue } from '../services/queueService.js';
+import { resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import moment from 'moment-timezone';
 
 const router = express.Router();
+const SCHEDULING_DEBUG = process.env.SCHEDULING_DEBUG === 'true';
+
+const schedulingDebug = (...args) => {
+  if (SCHEDULING_DEBUG) {
+    console.log(...args);
+  }
+};
 
 const SCHEDULED_STATUS_GROUPS = {
   pending: ['pending', 'processing'],
@@ -55,10 +63,15 @@ router.get('/scheduled', async (req, res) => {
     const { safePage, safeLimit, offset } = getNormalizedPagination(page, limit);
     const { requestedStatus, statuses } = resolveScheduledStatuses(status);
     const teamId = req.headers['x-team-id'] || null;
+    const userId = req.user.id;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId });
 
-    console.log('[ScheduledTweets] Request:', {
-      userId: req.user.id,
+    schedulingDebug('[ScheduledTweets] Request:', {
+      userId,
       teamId,
+      selectedAccountId,
+      mode: twitterScope.mode,
       page: safePage,
       limit: safeLimit,
       status: requestedStatus,
@@ -71,12 +84,12 @@ router.get('/scheduled', async (req, res) => {
       // Check if user is a member of the team
       const { rows: memberRows } = await pool.query(
         'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = $3',
-        [teamId, req.user.id, 'active']
+        [teamId, userId, 'active']
       );
-      console.log('[ScheduledTweets] Team membership rows:', memberRows);
+      schedulingDebug('[ScheduledTweets] Team membership rows:', memberRows);
       
       if (memberRows.length === 0) {
-        console.log('[ScheduledTweets] Not a member of this team:', teamId);
+        schedulingDebug('[ScheduledTweets] Not a member of this team:', teamId);
         return res.status(403).json({ error: 'Not a member of this team' });
       }
 
@@ -101,32 +114,41 @@ router.get('/scheduled', async (req, res) => {
          LIMIT $${teamLimitIdx} OFFSET $${teamOffsetIdx}`,
         teamParams
       );
-      console.log('[ScheduledTweets] Team scheduled tweets found:', result.rows.length);
+      schedulingDebug('[ScheduledTweets] Team scheduled tweets found:', result.rows.length);
       rows = result.rows;
     } else {
+      if (!twitterScope.connected && twitterScope.mode === 'personal') {
+        return res.json({ scheduled_tweets: [], disconnected: true });
+      }
+
       // Fetch only user's personal scheduled tweets (no team_id)
-      const personalStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
+      const personalStatusClause = statuses ? 'AND st.status = ANY($3::text[])' : '';
       const personalParams = statuses
-        ? [req.user.id, statuses, safeLimit, offset]
-        : [req.user.id, safeLimit, offset];
-      const personalLimitIdx = statuses ? 3 : 2;
-      const personalOffsetIdx = statuses ? 4 : 3;
+        ? [userId, twitterScope.twitterUserId, statuses, safeLimit, offset]
+        : [userId, twitterScope.twitterUserId, safeLimit, offset];
+      const personalLimitIdx = statuses ? 4 : 3;
+      const personalOffsetIdx = statuses ? 5 : 4;
 
       const result = await pool.query(
         `SELECT st.*, ta.twitter_username
          FROM scheduled_tweets st
          LEFT JOIN twitter_auth ta ON st.user_id = ta.user_id
-         WHERE st.user_id = $1 AND (st.team_id IS NULL OR st.team_id::text = '')
-         ${personalStatusClause}
+         WHERE st.user_id = $1
+          AND (st.team_id IS NULL OR st.team_id::text = '')
+          AND (
+            st.author_id = $2
+            OR (st.author_id IS NULL AND st.user_id = $1)
+          )
+          ${personalStatusClause}
          ORDER BY st.scheduled_for ASC
          LIMIT $${personalLimitIdx} OFFSET $${personalOffsetIdx}`,
         personalParams
       );
-      console.log('[ScheduledTweets] Personal scheduled tweets found:', result.rows.length);
+      schedulingDebug('[ScheduledTweets] Personal scheduled tweets found:', result.rows.length);
       rows = result.rows;
     }
 
-    res.json({ scheduled_tweets: rows });
+    res.json({ scheduled_tweets: rows, disconnected: false });
 
   } catch (error) {
     console.error('Get scheduled tweets error:', error);
@@ -135,7 +157,7 @@ router.get('/scheduled', async (req, res) => {
 });
 
 // Bulk schedule drafts
-router.post('/bulk', async (req, res) => {
+router.post('/bulk', validateTwitterConnection, async (req, res) => {
   try {
     const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
@@ -157,6 +179,17 @@ router.post('/bulk', async (req, res) => {
       );
       if (teamAccountRows.length > 0) {
         accountId = teamAccountRows[0].id;
+      }
+    }
+
+    let authorId = req.twitterAccount?.twitter_user_id || null;
+    if (teamId && accountId) {
+      const { rows: teamScopeRows } = await pool.query(
+        'SELECT twitter_user_id FROM team_accounts WHERE id = $1 LIMIT 1',
+        [accountId]
+      );
+      if (teamScopeRows.length > 0) {
+        authorId = teamScopeRows[0].twitter_user_id || authorId;
       }
     }
     
@@ -193,10 +226,16 @@ router.post('/bulk', async (req, res) => {
       // If it's a thread, ensure threadParts is properly formatted
       if (isThread && threadParts && Array.isArray(threadParts)) {
         threadParts = threadParts.filter(part => part && part.trim().length > 0);
-        console.log(`📝 Scheduling thread with ${threadParts.length} parts:`, threadParts.map((p, i) => `Part ${i + 1}: ${p.substring(0, 50)}...`));
+        schedulingDebug(
+          `Scheduling thread with ${threadParts.length} parts:`,
+          threadParts.map((p, i) => `Part ${i + 1}: ${p.substring(0, 50)}...`)
+        );
       } else if (isThread && content && content.includes('---')) {
         threadParts = content.split('---').map(part => part.trim()).filter(Boolean);
-        console.log(`📝 Scheduling thread (split by ---) with ${threadParts.length} parts:`, threadParts.map((p, i) => `Part ${i + 1}: ${p.substring(0, 50)}...`));
+        schedulingDebug(
+          `Scheduling thread (split by ---) with ${threadParts.length} parts:`,
+          threadParts.map((p, i) => `Part ${i + 1}: ${p.substring(0, 50)}...`)
+        );
       }
       
       if (frequency === 'daily') {
@@ -219,12 +258,14 @@ router.post('/bulk', async (req, res) => {
         }
         
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, team_id, account_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
-          [userId, teamId, accountId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
+          `INSERT INTO scheduled_tweets (user_id, team_id, account_id, author_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
+          [userId, teamId, accountId, authorId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
         );
         
-        console.log(`✅ [Daily] Scheduled ID ${rows[0].id}: "${mainContent.substring(0, 40)}..." with ${threadTweets.length} thread tweets`);
+        schedulingDebug(
+          `[Daily] Scheduled ID ${rows[0].id}: "${mainContent.substring(0, 40)}..." with ${threadTweets.length} thread tweets`
+        );
         
         if (approvalStatus === 'approved') {
           const delay = Math.max(0, new Date(scheduledForUTC).getTime() - Date.now());
@@ -259,9 +300,9 @@ router.post('/bulk', async (req, res) => {
         }
         
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, team_id, account_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
-          [userId, teamId, accountId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
+          `INSERT INTO scheduled_tweets (user_id, team_id, account_id, author_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
+          [userId, teamId, accountId, authorId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
         );
         
         if (approvalStatus === 'approved') {
@@ -296,9 +337,9 @@ router.post('/bulk', async (req, res) => {
         }
         
         const { rows } = await pool.query(
-          `INSERT INTO scheduled_tweets (user_id, team_id, account_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
-          [userId, teamId, accountId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
+          `INSERT INTO scheduled_tweets (user_id, team_id, account_id, author_id, content, media, media_urls, thread_tweets, thread_media, scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
+          [userId, teamId, accountId, authorId, mainContent, JSON.stringify(media || []), JSON.stringify(media || []), JSON.stringify(threadTweets), JSON.stringify(threadMediaArr), scheduledForUTC, timezone, approvalStatus, approvedBy, approvalStatus === 'pending_approval' ? new Date() : null]
         );
         
         if (approvalStatus === 'approved') {
@@ -329,6 +370,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     const userId = req.user.id;
     let teamId = req.headers['x-team-id'] || null;
     let accountId = null;
+    let authorId = req.twitterAccount?.twitter_user_id || null;
     
     // If frontend sends selectedAccount.team_id, use that
     if (!teamId && req.body.team_id) {
@@ -338,11 +380,12 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     if (teamId) {
       // Find the active team account for this team
       const { rows: teamAccountRows } = await pool.query(
-        'SELECT id FROM team_accounts WHERE team_id = $1 AND active = true LIMIT 1',
+        'SELECT id, twitter_user_id FROM team_accounts WHERE team_id = $1 AND active = true LIMIT 1',
         [teamId]
       );
       if (teamAccountRows.length > 0) {
         accountId = teamAccountRows[0].id;
+        authorId = teamAccountRows[0].twitter_user_id || authorId;
       }
     }
 
@@ -407,8 +450,8 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
         .map(t => (t || '').trim())
         .filter(t => t.length > 0);
       
-      console.log('[Thread Unicode Debug] Incoming thread:', thread);
-      console.log('[Thread Unicode Debug] Flat thread:', flatThread);
+      schedulingDebug('[Thread Unicode Debug] Incoming thread:', thread);
+      schedulingDebug('[Thread Unicode Debug] Flat thread:', flatThread);
       
       if (flatThread.length > 0) {
         mainContent = flatThread[0];
@@ -436,24 +479,25 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     // Save scheduled tweet
     const { rows } = await pool.query(
       `INSERT INTO scheduled_tweets (
-        user_id, team_id, account_id, content, media, media_urls, thread_tweets, thread_media, 
+        user_id, team_id, account_id, author_id, content, media, media_urls, thread_tweets, thread_media, 
         scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at,
         created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       RETURNING *`,
       [
         userId, 
         teamId || null, 
-        accountId || null, 
-        mainContent, 
-        JSON.stringify(media), 
-        JSON.stringify(media), 
-        JSON.stringify(threadTweets), 
-        JSON.stringify(threadMediaArr), 
-        scheduledTime, 
-        timezone, 
-        approvalStatus, 
-        approvedBy, 
+        accountId || null,
+        authorId,
+        mainContent,
+        JSON.stringify(media),
+        JSON.stringify(media),
+        JSON.stringify(threadTweets),
+        JSON.stringify(threadMediaArr),
+        scheduledTime,
+        timezone,
+        approvalStatus,
+        approvedBy,
         approvalStatus === 'pending_approval' ? new Date() : null
       ]
     );
@@ -466,9 +510,9 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
         { scheduledTweetId: rows[0].id },
         { delay }
       );
-      console.log(`✅ Scheduled tweet for ${scheduledTime.toISOString()}`);
+      schedulingDebug(`Scheduled tweet for ${scheduledTime.toISOString()}`);
     } else {
-      console.log(`📋 Tweet scheduled for ${scheduledTime.toISOString()} - pending approval`);
+      schedulingDebug(`Tweet scheduled for ${scheduledTime.toISOString()} - pending approval`);
     }
 
     res.json({
@@ -502,13 +546,16 @@ router.get('/', async (req, res) => {
     const { safePage, safeLimit, offset } = getNormalizedPagination(page, limit);
     const { requestedStatus, statuses } = resolveScheduledStatuses(status);
     const teamId = req.headers['x-team-id'] || null;
+    const userId = req.user.id;
+    const selectedAccountId = req.headers['x-selected-account-id'];
+    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId });
 
     let rows;
     if (teamId) {
       // Check team membership
       const { rows: memberRows } = await pool.query(
         'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = $3',
-        [teamId, req.user.id, 'active']
+        [teamId, userId, 'active']
       );
       
       if (memberRows.length === 0) {
@@ -538,29 +585,38 @@ router.get('/', async (req, res) => {
       );
       rows = result.rows;
     } else {
+      if (!twitterScope.connected && twitterScope.mode === 'personal') {
+        return res.json({ scheduled_tweets: [], disconnected: true });
+      }
+
       // Fetch personal scheduled tweets only
-      const personalStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
+      const personalStatusClause = statuses ? 'AND st.status = ANY($3::text[])' : '';
       const personalParams = statuses
-        ? [req.user.id, statuses, safeLimit, offset]
-        : [req.user.id, safeLimit, offset];
-      const personalLimitIdx = statuses ? 3 : 2;
-      const personalOffsetIdx = statuses ? 4 : 3;
+        ? [userId, twitterScope.twitterUserId, statuses, safeLimit, offset]
+        : [userId, twitterScope.twitterUserId, safeLimit, offset];
+      const personalLimitIdx = statuses ? 4 : 3;
+      const personalOffsetIdx = statuses ? 5 : 4;
 
       const result = await pool.query(
-        `SELECT st.*, ta.twitter_username
-         FROM scheduled_tweets st
-         LEFT JOIN twitter_auth ta ON st.user_id = ta.user_id
-         WHERE st.user_id = $1 AND (st.team_id IS NULL OR st.team_id::text = '')
-         ${personalStatusClause}
-         ORDER BY st.scheduled_for ASC
-         LIMIT $${personalLimitIdx} OFFSET $${personalOffsetIdx}`,
-        personalParams
+         `SELECT st.*, ta.twitter_username
+          FROM scheduled_tweets st
+          LEFT JOIN twitter_auth ta ON st.user_id = ta.user_id
+          WHERE st.user_id = $1
+           AND (st.team_id IS NULL OR st.team_id::text = '')
+           AND (
+             st.author_id = $2
+             OR (st.author_id IS NULL AND st.user_id = $1)
+           )
+          ${personalStatusClause}
+          ORDER BY st.scheduled_for ASC
+          LIMIT $${personalLimitIdx} OFFSET $${personalOffsetIdx}`,
+         personalParams
       );
       rows = result.rows;
     }
 
-    console.log('[ScheduledTweets] List query:', {
-      userId: req.user.id,
+    schedulingDebug('[ScheduledTweets] List query:', {
+      userId,
       teamId,
       page: safePage,
       limit: safeLimit,
@@ -569,7 +625,7 @@ router.get('/', async (req, res) => {
       resultCount: rows.length
     });
 
-    res.json({ scheduled_tweets: rows });
+    res.json({ scheduled_tweets: rows, disconnected: false });
 
   } catch (error) {
     console.error('Get scheduled tweets error:', error);

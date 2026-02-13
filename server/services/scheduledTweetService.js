@@ -214,14 +214,15 @@ class ScheduledTweetService {
     // Extract team_id and account_id from options
     const teamId = options.teamId || options.team_id || null;
     const accountId = options.accountId || options.account_id || null;
+    const authorId = options.authorId || options.author_id || null;
 
 
     // Insert into scheduled_tweets with team_id and account_id
     const insertQuery = `
       INSERT INTO scheduled_tweets
-        (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, team_id, account_id, created_at, updated_at)
+        (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, team_id, account_id, author_id, created_at, updated_at)
       VALUES
-        ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       RETURNING id, scheduled_for;
     `;
     const values = [
@@ -232,7 +233,8 @@ class ScheduledTweetService {
       JSON.stringify(mediaUrls),
       JSON.stringify(threadTweets),
       teamId,
-      accountId
+      accountId,
+      authorId
     ];
 
 
@@ -322,6 +324,7 @@ class ScheduledTweetService {
     scheduledTweet.twitter_username = accountRow.twitter_username;
     scheduledTweet.oauth1_access_token = accountRow.oauth1_access_token || null;
     scheduledTweet.oauth1_access_token_secret = accountRow.oauth1_access_token_secret || null;
+    scheduledTweet.author_id = scheduledTweet.author_id || accountRow.twitter_user_id || null;
     scheduledTweet.isTeamAccount = accountType === 'team';
     console.log(`[Scheduled Tweet] Credentials attached:`, {
       hasOAuth2: !!scheduledTweet.access_token,
@@ -543,16 +546,18 @@ class ScheduledTweetService {
       const tweetInsertQuery = `
         INSERT INTO tweets (
           user_id, content, tweet_id, status, posted_at, 
-          source, account_id, created_at, updated_at
-        ) VALUES ($1, $2, $3, 'posted', CURRENT_TIMESTAMP, 'platform', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          source, account_id, author_id, created_at, updated_at
+        ) VALUES ($1, $2, $3, 'posted', CURRENT_TIMESTAMP, 'platform', $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
       `;
       const accountId = scheduledTweet.account_id || null;
+      const authorId = scheduledTweet.author_id || null;
       const { rows: insertedTweet } = await pool.query(tweetInsertQuery, [
         scheduledTweet.user_id,
         cleanContent,
         tweetResponse.data.id,
-        accountId
+        accountId,
+        authorId
       ]);
       console.log(`Inserted main tweet into history with ID: ${insertedTweet[0].id}`);
       if (threadTweetIds.length > 0) {
@@ -561,7 +566,8 @@ class ScheduledTweetService {
             scheduledTweet.user_id,
             threadTweet.content,
             threadTweet.tweetId,
-            accountId
+            accountId,
+            authorId
           ]);
         }
         console.log(`Inserted ${threadTweetIds.length} additional thread tweets into history`);
