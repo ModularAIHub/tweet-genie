@@ -22,6 +22,7 @@ const Settings = () => {
   const [loading, setLoading] = useState(true);
   const [showApiKey, setShowApiKey] = useState({});
   const oauthMessageReceivedRef = useRef(false);
+  const OAUTH_RESULT_STORAGE_KEY = 'suitegenie_oauth_result';
 
   const getAllowedPopupOrigins = () => {
     const allowed = new Set([window.location.origin]);
@@ -68,6 +69,39 @@ const Settings = () => {
       toast.error(errorMessages[callbackError] || 'Twitter connection failed. Please try again.');
       window.history.replaceState({}, document.title, window.location.pathname);
     }
+
+    const handleStoredOauthResult = async () => {
+      try {
+        const raw = localStorage.getItem(OAUTH_RESULT_STORAGE_KEY);
+        if (!raw) return;
+
+        const payload = JSON.parse(raw);
+        if (!payload?.type) return;
+
+        if (payload.type === 'TWITTER_AUTH_SUCCESS' || payload.type === 'twitter_auth_success') {
+          toast.success('Twitter account connected successfully!');
+          await refreshAfterOauth();
+        } else if (payload.type === 'TWITTER_AUTH_ERROR' || payload.type === 'twitter_auth_error') {
+          toast.error(payload.error || 'Failed to connect Twitter account');
+        }
+      } catch {
+        // ignore invalid payload
+      } finally {
+        localStorage.removeItem(OAUTH_RESULT_STORAGE_KEY);
+      }
+    };
+
+    const storageListener = (event) => {
+      if (event.key === OAUTH_RESULT_STORAGE_KEY) {
+        handleStoredOauthResult().catch(() => {});
+      }
+    };
+    window.addEventListener('storage', storageListener);
+    handleStoredOauthResult().catch(() => {});
+
+    return () => {
+      window.removeEventListener('storage', storageListener);
+    };
   }, []);
 
   const fetchData = async () => {

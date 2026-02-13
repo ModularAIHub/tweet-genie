@@ -45,19 +45,25 @@ function sendPopupResult(
     <html>
       <body>
         <script>
+          var payload = ${eventData};
           try {
             if (window.opener) {
-              window.opener.postMessage(${eventData}, '*');
+              window.opener.postMessage(payload, '*');
+            }
+          } catch (e) {}
+          try {
+            if (!window.opener) {
+              localStorage.setItem('suitegenie_oauth_result', JSON.stringify(payload));
             }
           } catch (e) {}
           window.close();
           setTimeout(function () {
             try { window.open('', '_self'); } catch (e) {}
             try { window.close(); } catch (e) {}
-            if (!window.closed) {
+            if (!window.closed || !window.opener) {
               window.location.replace(${fallbackUrl});
             }
-          }, 120);
+          }, 150);
         </script>
         <p>${safeMessage}</p>
       </body>

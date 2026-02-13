@@ -19,6 +19,7 @@ import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
 import TeamRedirectHandler from '../components/TeamRedirectHandler';
+import { isPageVisible } from '../utils/requestCache';
 
 const Dashboard = () => {
   // No auto-redirect. User must click Twitter button to start connection.
@@ -38,7 +39,7 @@ const Dashboard = () => {
   useEffect(() => {
     // For team users: wait for account selection
     // For individual users: fetch data immediately (even if selectedAccount is null)
-    if (!accountsLoading) {
+    if (!accountsLoading && isPageVisible()) {
       // Fetch if:
       // 1. Team user with selected account, OR
       // 2. Individual user (accounts.length === 0) regardless of selectedAccount state
@@ -59,9 +60,11 @@ const Dashboard = () => {
       
       try {
         const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
-          isTeamUser ? accountAPI.getAnalytics('50d').catch(e => ({ error: true })) : analyticsAPI.getOverview({ days: 50 }),
+          isTeamUser
+            ? accountAPI.getAnalytics('50d').catch(() => ({ error: true }))
+            : analyticsAPI.getOverviewCached({ days: 50 }).catch(() => ({ error: true })),
           isTeamUser ? accountAPI.getTweetHistory(1, 5).catch(e => ({ error: true })) : tweets.list({ limit: 5 }).catch(e => ({ error: true })),
-          credits.getBalance().catch(e => ({ error: true })), // Credits are user-level, not account-specific
+          credits.getBalanceCached({ ttlMs: 60000 }).catch(() => ({ error: true })), // Credits are user-level, not account-specific
         ]);
 
         if (analyticsRes.status === 'fulfilled' && analyticsRes.value && !analyticsRes.value.error) {
@@ -84,20 +87,17 @@ const Dashboard = () => {
             try {
               const tweetsResponse = await tweetsRes.value.json();
               setRecentTweets(tweetsResponse.data?.tweets || tweetsResponse.tweets || []);
-            } catch (e) {
-              console.log('Tweet history not available yet');
+            } catch {
               setRecentTweets([]);
             }
           } else {
             try {
               setRecentTweets(tweetsRes.value.data.tweets || []);
-            } catch (e) {
-              console.log('Tweet history parsing failed');
+            } catch {
               setRecentTweets([]);
             }
           }
         } else {
-          console.log('Tweet history fetch failed');
           setRecentTweets([]);
         }
 
@@ -107,7 +107,7 @@ const Dashboard = () => {
           setCreditBalance(null);
         }
       } catch (error) {
-        console.error('Dashboard data fetch error:', error);
+        console.error('Dashboard data fetch error:', error?.message || error);
         // Don't throw - allow dashboard to display even if fetches fail
         setAnalyticsData(null);
         setRecentTweets([]);
@@ -134,7 +134,6 @@ const Dashboard = () => {
   // If they have data, show it. If not, they need to connect Twitter.
   if (accounts.length === 0 && hasAttemptedFetch && !analyticsData && recentTweets.length === 0) {
     // Individual user with no Twitter connection (only show after fetch attempt)
-    console.log('[Dashboard] No accounts and no data - user needs to connect Twitter.');
     return (
       <div className="flex items-center justify-center min-h-96">
         <div className="text-center max-w-md">
@@ -194,7 +193,6 @@ const Dashboard = () => {
   // Always show Social Accounts section if accounts exist
   let socialAccountsSection = null;
   if (accounts.length > 0) {
-    console.log('[Dashboard] Social Accounts Section accounts:', accounts);
     socialAccountsSection = (
       <div className="card p-6 mb-8">
         <div className="flex items-center justify-between mb-4">

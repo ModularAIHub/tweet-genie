@@ -12,34 +12,35 @@ const honeybadger = Honeybadger.configure({
   environment: 'production'
 });
 
+const appTree = (
+  <HoneybadgerErrorBoundary honeybadger={honeybadger}>
+    <BrowserRouter>
+      <ScrollToTop />
+      <App />
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 4000,
+          style: {
+            background: '#363636',
+            color: '#fff',
+          },
+          success: {
+            style: {
+              background: '#10b981',
+            },
+          },
+          error: {
+            style: {
+              background: '#ef4444',
+            },
+          },
+        }}
+      />
+    </BrowserRouter>
+  </HoneybadgerErrorBoundary>
+);
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <HoneybadgerErrorBoundary honeybadger={honeybadger}>
-      <BrowserRouter>
-        <ScrollToTop />
-        <App />
-        <Toaster 
-          position="top-right"
-          toastOptions={{
-            duration: 4000,
-            style: {
-              background: '#363636',
-              color: '#fff',
-            },
-            success: {
-              style: {
-                background: '#10b981',
-              },
-            },
-            error: {
-              style: {
-                background: '#ef4444',
-              },
-            },
-          }}
-        />
-      </BrowserRouter>
-    </HoneybadgerErrorBoundary>
-  </React.StrictMode>,
-)
+  import.meta.env.DEV ? appTree : <React.StrictMode>{appTree}</React.StrictMode>
+);
