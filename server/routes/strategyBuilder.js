@@ -1,12 +1,11 @@
 import express from 'express';
 import { strategyService } from '../services/strategyService.js';
-import { authenticateToken } from '../middleware/auth.js';
 import { creditService } from '../services/creditService.js';
 
 const router = express.Router();
 
 // Get or create current strategy
-router.get('/current', authenticateToken, async (req, res) => {
+router.get('/current', async (req, res) => {
   try {
     const userId = req.user.id;
     const teamId = req.headers['x-team-id'] || null;
@@ -25,11 +24,19 @@ router.get('/current', authenticateToken, async (req, res) => {
 });
 
 // Create new strategy
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const userId = req.user.id;
     const teamId = req.headers['x-team-id'] || null;
-    const { niche, target_audience, posting_frequency, content_goals, topics, status = 'draft' } = req.body;
+    const {
+      niche,
+      target_audience,
+      posting_frequency,
+      content_goals,
+      topics,
+      status = 'draft',
+      metadata = {},
+    } = req.body;
 
     if (!niche || !niche.trim()) {
       return res.status(400).json({ error: 'Niche/strategy name is required' });
@@ -41,7 +48,8 @@ router.post('/', authenticateToken, async (req, res) => {
       posting_frequency: posting_frequency?.trim() || '',
       content_goals: Array.isArray(content_goals) ? content_goals : [],
       topics: Array.isArray(topics) ? topics : [],
-      status
+      status,
+      metadata: metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {},
     });
 
     res.status(201).json(strategy);
@@ -52,7 +60,7 @@ router.post('/', authenticateToken, async (req, res) => {
 });
 
 // Send chat message
-router.post('/chat', authenticateToken, async (req, res) => {
+router.post('/chat', async (req, res) => {
   try {
     const userId = req.user.id;
     const { message, strategyId, currentStep = 0 } = req.body;
@@ -100,7 +108,7 @@ router.post('/chat', authenticateToken, async (req, res) => {
 });
 
 // Generate prompts for strategy
-router.post('/:id/generate-prompts', authenticateToken, async (req, res) => {
+router.post('/:id/generate-prompts', async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -137,7 +145,7 @@ router.post('/:id/generate-prompts', authenticateToken, async (req, res) => {
 });
 
 // Get all strategies for user
-router.get('/list', authenticateToken, async (req, res) => {
+router.get('/list', async (req, res) => {
   try {
     const userId = req.user.id;
     const teamId = req.headers['x-team-id'] || null;
@@ -151,7 +159,7 @@ router.get('/list', authenticateToken, async (req, res) => {
 });
 
 // Get strategy by ID
-router.get('/:id', authenticateToken, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -177,7 +185,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
 });
 
 // Get prompts for strategy
-router.get('/:id/prompts', authenticateToken, async (req, res) => {
+router.get('/:id/prompts', async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -203,7 +211,7 @@ router.get('/:id/prompts', authenticateToken, async (req, res) => {
 });
 
 // Toggle favorite prompt
-router.post('/prompts/:promptId/favorite', authenticateToken, async (req, res) => {
+router.post('/prompts/:promptId/favorite', async (req, res) => {
   try {
     const { promptId } = req.params;
     const prompt = await strategyService.toggleFavoritePrompt(promptId);
@@ -215,7 +223,7 @@ router.post('/prompts/:promptId/favorite', authenticateToken, async (req, res) =
 });
 
 // Update strategy
-router.patch('/:id', authenticateToken, async (req, res) => {
+router.patch('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -235,7 +243,7 @@ router.patch('/:id', authenticateToken, async (req, res) => {
 });
 
 // Delete strategy
-router.delete('/:id', authenticateToken, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;

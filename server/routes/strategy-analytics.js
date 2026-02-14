@@ -1,6 +1,5 @@
 // Strategy Analytics Routes for Strategy Builder
 import express from 'express';
-import { authenticateToken } from '../middleware/auth.js';
 import * as analyticsService from '../services/analyticsService.js';
 import pool from '../config/database.js';
 
@@ -10,7 +9,7 @@ const router = express.Router();
  * GET /api/strategy-analytics/:strategyId/dashboard
  * Get analytics dashboard for a strategy
  */
-router.get('/:strategyId/dashboard', authenticateToken, async (req, res) => {
+router.get('/:strategyId/dashboard', async (req, res) => {
   try {
     const { strategyId } = req.params;
     const days = parseInt(req.query.days) || 30;
@@ -41,7 +40,7 @@ router.get('/:strategyId/dashboard', authenticateToken, async (req, res) => {
  * GET /api/strategy-analytics/:strategyId/insights
  * Get content performance insights
  */
-router.get('/:strategyId/insights', authenticateToken, async (req, res) => {
+router.get('/:strategyId/insights', async (req, res) => {
   try {
     const { strategyId } = req.params;
     
@@ -71,7 +70,7 @@ router.get('/:strategyId/insights', authenticateToken, async (req, res) => {
  * GET /api/strategy-analytics/:strategyId/optimal-times
  * Get recommended posting times
  */
-router.get('/:strategyId/optimal-times', authenticateToken, async (req, res) => {
+router.get('/:strategyId/optimal-times', async (req, res) => {
   try {
     const { strategyId } = req.params;
     
@@ -101,7 +100,7 @@ router.get('/:strategyId/optimal-times', authenticateToken, async (req, res) => 
  * POST /api/strategy-analytics/:strategyId/calculate
  * Trigger analytics calculation for a period
  */
-router.post('/:strategyId/calculate', authenticateToken, async (req, res) => {
+router.post('/:strategyId/calculate', async (req, res) => {
   try {
     const { strategyId } = req.params;
     const { startDate, endDate } = req.body;

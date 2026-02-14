@@ -1,46 +1,34 @@
-import React, { useState, useEffect } from 'react';
-import { Target, TrendingUp, Users, Calendar, MessageSquare, Star, ArrowRight, Sparkles } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import {
+  Target,
+  TrendingUp,
+  Users,
+  Calendar,
+  MessageSquare,
+  Star,
+  ArrowRight,
+  Sparkles,
+} from 'lucide-react';
+import toast from 'react-hot-toast';
 import { strategy as strategyApi } from '../../utils/api';
 
-const StrategyOverview = ({ strategy, onGeneratePrompts }) => {
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [promptCount, setPromptCount] = useState(0);
+const CARD_STYLE = {
+  blue: { iconBg: 'bg-blue-100', iconText: 'text-blue-600' },
+  indigo: { iconBg: 'bg-indigo-100', iconText: 'text-indigo-600' },
+  emerald: { iconBg: 'bg-emerald-100', iconText: 'text-emerald-600' },
+  amber: { iconBg: 'bg-amber-100', iconText: 'text-amber-600' },
+};
 
-  useEffect(() => {
-    loadPromptCount();
-  }, [strategy]);
+const InfoCard = ({ icon: Icon, label, value, tone = 'blue' }) => {
+  const style = CARD_STYLE[tone] || CARD_STYLE.blue;
 
-  const loadPromptCount = async () => {
-    try {
-      const response = await strategyApi.getPrompts(strategy.id);
-      setPromptCount(response.data.length);
-    } catch (error) {
-      console.error('Error loading prompts:', error);
-    }
-  };
-
-  const handleGeneratePrompts = async () => {
-    setIsGenerating(true);
-    try {
-      const response = await strategyApi.generatePrompts(strategy.id);
-      
-      setPromptCount(response.data.count);
-      onGeneratePrompts && onGeneratePrompts(response.data);
-    } catch (error) {
-      console.error('Error generating prompts:', error);
-      alert(error.response?.data?.error || 'Failed to generate prompts');
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const InfoCard = ({ icon: Icon, label, value, color = 'blue' }) => (
+  return (
     <div className="bg-white rounded-xl p-6 border border-gray-200 hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-2">
-            <div className={`w-10 h-10 rounded-lg bg-${color}-100 flex items-center justify-center`}>
-              <Icon className={`w-5 h-5 text-${color}-600`} />
+            <div className={`w-10 h-10 rounded-lg ${style.iconBg} flex items-center justify-center`}>
+              <Icon className={`w-5 h-5 ${style.iconText}`} />
             </div>
           </div>
           <p className="text-sm text-gray-600 mb-1">{label}</p>
@@ -49,30 +37,65 @@ const StrategyOverview = ({ strategy, onGeneratePrompts }) => {
       </div>
     </div>
   );
+};
 
-  const ArrayDisplay = ({ items, icon: Icon, emptyText }) => (
-    <div className="flex flex-wrap gap-2">
-      {items && items.length > 0 ? (
-        items.map((item, idx) => (
-          <span
-            key={idx}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-50 to-purple-50 text-blue-700 rounded-lg text-sm font-medium border border-blue-200"
-          >
-            {Icon && <Icon className="w-3.5 h-3.5" />}
-            {item}
-          </span>
-        ))
-      ) : (
-        <span className="text-gray-400 text-sm italic">{emptyText}</span>
-      )}
-    </div>
-  );
+const ArrayDisplay = ({ items, icon: Icon, emptyText }) => (
+  <div className="flex flex-wrap gap-2">
+    {items && items.length > 0 ? (
+      items.map((item, idx) => (
+        <span
+          key={idx}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-700 rounded-lg text-sm font-medium border border-blue-200"
+        >
+          {Icon && <Icon className="w-3.5 h-3.5" />}
+          {item}
+        </span>
+      ))
+    ) : (
+      <span className="text-gray-400 text-sm italic">{emptyText}</span>
+    )}
+  </div>
+);
+
+const StrategyOverview = ({ strategy, onGeneratePrompts }) => {
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [promptCount, setPromptCount] = useState(0);
+
+  useEffect(() => {
+    loadPromptCount();
+  }, [strategy?.id]);
+
+  const loadPromptCount = async () => {
+    if (!strategy?.id) return;
+
+    try {
+      const response = await strategyApi.getPrompts(strategy.id);
+      setPromptCount(Array.isArray(response?.data) ? response.data.length : 0);
+    } catch (error) {
+      setPromptCount(0);
+    }
+  };
+
+  const handleGeneratePrompts = async () => {
+    setIsGenerating(true);
+    try {
+      const response = await strategyApi.generatePrompts(strategy.id);
+      setPromptCount(response?.data?.count || 0);
+      toast.success('Prompt library generated successfully.');
+      if (onGeneratePrompts) {
+        onGeneratePrompts(response.data);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to generate prompts');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
-      {/* Hero Section */}
-      <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-8 text-white shadow-xl">
-        <div className="flex items-start justify-between">
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-8 text-white shadow-xl">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-2">
               <Sparkles className="w-6 h-6" />
@@ -112,73 +135,57 @@ const StrategyOverview = ({ strategy, onGeneratePrompts }) => {
         </div>
       </div>
 
-      {/* Strategy Details Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <InfoCard
-          icon={Target}
-          label="Niche"
-          value={strategy.niche || 'Not set'}
-          color="blue"
-        />
+        <InfoCard icon={Target} label="Niche" value={strategy.niche || 'Not set'} tone="blue" />
         <InfoCard
           icon={Users}
           label="Target Audience"
           value={strategy.target_audience || 'Not set'}
-          color="purple"
+          tone="indigo"
         />
         <InfoCard
           icon={Calendar}
           label="Posting Frequency"
           value={strategy.posting_frequency || 'Not set'}
-          color="green"
+          tone="emerald"
         />
         <InfoCard
           icon={MessageSquare}
-          label="Tone & Style"
+          label="Tone and Style"
           value={strategy.tone_style || 'Not set'}
-          color="orange"
+          tone="amber"
         />
       </div>
 
-      {/* Content Goals */}
       <div className="bg-white rounded-xl p-6 border border-gray-200">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <TrendingUp className="w-5 h-5 text-blue-600" />
           Content Goals
         </h3>
-        <ArrayDisplay 
-          items={strategy.content_goals} 
-          icon={Star}
-          emptyText="No goals defined yet"
-        />
+        <ArrayDisplay items={strategy.content_goals} icon={Star} emptyText="No goals defined yet" />
       </div>
 
-      {/* Topics */}
       <div className="bg-white rounded-xl p-6 border border-gray-200">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <MessageSquare className="w-5 h-5 text-purple-600" />
+          <MessageSquare className="w-5 h-5 text-indigo-600" />
           Content Topics
         </h3>
-        <ArrayDisplay 
-          items={strategy.topics}
-          emptyText="No topics defined yet"
-        />
+        <ArrayDisplay items={strategy.topics} emptyText="No topics defined yet" />
       </div>
 
-      {/* Next Steps */}
       {promptCount > 0 && (
         <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-6 border border-green-200">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-semibold text-gray-900 mb-1 flex items-center gap-2">
                 <Sparkles className="w-5 h-5 text-green-600" />
-                Ready to Create Content!
+                Ready to Create Content
               </h3>
               <p className="text-gray-600">
-                Your prompt library is ready. Start generating tweets based on your strategy.
+                Your prompt library is ready. Start generating tweets from these prompts.
               </p>
             </div>
-            <button 
+            <button
               onClick={onGeneratePrompts}
               className="px-6 py-3 bg-green-600 text-white rounded-xl font-semibold hover:bg-green-700 transition-colors flex items-center gap-2"
             >
