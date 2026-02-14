@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { Twitter, ExternalLink, Shield, CheckCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useAccount } from '../contexts/AccountContext';
 import { twitter } from '../utils/api';
 import toast from 'react-hot-toast';
 
 const TwitterConnect = () => {
   const { user, isAuthenticated } = useAuth();
+  const { isTeamMode } = useAccount();
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [twitterAccount, setTwitterAccount] = useState(null);
+  const teamModeLockMessage = 'You are in Team mode. Personal Twitter connection is disabled.';
 
   useEffect(() => {
     // Only check Twitter status if user is authenticated
@@ -103,6 +106,11 @@ const TwitterConnect = () => {
   };
 
   const handleConnect = async () => {
+    if (isTeamMode) {
+      toast.error(teamModeLockMessage);
+      return;
+    }
+
     console.log('🔗 Twitter Connect - Starting client-side OAuth flow');
     console.log('User authenticated:', isAuthenticated);
     console.log('User data:', user);
@@ -281,6 +289,11 @@ const TwitterConnect = () => {
   };
 
   const handleDisconnect = async () => {
+    if (isTeamMode) {
+      toast.error(teamModeLockMessage);
+      return;
+    }
+
     if (!isAuthenticated || !user) {
       toast.error('Authentication required to disconnect Twitter');
       return;
@@ -331,6 +344,11 @@ const TwitterConnect = () => {
 
   return (
     <div className="card">
+      {isTeamMode && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          Team mode is active. Personal Twitter connect/disconnect is locked.
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="relative">
@@ -369,7 +387,8 @@ const TwitterConnect = () => {
           {connected ? (
             <button
               onClick={handleDisconnect}
-              className="btn btn-outline btn-sm text-red-600 border-red-600 hover:bg-red-50 hover:border-red-700"
+              disabled={isTeamMode}
+              className="btn btn-outline btn-sm text-red-600 border-red-600 hover:bg-red-50 hover:border-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Disconnect
             </button>
@@ -377,7 +396,7 @@ const TwitterConnect = () => {
             <div className="space-y-2">
               <button
                 onClick={handleConnect}
-                disabled={connecting}
+                disabled={connecting || isTeamMode}
                 className="btn btn-primary btn-sm flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {connecting ? (
@@ -410,6 +429,10 @@ const TwitterConnect = () => {
           {!connected && (
             <button
               onClick={async () => {
+                if (isTeamMode) {
+                  toast.error(teamModeLockMessage);
+                  return;
+                }
                 try {
                   const response = await twitter.connect();
                   if (response.data.url) {
@@ -432,3 +455,4 @@ const TwitterConnect = () => {
 };
 
 export default TwitterConnect;
+

@@ -3,7 +3,6 @@ import { TwitterApi } from 'twitter-api-v2';
 import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
-import { scheduledTweetQueue } from './queueService.js';
 
 const THREAD_REPLY_DELAY_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_MS || '600', 10);
 const THREAD_REPLY_DELAY_JITTER_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_JITTER_MS || '250', 10);
@@ -16,6 +15,76 @@ const SCHEDULED_PROCESSING_STUCK_MINUTES = Number.parseInt(
   10
 );
 const SCHEDULED_DUE_BATCH_LIMIT = Number.parseInt(process.env.SCHEDULED_DUE_BATCH_LIMIT || '10', 10);
+const SCHEDULED_DB_RETRY_MAX_ATTEMPTS = Number.parseInt(process.env.SCHEDULED_DB_RETRY_MAX_ATTEMPTS || '5', 10);
+const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
+const TWITTER_OAUTH1_APP_SECRET = process.env.TWITTER_API_SECRET || process.env.TWITTER_CONSUMER_SECRET || null;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+let scheduledAccountIdColumnTypeCache = null;
+
+function normalizeScheduledAccountId(rawAccountId, columnType) {
+  if (rawAccountId === null || rawAccountId === undefined) {
+    return null;
+  }
+
+  const value = String(rawAccountId).trim();
+  if (!value) {
+    return null;
+  }
+
+  if (columnType === 'integer') {
+    return /^\d+$/.test(value) ? Number.parseInt(value, 10) : null;
+  }
+
+  if (columnType === 'uuid') {
+    return UUID_PATTERN.test(value) ? value : null;
+  }
+
+  return value;
+}
+
+async function getScheduledAccountIdColumnType() {
+  if (scheduledAccountIdColumnTypeCache) {
+    return scheduledAccountIdColumnTypeCache;
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT data_type, udt_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'scheduled_tweets'
+         AND column_name = 'account_id'
+       LIMIT 1`
+    );
+    const dataType = String(rows[0]?.data_type || rows[0]?.udt_name || '').toLowerCase();
+
+    if (dataType === 'uuid') {
+      scheduledAccountIdColumnTypeCache = 'uuid';
+    } else if (['integer', 'bigint', 'smallint', 'int2', 'int4', 'int8'].includes(dataType)) {
+      scheduledAccountIdColumnTypeCache = 'integer';
+    } else {
+      scheduledAccountIdColumnTypeCache = 'text';
+    }
+  } catch (error) {
+    console.warn('[ScheduledTweetService] Failed to resolve scheduled_tweets.account_id type. Defaulting to text.', error.message);
+    scheduledAccountIdColumnTypeCache = 'text';
+  }
+
+  return scheduledAccountIdColumnTypeCache;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+function toUtcDbTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}:${pad2(date.getUTCSeconds())}`;
+}
 
 function getScheduledThreadDelayMs() {
   const baseDelay = Number.isFinite(THREAD_REPLY_DELAY_MS) ? Math.max(0, THREAD_REPLY_DELAY_MS) : 600;
@@ -149,7 +218,7 @@ class ScheduledTweetService {
                  u.email as scheduled_by_email,
                  u.name as scheduled_by_name
           FROM scheduled_tweets st
-          LEFT JOIN team_accounts ta ON st.account_id = ta.id
+          LEFT JOIN team_accounts ta ON st.account_id::text = ta.id::text
           LEFT JOIN users u ON st.user_id = u.id
           WHERE st.team_id = $1 
           AND st.status IN ('pending', 'processing')
@@ -206,7 +275,11 @@ class ScheduledTweetService {
     }
 
 
-    const scheduledFor = options.scheduledFor || options.scheduled_for || new Date();
+    const scheduledForInput = options.scheduledFor || options.scheduled_for || new Date();
+    const scheduledFor = toUtcDbTimestamp(scheduledForInput);
+    if (!scheduledFor) {
+      throw new Error('Invalid scheduledFor value for scheduling');
+    }
     const timezone = options.timezone || 'UTC';
     const mediaUrls = options.mediaUrls || options.media_urls || [];
 
@@ -219,7 +292,16 @@ class ScheduledTweetService {
     // Extract team_id and account_id from options
     const teamId = options.teamId || options.team_id || null;
     const accountId = options.accountId || options.account_id || null;
+    const accountIdColumnType = await getScheduledAccountIdColumnType();
+    const normalizedAccountId = normalizeScheduledAccountId(accountId, accountIdColumnType);
     const authorId = options.authorId || options.author_id || null;
+
+    if (accountId && normalizedAccountId === null && accountIdColumnType !== 'text') {
+      console.warn('[ScheduledTweetService] Dropping incompatible account_id for scheduled insert.', {
+        accountId,
+        accountIdColumnType,
+      });
+    }
 
 
     // Insert into scheduled_tweets with team_id and account_id
@@ -238,7 +320,7 @@ class ScheduledTweetService {
       JSON.stringify(mediaUrls),
       JSON.stringify(threadTweets),
       teamId,
-      accountId,
+      normalizedAccountId,
       authorId
     ];
 
@@ -252,7 +334,7 @@ class ScheduledTweetService {
 
 
   /**
-   * For BullMQ worker: process a scheduled tweet by its ID
+   * For DB scheduler worker: process a scheduled tweet by its ID
    * @param {string} scheduledTweetId - Scheduled tweet ID
    */
   async processSingleScheduledTweetById(scheduledTweetId) {
@@ -265,6 +347,28 @@ class ScheduledTweetService {
       throw new Error(`Scheduled tweet not found: ${scheduledTweetId}`);
     }
     const scheduledTweet = rows[0];
+    const normalizedStatus = String(scheduledTweet.status || '').toLowerCase();
+    const approvalStatus = String(scheduledTweet.approval_status || '').toLowerCase();
+
+    if (normalizedStatus !== 'pending' && normalizedStatus !== 'processing') {
+      console.log(`[Scheduled Tweet] Skipping ${scheduledTweetId} because status is ${normalizedStatus}`);
+      return { outcome: 'skipped', reason: 'status_not_processible', status: normalizedStatus };
+    }
+
+    if (approvalStatus && approvalStatus !== 'approved') {
+      console.log(`[Scheduled Tweet] Skipping ${scheduledTweetId} because approval_status is ${approvalStatus}`);
+      if (normalizedStatus === 'processing') {
+        await pool.query(
+          `UPDATE scheduled_tweets
+           SET status = 'pending',
+               processing_started_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [scheduledTweetId]
+        );
+      }
+      return { outcome: 'skipped', reason: 'approval_pending', approvalStatus };
+    }
 
 
     let accountRow = null;
@@ -273,41 +377,57 @@ class ScheduledTweetService {
 
     // ✅ FIXED: Get tokens from the correct table
     if (scheduledTweet.account_id) {
-      // Team account - get tokens directly from team_accounts table
+      // Team account - resolve by text to stay compatible with integer/uuid id schemas.
       const teamAccountRes = await pool.query(
         `SELECT id, twitter_user_id, twitter_username,
                 access_token, refresh_token, token_expires_at,
                 oauth1_access_token, oauth1_access_token_secret,
                 active, team_id, user_id
          FROM team_accounts
-         WHERE id = $1 AND active = true`,
+         WHERE id::text = $1::text
+           AND active = true
+         LIMIT 1`,
         [scheduledTweet.account_id]
       );
-      if (!teamAccountRes.rows.length) {
-        throw new Error(`Team account not found or inactive: ${scheduledTweet.account_id}`);
+
+      if (teamAccountRes.rows.length) {
+        accountRow = teamAccountRes.rows[0];
+        accountType = 'team';
+        console.log(`[Scheduled Tweet] Using team account by account_id: ${accountRow.twitter_username}`);
+      } else {
+        console.warn(`[Scheduled Tweet] Team account not found by account_id=${scheduledTweet.account_id}. Trying team_id fallback.`);
       }
-      accountRow = teamAccountRes.rows[0];
-      accountType = 'team';
-      console.log(`[Scheduled Tweet] Using team account: ${accountRow.twitter_username}`);
-    } else if (scheduledTweet.team_id) {
-      // Fallback: find team account by team_id
+    }
+
+    if (!accountRow && scheduledTweet.team_id) {
+      // Fallback: find team account by team_id, preferring author_id match when available.
       const teamAccountRes = await pool.query(
         `SELECT id, twitter_user_id, twitter_username,
                 access_token, refresh_token, token_expires_at,
                 oauth1_access_token, oauth1_access_token_secret,
                 active, team_id, user_id
          FROM team_accounts
-         WHERE team_id = $1 AND active = true 
+         WHERE team_id = $1
+           AND active = true
+         ORDER BY
+           CASE
+             WHEN $2::text IS NOT NULL AND twitter_user_id = $2::text THEN 0
+             ELSE 1
+           END,
+           updated_at DESC NULLS LAST,
+           id DESC
          LIMIT 1`,
-        [scheduledTweet.team_id]
+        [scheduledTweet.team_id, scheduledTweet.author_id || null]
       );
       if (!teamAccountRes.rows.length) {
         throw new Error(`No active Twitter account found for team: ${scheduledTweet.team_id}`);
       }
       accountRow = teamAccountRes.rows[0];
       accountType = 'team';
-      console.log(`[Scheduled Tweet] Using team account (via team_id): ${accountRow.twitter_username}`);
-    } else {
+      console.log(`[Scheduled Tweet] Using team account (via team_id fallback): ${accountRow.twitter_username}`);
+    }
+
+    if (!accountRow) {
       // Personal account - use twitter_auth table
       console.log(`[Scheduled Tweet] User not in team, using personal account`);
       const personalRes = await pool.query(
@@ -339,7 +459,7 @@ class ScheduledTweetService {
     });
 
 
-    await this.processSingleScheduledTweet(scheduledTweet);
+    return this.processSingleScheduledTweet(scheduledTweet);
   }
 
 
@@ -357,6 +477,7 @@ class ScheduledTweetService {
       const { rows: recoveredRows } = await pool.query(
         `UPDATE scheduled_tweets
          SET status = 'pending',
+             processing_started_at = NULL,
              error_message = CASE
                WHEN COALESCE(error_message, '') = '' THEN 'Recovered by scheduler watchdog after processing timeout.'
                ELSE error_message || ' | Recovered by scheduler watchdog after processing timeout.'
@@ -382,7 +503,7 @@ class ScheduledTweetService {
              ) AS account_rank
            FROM scheduled_tweets st
            WHERE st.status = 'pending'
-             AND st.scheduled_for <= NOW()
+             AND st.scheduled_for <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
              AND (st.approval_status = 'approved' OR st.approval_status IS NULL)
          )
          SELECT *
@@ -418,7 +539,11 @@ class ScheduledTweetService {
     try {
       // Mark as processing
       await pool.query(
-        'UPDATE scheduled_tweets SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        `UPDATE scheduled_tweets
+         SET status = $1,
+             processing_started_at = COALESCE(processing_started_at, CURRENT_TIMESTAMP),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
         ['processing', scheduledTweet.id]
       );
 
@@ -428,7 +553,7 @@ class ScheduledTweetService {
       try {
         if (scheduledTweet.oauth1_access_token && scheduledTweet.oauth1_access_token_secret) {
           // Check if consumer keys are available
-          if (!process.env.TWITTER_API_KEY || !process.env.TWITTER_API_SECRET) {
+          if (!TWITTER_OAUTH1_APP_KEY || !TWITTER_OAUTH1_APP_SECRET) {
             console.warn('⚠️ OAuth 1.0a credentials missing in environment, falling back to OAuth 2.0');
             // Fallback to OAuth 2.0 if OAuth 1.0a env vars are missing
             if (scheduledTweet.access_token) {
@@ -440,8 +565,8 @@ class ScheduledTweetService {
           } else {
             // Use OAuth 1.0a (more reliable for posting)
             twitterClient = new TwitterApi({
-              appKey: process.env.TWITTER_API_KEY,
-              appSecret: process.env.TWITTER_API_SECRET,
+              appKey: TWITTER_OAUTH1_APP_KEY,
+              appSecret: TWITTER_OAUTH1_APP_SECRET,
               accessToken: scheduledTweet.oauth1_access_token,
               accessSecret: scheduledTweet.oauth1_access_token_secret,
             });
@@ -460,7 +585,7 @@ class ScheduledTweetService {
         }
         // Check for missing env vars error
         if (authError.message && authError.message.includes('Invalid consumer tokens')) {
-          throw new Error('Twitter API configuration error. OAuth 1.0a requires TWITTER_API_KEY and TWITTER_API_SECRET environment variables.');
+          throw new Error('Twitter API configuration error. OAuth 1.0a requires TWITTER_CONSUMER_KEY/TWITTER_CONSUMER_SECRET (or TWITTER_API_KEY/TWITTER_API_SECRET).');
         }
         throw authError;
       }
@@ -614,7 +739,13 @@ class ScheduledTweetService {
       const finalStatus = threadSuccess ? 'completed' : 'partially_completed';
       const errorMsg = threadSuccess ? null : `Main tweet posted, but thread failed: ${threadError?.message || 'Unknown error'}`;
       await pool.query(
-        'UPDATE scheduled_tweets SET status = $1, posted_at = CURRENT_TIMESTAMP, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+        `UPDATE scheduled_tweets
+         SET status = $1,
+             posted_at = CURRENT_TIMESTAMP,
+             error_message = $2,
+             processing_started_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3`,
         [finalStatus, errorMsg, scheduledTweet.id]
       );
       if (threadSuccess) {
@@ -622,7 +753,11 @@ class ScheduledTweetService {
       } else {
         console.log(`⚠️ Main tweet posted but thread failed: ${scheduledTweet.id}`);
       }
-      return;
+      return {
+        outcome: threadSuccess ? 'succeeded' : 'partial',
+        finalStatus,
+        scheduledTweetId: scheduledTweet.id,
+      };
     } catch (error) {
       console.error(`❌ Error posting scheduled tweet ${scheduledTweet.id}:`, error);
       let errorMessage = error.message || 'Unknown error';
@@ -633,53 +768,121 @@ class ScheduledTweetService {
         console.error('❌ Twitter 403 Error');
         errorMessage = `Twitter error (403): ${error.data?.detail || error.message || 'Forbidden - likely duplicate or rate limit'}`;
         await pool.query(
-          'UPDATE scheduled_tweets SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-          ['failed', errorMessage, scheduledTweet.id]
-        );
-        console.log('🛑 Not retrying 403 error (likely duplicate content)');
-        return;
-      } else if (isRateLimitedError(error)) {
-        const retryDelayMs = getRateLimitWaitMs(error);
-        const retryAt = new Date(Date.now() + retryDelayMs);
-        errorMessage = `Twitter rate limit exceeded. Auto-retrying at ${retryAt.toISOString()}.`;
-
-        await pool.query(
           `UPDATE scheduled_tweets
            SET status = $1,
                error_message = $2,
-               scheduled_for = CASE
-                 WHEN scheduled_for < $4 THEN $4
-                 ELSE scheduled_for
-               END,
+               processing_started_at = NULL,
                updated_at = CURRENT_TIMESTAMP
            WHERE id = $3`,
-          ['pending', errorMessage, scheduledTweet.id, retryAt]
+          ['failed', errorMessage, scheduledTweet.id]
         );
+        console.log('🛑 Not retrying 403 error (likely duplicate content)');
+        return { outcome: 'failed', reason: 'twitter_403', scheduledTweetId: scheduledTweet.id };
+      } else if (isRateLimitedError(error)) {
+        const retryDelayMs = getRateLimitWaitMs(error);
+        const retryAt = new Date(Date.now() + retryDelayMs);
+        const retryAtDb = toUtcDbTimestamp(retryAt);
+        const currentRetryCount = Number(scheduledTweet.retry_count || 0);
+        const nextRetryCount = currentRetryCount + 1;
+        errorMessage = `Twitter rate limit exceeded. Auto-retrying at ${retryAt.toISOString()}.`;
 
-        if (scheduledTweetQueue?.add) {
+        if (nextRetryCount >= SCHEDULED_DB_RETRY_MAX_ATTEMPTS) {
           try {
-            await scheduledTweetQueue.add(
-              'scheduled-tweet',
-              { scheduledTweetId: scheduledTweet.id },
-              { delay: retryDelayMs }
+            await pool.query(
+              `UPDATE scheduled_tweets
+               SET status = $1,
+                   error_message = $2,
+                   retry_count = $3,
+                   last_retry_at = CURRENT_TIMESTAMP,
+                   processing_started_at = NULL,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = $4`,
+              ['failed', `Rate limit retry exhausted after ${nextRetryCount} attempts.`, nextRetryCount, scheduledTweet.id]
             );
-          } catch (queueError) {
-            console.warn(
-              `[ScheduledRateLimit] Queue re-enqueue failed for ${scheduledTweet.id}, DB fallback will retry:`,
-              queueError?.message || queueError
+          } catch (retryColumnError) {
+            if (retryColumnError?.code === '42703') {
+              await pool.query(
+                `UPDATE scheduled_tweets
+                 SET status = $1,
+                     error_message = $2,
+                     processing_started_at = NULL,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $3`,
+                ['failed', `Rate limit retry exhausted after ${nextRetryCount} attempts.`, scheduledTweet.id]
+              );
+            } else {
+              throw retryColumnError;
+            }
+          }
+
+          console.warn(
+            `[ScheduledRateLimit] Marked scheduled tweet ${scheduledTweet.id} as failed after ${nextRetryCount} retries`
+          );
+          return {
+            outcome: 'failed',
+            reason: 'rate_limit_retry_exhausted',
+            scheduledTweetId: scheduledTweet.id,
+            retryCount: nextRetryCount,
+          };
+        }
+
+        try {
+          await pool.query(
+            `UPDATE scheduled_tweets
+             SET status = $1,
+                 error_message = $2,
+                 scheduled_for = CASE
+                   WHEN scheduled_for < $4 THEN $4
+                   ELSE scheduled_for
+                 END,
+                 retry_count = $5,
+                 last_retry_at = CURRENT_TIMESTAMP,
+                 processing_started_at = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $3`,
+            ['pending', errorMessage, scheduledTweet.id, retryAtDb, nextRetryCount]
+          );
+        } catch (retryColumnError) {
+          if (retryColumnError?.code === '42703') {
+            await pool.query(
+              `UPDATE scheduled_tweets
+               SET status = $1,
+                   error_message = $2,
+                   scheduled_for = CASE
+                     WHEN scheduled_for < $4 THEN $4
+                     ELSE scheduled_for
+                   END,
+                   processing_started_at = NULL,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = $3`,
+              ['pending', errorMessage, scheduledTweet.id, retryAtDb]
             );
+          } else {
+            throw retryColumnError;
           }
         }
 
-        console.warn(`[ScheduledRateLimit] Requeued scheduled tweet ${scheduledTweet.id} to retry at ${retryAt.toISOString()}`);
-        return;
+        console.warn(
+          `[ScheduledRateLimit] Rescheduled scheduled tweet ${scheduledTweet.id} to ${retryAt.toISOString()} (retry ${nextRetryCount}/${SCHEDULED_DB_RETRY_MAX_ATTEMPTS})`
+        );
+        return {
+          outcome: 'retry',
+          scheduledTweetId: scheduledTweet.id,
+          retryCount: nextRetryCount,
+          retryAt: retryAt.toISOString(),
+        };
       } else if (error.message && error.message.includes('Invalid consumer tokens')) {
         console.error('❌ Twitter API configuration error');
-        errorMessage = 'Twitter API configuration error. Please check TWITTER_API_KEY and TWITTER_API_SECRET environment variables.';
+        errorMessage = 'Twitter API configuration error. Please check TWITTER_CONSUMER_KEY/TWITTER_CONSUMER_SECRET (or TWITTER_API_KEY/TWITTER_API_SECRET).';
       }
       console.error('   Full error:', JSON.stringify(error, null, 2));
       await pool.query(
-        'UPDATE scheduled_tweets SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+        `UPDATE scheduled_tweets
+         SET status = $1,
+             error_message = $2,
+             processing_started_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3`,
         ['failed', errorMessage, scheduledTweet.id]
       );
       try {
@@ -781,7 +984,7 @@ class ScheduledTweetService {
         `UPDATE scheduled_tweets 
          SET status = 'expired', error_message = 'Schedule expired', updated_at = CURRENT_TIMESTAMP
          WHERE status = 'pending' 
-         AND scheduled_for < NOW() - INTERVAL '24 hours'
+         AND scheduled_for < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') - INTERVAL '24 hours'
          RETURNING id`
       );
 

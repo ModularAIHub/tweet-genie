@@ -13,7 +13,7 @@ import {
   Twitter,
   UserX,
 } from 'lucide-react';
-import { analytics as analyticsAPI, tweets, credits } from '../utils/api';
+import { analytics as analyticsAPI, tweets, credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
 import { useAccount } from '../contexts/AccountContext';
 import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -118,6 +118,45 @@ const Dashboard = () => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshCredits = async ({ bypass = false } = {}) => {
+      try {
+        const response = bypass
+          ? await credits.getBalance()
+          : await credits.getBalanceCached({ ttlMs: 20000, bypass });
+        if (!cancelled) {
+          setCreditBalance(response.data);
+        }
+      } catch {
+        // Ignore transient credit refresh errors on passive updates.
+      }
+    };
+
+    const onCreditBalanceUpdated = () => {
+      if (!isPageVisible()) return;
+      refreshCredits({ bypass: true });
+    };
+
+    const onFocus = () => {
+      refreshCredits();
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener(CREDIT_BALANCE_UPDATED_EVENT, onCreditBalanceUpdated);
+      window.addEventListener('focus', onFocus);
+    }
+
+    return () => {
+      cancelled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(CREDIT_BALANCE_UPDATED_EVENT, onCreditBalanceUpdated);
+        window.removeEventListener('focus', onFocus);
+      }
+    };
+  }, []);
 
   if (accountsLoading || loading) {
     return (

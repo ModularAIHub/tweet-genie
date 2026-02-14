@@ -1,12 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Masonry from 'react-masonry-css';
 import Collapsible from '../components/Collapsible';
+import RichTextTextarea from '../components/RichTextTextarea';
 import { Switch } from '@headlessui/react';
 import { ai, tweets, scheduling } from '../utils/api';
 import dayjs from 'dayjs';
 import moment from 'moment-timezone';
+import { useLocation } from 'react-router-dom';
+
+const BULK_GENERATION_SEED_KEY = 'bulkGenerationSeed';
 
 const BulkGeneration = () => {
+  const location = useLocation();
+  const hasAppliedSeedRef = useRef(false);
   const [prompts, setPrompts] = useState('');
   const [promptList, setPromptList] = useState([]); // [{ prompt, isThread }]
   // outputs: { [idx]: { ...result, loading, error } }
@@ -24,6 +30,7 @@ const BulkGeneration = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showCreditInfo, setShowCreditInfo] = useState(true);
+  const [seedMessage, setSeedMessage] = useState('');
 
   const frequencyOptions = [
     { value: 'daily', label: 'Daily posting' },
@@ -31,6 +38,44 @@ const BulkGeneration = () => {
     { value: 'four_times_weekly', label: 'Four times a week' },
     { value: 'custom', label: 'Custom days' },
   ];
+
+  useEffect(() => {
+    if (hasAppliedSeedRef.current) return;
+
+    const seedFromState = location?.state?.bulkGenerationSeed;
+    let parsedSeed = seedFromState || null;
+
+    if (!parsedSeed) {
+      try {
+        const rawSeed = localStorage.getItem(BULK_GENERATION_SEED_KEY);
+        parsedSeed = rawSeed ? JSON.parse(rawSeed) : null;
+      } catch {
+        parsedSeed = null;
+      }
+    }
+
+    if (!parsedSeed || !Array.isArray(parsedSeed.items) || parsedSeed.items.length === 0) {
+      hasAppliedSeedRef.current = true;
+      return;
+    }
+
+    const normalizedItems = parsedSeed.items
+      .map((item, index) => ({
+        prompt: typeof item?.prompt === 'string' ? item.prompt.trim() : '',
+        isThread: Boolean(item?.isThread),
+        id: index,
+      }))
+      .filter((item) => item.prompt.length > 0);
+
+    if (normalizedItems.length > 0) {
+      setPrompts(normalizedItems.map((item) => item.prompt).join('\n'));
+      setPromptList(normalizedItems);
+      setSeedMessage(`Loaded ${normalizedItems.length} prompt${normalizedItems.length === 1 ? '' : 's'} from Strategy Builder.`);
+    }
+
+    localStorage.removeItem(BULK_GENERATION_SEED_KEY);
+    hasAppliedSeedRef.current = true;
+  }, [location?.state]);
 
   // Handle posts per day change
   const handlePostsPerDayChange = (count) => {
@@ -465,6 +510,11 @@ const handleGenerate = async () => {
           )}
         </div>
       </div>
+      {seedMessage && (
+        <div className="mb-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          {seedMessage}
+        </div>
+      )}
       <div className="mb-8 bg-blue-50 rounded-2xl shadow-2xl p-10 border border-blue-100">
         <div className="relative mb-6">
           <textarea
@@ -648,17 +698,20 @@ const handleGenerate = async () => {
                             <div className="grid grid-cols-1 gap-4 mb-2">
                               {output.threadParts?.map((part, tIdx) => (
                                 <div key={tIdx} className="mb-2 bg-gray-50 rounded p-3 border flex flex-col">
-                                  <textarea
+                                  <RichTextTextarea
                                     className="w-full border rounded p-2 mb-1 min-h-[90px] max-h-[300px] text-base focus:ring-2 focus:ring-purple-400 focus:border-purple-400 transition overflow-auto"
-                                    style={{ resize: 'vertical', fontSize: '1.05rem' }}
                                     value={part}
-                                    onChange={e => {
+                                    onChange={(nextValue) => {
                                       setOutputs(prev => ({
                                         ...prev,
                                         [idx]: {
                                           ...prev[idx],
-                                          threadParts: prev[idx].threadParts.map((tp, j) => j === tIdx ? e.target.value : tp),
-                                          text: prev[idx].threadParts.map((tp, j) => j === tIdx ? e.target.value : tp).join('---'),
+                                          threadParts: prev[idx].threadParts.map((tp, j) =>
+                                            j === tIdx ? nextValue : tp
+                                          ),
+                                          text: prev[idx].threadParts
+                                            .map((tp, j) => (j === tIdx ? nextValue : tp))
+                                            .join('---'),
                                         }
                                       }));
                                     }}
@@ -706,11 +759,11 @@ const handleGenerate = async () => {
                             </div>
                           ) : (
                             <div className="flex flex-col items-start gap-2 p-2">
-                              <textarea
+                              <RichTextTextarea
                                 className="border rounded px-3 py-3 text-base max-w-full min-w-0 min-h-[90px] max-h-[300px] focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition overflow-auto"
-                                style={{ width: '100%', resize: 'vertical', fontSize: '1.05rem' }}
+                                style={{ width: '100%', fontSize: '1.05rem' }}
                                 value={output.text}
-                                onChange={e => updateText(Number(idx), e.target.value)}
+                                onChange={(nextValue) => updateText(Number(idx), nextValue)}
                                 rows={Math.max(4, output.text.split('\n').length)}
                               />
                               <div className="flex flex-col space-y-2 mt-1">

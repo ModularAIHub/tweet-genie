@@ -177,6 +177,74 @@ const migrations = [
     `
   },
   {
+    version: 14,
+    name: 'fix_missing_tweet_metric_columns',
+    sql: `
+      ALTER TABLE tweets
+        ADD COLUMN IF NOT EXISTS impressions INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS likes INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS retweets INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS replies INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS quote_count INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS bookmark_count INTEGER DEFAULT 0;
+
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'tweets'
+            AND column_name = 'quotes'
+        ) THEN
+          EXECUTE '
+            UPDATE tweets
+            SET quote_count = COALESCE(NULLIF(quote_count, 0), quotes, 0)
+            WHERE COALESCE(quote_count, 0) = 0
+              AND COALESCE(quotes, 0) > 0
+          ';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'tweets'
+            AND column_name = 'bookmarks'
+        ) THEN
+          EXECUTE '
+            UPDATE tweets
+            SET bookmark_count = COALESCE(NULLIF(bookmark_count, 0), bookmarks, 0)
+            WHERE COALESCE(bookmark_count, 0) = 0
+              AND COALESCE(bookmarks, 0) > 0
+          ';
+        END IF;
+      END $$;
+    `
+  },
+  {
+    version: 15,
+    name: 'add_db_scheduler_columns_for_scheduled_tweets',
+    sql: `
+      ALTER TABLE scheduled_tweets
+        ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS last_retry_at TIMESTAMP;
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_due_db_scheduler
+        ON scheduled_tweets(status, scheduled_for)
+        WHERE status = 'pending';
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_due_approval_db_scheduler
+        ON scheduled_tweets(status, approval_status, scheduled_for)
+        WHERE status = 'pending';
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_processing_watchdog
+        ON scheduled_tweets(status, processing_started_at)
+        WHERE status = 'processing';
+    `
+  },
+  {
     version: 5,
     name: 'create_ai_generations_table',
     sql: `

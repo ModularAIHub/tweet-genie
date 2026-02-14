@@ -27,6 +27,7 @@ router.get('/accounts', async (req, res) => {
             const result = await pool.query(`
                 SELECT 
                     id,
+                    team_id,
                     'twitter' as platform,
                     twitter_username as account_username,
                     twitter_display_name as account_display_name,
@@ -70,7 +71,8 @@ router.get('/accounts', async (req, res) => {
         const accountsWithNicknames = accounts.map(account => ({
             ...account,
             nickname: account.account_display_name || account.account_username,
-            isTeamAccount: !!teamId
+            isTeamAccount: !!teamId,
+            team_id: account.team_id || teamId || null
         }));
 
         res.json({

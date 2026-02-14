@@ -17,6 +17,47 @@ const getBase64Size = (base64String) => {
 // Maximum image size in bytes (5MB)
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
+const getCachedSelectedTwitterAccount = () => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return null;
+  }
+
+  const raw = localStorage.getItem('selectedTwitterAccount');
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed?.id) return null;
+
+    const teamContextRaw = localStorage.getItem('activeTeamContext');
+    if (teamContextRaw) {
+      try {
+        const teamContext = JSON.parse(teamContextRaw);
+        const hasTeamMembershipContext = Boolean(teamContext?.team_id || teamContext?.teamId);
+        const accountTeamId = parsed?.team_id || parsed?.teamId || null;
+        if (hasTeamMembershipContext && !accountTeamId) {
+          return null;
+        }
+      } catch {
+        // Ignore malformed team context and continue with cached account.
+      }
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const normalizeIdeaPrompt = (prompt) =>
+  prompt
+    .replace(/^question\s*tweet\s*:\s*/i, '')
+    .replace(/^tweet\s*idea\s*:\s*/i, '')
+    .replace(/^idea\s*:\s*/i, '')
+    .replace(/^prompt\s*:\s*/i, '')
+    .replace(/^["']+|["']+$/g, '')
+    .trim();
+
 // Helper function to convert File to base64 data URL
 const fileToBase64 = (file) => {
   return new Promise((resolve, reject) => {
@@ -28,13 +69,15 @@ const fileToBase64 = (file) => {
 };
 
 export const useTweetComposer = () => {
+  const cachedAccount = getCachedSelectedTwitterAccount();
+
   // State
   const [content, setContentState] = useState('');
   const [isPosting, setIsPosting] = useState(false);
   const [isScheduling, setIsScheduling] = useState(false);
   const [scheduledFor, setScheduledFor] = useState('');
-  const [twitterAccounts, setTwitterAccounts] = useState([]);
-  const [isLoadingTwitterAccounts, setIsLoadingTwitterAccounts] = useState(true);
+  const [twitterAccounts, setTwitterAccounts] = useState(() => (cachedAccount ? [cachedAccount] : []));
+  const [isLoadingTwitterAccounts, setIsLoadingTwitterAccounts] = useState(() => !cachedAccount);
   const [threadTweets, setThreadTweetsState] = useState(['']);
   const [threadImages, setThreadImages] = useState([]);
   const [isThread, setIsThread] = useState(false);
@@ -90,7 +133,6 @@ export const useTweetComposer = () => {
   // Initialize
   useEffect(() => {
     fetchTwitterAccounts();
-    fetchScheduledTweets();
     
     return () => {
       selectedImages.forEach(img => {
@@ -114,62 +156,71 @@ export const useTweetComposer = () => {
     ? threadTweets.reduce((total, tweet) => total + tweet.length, 0)
     : content.length;
 
+  const persistSelectedTwitterAccount = (accounts) => {
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      localStorage.removeItem('selectedTwitterAccount');
+      return;
+    }
+
+    const saved = getCachedSelectedTwitterAccount();
+    const preferred = saved ? accounts.find((acc) => acc.id === saved.id) : null;
+    const selected = preferred || accounts[0];
+
+    localStorage.setItem(
+      'selectedTwitterAccount',
+      JSON.stringify({
+        id: selected.id,
+        username: selected.account_username || selected.username,
+        display_name: selected.account_display_name || selected.display_name,
+        team_id: selected.team_id || selected.teamId || null,
+      })
+    );
+  };
+
   // API Functions
   const fetchTwitterAccounts = async () => {
-    try {
-      setIsLoadingTwitterAccounts(true);
+    let personalAccounts = [];
+    let mergedAccounts = [];
 
-      // Add timeout to prevent hanging
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    try {
+      if (twitterAccounts.length === 0) {
+        setIsLoadingTwitterAccounts(true);
+      }
 
       try {
-        const [personalRes, teamRes] = await Promise.all([
-          twitter.getStatus().catch((err) => {
-            console.error('Error fetching personal Twitter accounts:', err);
-            return { data: { accounts: [] } };
-          }),
-          twitter.getTeamAccounts().catch((err) => {
-            // Team endpoint is optional; swallow errors and fall back to personal only
-            console.warn('Team Twitter accounts unavailable:', err?.response?.status || err?.message || err);
-            return { data: { accounts: [] } };
-          })
-        ]);
+        const personalRes = await twitter.getStatus({ timeout: 8000 });
+        personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
+        mergedAccounts = [...personalAccounts];
 
-        clearTimeout(timeoutId);
-
-        const personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
-        const teamAccounts = Array.isArray(teamRes?.data?.accounts) ? teamRes.data.accounts : [];
-        const combinedAccounts = [...personalAccounts, ...teamAccounts];
-
-        setTwitterAccounts(combinedAccounts);
-
-        // Persist selected account so X-Selected-Account-Id header is set even without personal accounts
-        if (combinedAccounts.length > 0) {
-          const saved = localStorage.getItem('selectedTwitterAccount');
-          let toSelect = combinedAccounts[0];
-
-          if (saved) {
-            try {
-              const parsed = JSON.parse(saved);
-              const match = combinedAccounts.find((acc) => acc.id === parsed.id);
-              if (match) toSelect = match;
-            } catch (err) {
-            console.error('Failed to parse saved Twitter account selection:', err);
-          }
+        if (personalAccounts.length > 0) {
+          setTwitterAccounts(personalAccounts);
+          persistSelectedTwitterAccount(personalAccounts);
+          setIsLoadingTwitterAccounts(false);
         }
-
-        localStorage.setItem('selectedTwitterAccount', JSON.stringify({
-          id: toSelect.id,
-          username: toSelect.account_username || toSelect.username,
-          display_name: toSelect.account_display_name || toSelect.display_name,
-        }));
-      } else {
-        localStorage.removeItem('selectedTwitterAccount');
+      } catch (personalError) {
+        console.error('Error fetching personal Twitter accounts:', personalError);
       }
-      } catch (timeoutError) {
-        console.error('Timeout or error fetching Twitter accounts:', timeoutError);
-        setTwitterAccounts([]);
+
+      try {
+        const teamRes = await twitter.getTeamAccounts({ timeout: 6000 });
+        const responseTeamId = teamRes?.data?.team_id || teamRes?.data?.teamId || null;
+        const rawTeamAccounts = Array.isArray(teamRes?.data?.accounts) ? teamRes.data.accounts : [];
+        const teamAccounts = rawTeamAccounts.map((account) => ({
+          ...account,
+          team_id: account?.team_id || account?.teamId || responseTeamId || null,
+        }));
+        mergedAccounts = [...personalAccounts, ...teamAccounts];
+      } catch (teamError) {
+        // Team endpoint is optional; fall back to personal accounts only.
+        console.warn('Team Twitter accounts unavailable:', teamError?.response?.status || teamError?.message || teamError);
+        mergedAccounts = [...personalAccounts];
+      }
+
+      setTwitterAccounts(mergedAccounts);
+
+      if (mergedAccounts.length > 0) {
+        persistSelectedTwitterAccount(mergedAccounts);
+      } else {
         localStorage.removeItem('selectedTwitterAccount');
       }
     } catch (error) {
@@ -546,7 +597,16 @@ export const useTweetComposer = () => {
     let aiRequestPrompt = sanitizedPrompt;
     let aiRequestIsThread = isThread;
     if (!isThread) {
-      aiRequestPrompt = `Write a single tweet under 280 characters about: ${sanitizedPrompt}`;
+      const normalizedIdea = normalizeIdeaPrompt(sanitizedPrompt);
+      aiRequestPrompt = [
+        'Create ONE original tweet for X (Twitter) inspired by the idea below.',
+        'Rules:',
+        '1) Do not copy phrases or sentence structure from the idea.',
+        '2) Use a fresh hook and different wording.',
+        '3) Keep the tweet under 260 characters.',
+        '4) Return only the tweet text with no labels or quotes.',
+        `Idea: ${normalizedIdea}`,
+      ].join('\n');
       aiRequestIsThread = false;
     }
 
@@ -580,7 +640,7 @@ export const useTweetComposer = () => {
           setThreadTweets(aiTweets.length > 0 ? aiTweets : [content]);
         } else {
           // Always treat as single tweet, even if AI returns separators
-          let tweet = sanitizedContent.replace(/---/g, '').trim();
+          let tweet = sanitizedContent.replace(/---/g, '').replace(/^["']+|["']+$/g, '').trim();
           // Limit to 280 characters (Twitter limit)
           if (tweet.length > 280) tweet = tweet.substring(0, 280);
           setContent(tweet);

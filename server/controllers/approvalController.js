@@ -1,7 +1,6 @@
 // approvalController.js
 // Controller for tweet approval workflow (Editor role requires approval)
 import pool from '../config/database.js';
-import { scheduledTweetQueue } from '../services/queueService.js';
 
 export const ApprovalController = {
   // Get pending scheduled tweets awaiting approval
@@ -85,17 +84,12 @@ export const ApprovalController = {
         UPDATE scheduled_tweets 
         SET approval_status = 'approved',
             approved_by = $1,
+            retry_count = 0,
+            last_retry_at = NULL,
+            processing_started_at = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = $2
       `, [userId, tweetId]);
-      
-      // Add to BullMQ queue with delay
-      const delay = Math.max(0, new Date(tweet.scheduled_for).getTime() - Date.now());
-      await scheduledTweetQueue.add(
-        'scheduled-tweet',
-        { scheduledTweetId: tweetId },
-        { delay }
-      );
       
       res.json({
         success: true,
@@ -142,6 +136,7 @@ export const ApprovalController = {
             status = 'cancelled',
             approved_by = $1,
             rejection_reason = $2,
+            processing_started_at = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = $3
       `, [userId, reason || 'No reason provided', tweetId]);
@@ -188,6 +183,9 @@ export const ApprovalController = {
         UPDATE scheduled_tweets st
         SET approval_status = 'approved',
             approved_by = $1,
+            retry_count = 0,
+            last_retry_at = NULL,
+            processing_started_at = NULL,
             updated_at = CURRENT_TIMESTAMP
         FROM team_members tm
         WHERE st.id = ANY($2)
@@ -196,16 +194,6 @@ export const ApprovalController = {
         AND tm.role IN ('owner', 'admin')
         AND st.approval_status = 'pending_approval'
       `, [userId, tweetIds]);
-      
-      // Add all approved tweets to queue
-      for (const tweet of tweetsToApprove) {
-        const delay = Math.max(0, new Date(tweet.scheduled_for).getTime() - Date.now());
-        await scheduledTweetQueue.add(
-          'scheduled-tweet',
-          { scheduledTweetId: tweet.id },
-          { delay }
-        );
-      }
       
       res.json({
         success: true,

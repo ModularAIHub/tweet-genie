@@ -10,6 +10,7 @@ import {
   Plus,
   AlertCircle,
   Wand2,
+  X,
 } from 'lucide-react';
 import ChatInterface from './ChatInterface';
 import StrategyOverview from './StrategyOverview';
@@ -44,8 +45,100 @@ const StrategyBuilder = () => {
   const [formMode, setFormMode] = useState('create');
   const [teamName, setTeamName] = useState('');
   const [teamDescription, setTeamDescription] = useState('');
+  const [editGoals, setEditGoals] = useState([]);
+  const [editTopics, setEditTopics] = useState([]);
+  const [goalInput, setGoalInput] = useState('');
+  const [topicInput, setTopicInput] = useState('');
   const [creatingTeam, setCreatingTeam] = useState(false);
   const [isDisconnected, setIsDisconnected] = useState(false);
+  const [strategyOptions, setStrategyOptions] = useState([]);
+  const [switchingStrategyId, setSwitchingStrategyId] = useState('');
+
+  const normalizeListItem = (value) => value.trim().replace(/\s+/g, ' ').slice(0, 80);
+
+  const addListItem = (inputValue, currentItems, setItems, setInput) => {
+    const candidates = String(inputValue || '')
+      .split(',')
+      .map((value) => normalizeListItem(value))
+      .filter(Boolean);
+
+    if (candidates.length === 0) {
+      setInput('');
+      return;
+    }
+
+    const nextItems = [...currentItems];
+    const seen = new Set(nextItems.map((item) => item.toLowerCase()));
+
+    for (const candidate of candidates) {
+      if (seen.has(candidate.toLowerCase()) || nextItems.length >= 20) {
+        continue;
+      }
+
+      nextItems.push(candidate);
+      seen.add(candidate.toLowerCase());
+    }
+
+    setItems(nextItems);
+    setInput('');
+  };
+
+  const removeListItem = (index, currentItems, setItems) => {
+    setItems(currentItems.filter((_, idx) => idx !== index));
+  };
+
+  const openCreateStrategyForm = () => {
+    setTeamName('');
+    setTeamDescription('');
+    setEditGoals([]);
+    setEditTopics([]);
+    setGoalInput('');
+    setTopicInput('');
+    setFormMode('create');
+    setShowCreateForm(true);
+    setCurrentView('chat');
+  };
+
+  const applyLoadedStrategy = (loadedStrategy) => {
+    setStrategy(loadedStrategy);
+    setSwitchingStrategyId(loadedStrategy?.id || '');
+
+    const basicProfileCompleted = Boolean(loadedStrategy?.metadata?.basic_profile_completed);
+    const needsBasicSetup = loadedStrategy.status !== 'active' && !basicProfileCompleted;
+
+    if (needsBasicSetup) {
+      setTeamName(loadedStrategy.niche || '');
+      setTeamDescription(loadedStrategy.target_audience || '');
+      setEditGoals(Array.isArray(loadedStrategy.content_goals) ? loadedStrategy.content_goals : []);
+      setEditTopics(Array.isArray(loadedStrategy.topics) ? loadedStrategy.topics : []);
+      setGoalInput('');
+      setTopicInput('');
+      setFormMode('edit');
+      setShowCreateForm(true);
+      setCurrentView('chat');
+      return;
+    }
+
+    setShowCreateForm(false);
+    setCurrentView(loadedStrategy.status === 'active' ? 'overview' : 'chat');
+  };
+
+  const fetchStrategyList = async (preferredStrategyId = null) => {
+    const response = await strategyApi.list();
+    const list = Array.isArray(response?.data) ? response.data : [];
+    setStrategyOptions(list);
+
+    if (!list.length) {
+      setSwitchingStrategyId('');
+      return list;
+    }
+
+    const hasPreferred = preferredStrategyId && list.some((item) => item.id === preferredStrategyId);
+    const fallbackId = list[0]?.id || '';
+    setSwitchingStrategyId(hasPreferred ? preferredStrategyId : fallbackId);
+
+    return list;
+  };
 
   useEffect(() => {
     loadStrategy();
@@ -64,34 +157,27 @@ const StrategyBuilder = () => {
         throw new Error('Strategy payload missing');
       }
 
-      setStrategy(loadedStrategy);
-
-      const basicProfileCompleted = Boolean(loadedStrategy?.metadata?.basic_profile_completed);
-      const needsBasicSetup = loadedStrategy.status !== 'active' && !basicProfileCompleted;
-
-      if (needsBasicSetup) {
-        setTeamName(loadedStrategy.niche || '');
-        setTeamDescription(loadedStrategy.target_audience || '');
-        setFormMode('edit');
-        setShowCreateForm(true);
-        setCurrentView('chat');
-        return;
-      }
-
-      setShowCreateForm(false);
-      setCurrentView(loadedStrategy.status === 'active' ? 'overview' : 'chat');
+      applyLoadedStrategy(loadedStrategy);
+      await fetchStrategyList(loadedStrategy.id);
     } catch (loadError) {
       if (isReconnectRequiredError(loadError)) {
         setIsDisconnected(true);
         setStrategy(null);
         setShowCreateForm(false);
+        setStrategyOptions([]);
+        setSwitchingStrategyId('');
         return;
       }
 
       if (loadError?.response?.status === 404) {
         setStrategy(null);
-        setFormMode('create');
-        setShowCreateForm(true);
+        setStrategyOptions([]);
+        setSwitchingStrategyId('');
+        setEditGoals([]);
+        setEditTopics([]);
+        setGoalInput('');
+        setTopicInput('');
+        openCreateStrategyForm();
         return;
       }
 
@@ -119,30 +205,32 @@ const StrategyBuilder = () => {
 
       let savedStrategy;
       if (formMode === 'edit' && strategy?.id) {
-        const response = await strategyApi.update(strategy.id, {
+        const updatePayload = {
           niche: teamName.trim(),
           target_audience: teamDescription.trim(),
           metadata: basicProfileMetadata,
-        });
+        };
+
+        if (isAdvancedEditMode) {
+          updatePayload.content_goals = editGoals;
+          updatePayload.topics = editTopics;
+        }
+
+        const response = await strategyApi.update(strategy.id, updatePayload);
         savedStrategy = response.data;
       } else {
         const response = await strategyApi.create({
           niche: teamName.trim(),
           target_audience: teamDescription.trim(),
           posting_frequency: '',
-          content_goals: [],
-          topics: [],
           status: 'draft',
           metadata: basicProfileMetadata,
         });
         savedStrategy = response.data;
       }
 
-      setStrategy(savedStrategy);
-      setShowCreateForm(false);
-      setTeamName('');
-      setTeamDescription('');
-      setCurrentView(savedStrategy?.status === 'active' ? 'overview' : 'chat');
+      applyLoadedStrategy(savedStrategy);
+      await fetchStrategyList(savedStrategy.id);
     } catch (saveError) {
       if (isReconnectRequiredError(saveError)) {
         setIsDisconnected(true);
@@ -159,11 +247,45 @@ const StrategyBuilder = () => {
   const handleChatComplete = (completedStrategy) => {
     setStrategy(completedStrategy);
     setCurrentView('overview');
+    setSwitchingStrategyId(completedStrategy?.id || '');
+    setStrategyOptions((prev) => {
+      const current = Array.isArray(prev) ? prev : [];
+      const index = current.findIndex((item) => item.id === completedStrategy?.id);
+      if (index === -1) {
+        return completedStrategy ? [completedStrategy, ...current] : current;
+      }
+      const next = [...current];
+      next[index] = { ...next[index], ...completedStrategy };
+      return next;
+    });
+  };
+
+  const handleStrategyUpdated = (updatedStrategy) => {
+    if (!updatedStrategy) {
+      return;
+    }
+
+    setStrategy(updatedStrategy);
+    setSwitchingStrategyId(updatedStrategy.id || '');
+    setStrategyOptions((prev) => {
+      const current = Array.isArray(prev) ? prev : [];
+      const index = current.findIndex((item) => item.id === updatedStrategy.id);
+      if (index === -1) {
+        return [updatedStrategy, ...current];
+      }
+      const next = [...current];
+      next[index] = { ...next[index], ...updatedStrategy };
+      return next;
+    });
   };
 
   const handleEditStrategy = () => {
     setTeamName(strategy?.niche || '');
     setTeamDescription(strategy?.target_audience || '');
+    setEditGoals(Array.isArray(strategy?.content_goals) ? strategy.content_goals : []);
+    setEditTopics(Array.isArray(strategy?.topics) ? strategy.topics : []);
+    setGoalInput('');
+    setTopicInput('');
     setFormMode('edit');
     setShowCreateForm(true);
   };
@@ -175,12 +297,21 @@ const StrategyBuilder = () => {
 
     try {
       await strategyApi.delete(strategy.id);
+      const remainingStrategies = await fetchStrategyList();
+
+      if (remainingStrategies.length > 0) {
+        const nextStrategyId = remainingStrategies[0].id;
+        const response = await strategyApi.getById(nextStrategyId);
+        const nextStrategy = response?.data?.strategy;
+
+        if (nextStrategy) {
+          applyLoadedStrategy(nextStrategy);
+          return;
+        }
+      }
+
       setStrategy(null);
-      setTeamName('');
-      setTeamDescription('');
-      setFormMode('create');
-      setShowCreateForm(true);
-      setCurrentView('chat');
+      openCreateStrategyForm();
     } catch (deleteError) {
       if (isReconnectRequiredError(deleteError)) {
         setIsDisconnected(true);
@@ -193,16 +324,54 @@ const StrategyBuilder = () => {
   };
 
   const handleCreateNew = () => {
-    setTeamName('');
-    setTeamDescription('');
-    setFormMode('create');
-    setShowCreateForm(true);
-    setCurrentView('chat');
+    openCreateStrategyForm();
   };
 
   const handleGeneratePrompts = () => {
     setCurrentView('prompts');
   };
+
+  const handleSwitchStrategy = async (event) => {
+    const nextStrategyId = event.target.value;
+    setSwitchingStrategyId(nextStrategyId);
+
+    if (!nextStrategyId || nextStrategyId === strategy?.id) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await strategyApi.getById(nextStrategyId);
+      const nextStrategy = response?.data?.strategy;
+
+      if (!nextStrategy) {
+        throw new Error('Strategy not found');
+      }
+
+      applyLoadedStrategy(nextStrategy);
+      await fetchStrategyList(nextStrategy.id);
+    } catch (switchError) {
+      if (isReconnectRequiredError(switchError)) {
+        setIsDisconnected(true);
+        setShowCreateForm(false);
+        setError(null);
+        return;
+      }
+
+      setError(
+        switchError?.response?.data?.error ||
+          switchError.message ||
+          'Failed to switch strategy. Please try again.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const hasCompletedBasicProfile =
+    Boolean(strategy?.metadata?.basic_profile_completed) || strategy?.status === 'active';
+  const isAdvancedEditMode = formMode === 'edit' && hasCompletedBasicProfile;
 
   const tabs = [
     {
@@ -224,8 +393,6 @@ const StrategyBuilder = () => {
       visible: strategy !== null,
     },
   ].filter((tab) => tab.visible);
-  const hasCompletedBasicProfile =
-    Boolean(strategy?.metadata?.basic_profile_completed) || strategy?.status === 'active';
 
   if (loading) {
     return (
@@ -263,10 +430,10 @@ const StrategyBuilder = () => {
         <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8">
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold text-gray-900 mb-2">
-              {formMode === 'edit' ? 'Edit Strategy' : 'Create Your Strategy'}
+              {isAdvancedEditMode ? 'Edit Strategy' : 'Create Your Strategy'}
             </h1>
             <p className="text-gray-600 text-lg">
-              {formMode === 'edit' ? 'Update your strategy details' : 'Set up your Twitter content strategy in under a minute'}
+              {isAdvancedEditMode ? 'Update your strategy details' : 'Set up your Twitter content strategy in under a minute'}
             </p>
           </div>
 
@@ -334,9 +501,117 @@ const StrategyBuilder = () => {
               />
             </div>
 
+            {isAdvancedEditMode && (
+              <>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-900 mb-3">
+                    Content Goals <span className="text-gray-400">(Optional)</span>
+                  </label>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Add up to 20 goals. Press Enter or click Add.
+                  </p>
+                  {editGoals.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {editGoals.map((goal, index) => (
+                        <span
+                          key={`${goal}-${index}`}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 text-sm"
+                        >
+                          {goal}
+                          <button
+                            type="button"
+                            onClick={() => removeListItem(index, editGoals, setEditGoals)}
+                            className="text-blue-500 hover:text-blue-700"
+                          >
+                            <X size={14} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={goalInput}
+                      onChange={(e) => setGoalInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ',') {
+                          e.preventDefault();
+                          addListItem(goalInput, editGoals, setEditGoals, setGoalInput);
+                        }
+                      }}
+                      placeholder="e.g., Grow followers organically"
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      disabled={creatingTeam}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => addListItem(goalInput, editGoals, setEditGoals, setGoalInput)}
+                      className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                      disabled={creatingTeam}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-900 mb-3">
+                    Content Topics <span className="text-gray-400">(Optional)</span>
+                  </label>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Add up to 20 topics. Press Enter or click Add.
+                  </p>
+                  {editTopics.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {editTopics.map((topic, index) => (
+                        <span
+                          key={`${topic}-${index}`}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 text-sm"
+                        >
+                          {topic}
+                          <button
+                            type="button"
+                            onClick={() => removeListItem(index, editTopics, setEditTopics)}
+                            className="text-indigo-500 hover:text-indigo-700"
+                          >
+                            <X size={14} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={topicInput}
+                      onChange={(e) => setTopicInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ',') {
+                          e.preventDefault();
+                          addListItem(topicInput, editTopics, setEditTopics, setTopicInput);
+                        }
+                      }}
+                      placeholder="e.g., Growth tactics"
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      disabled={creatingTeam}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => addListItem(topicInput, editTopics, setEditTopics, setTopicInput)}
+                      className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                      disabled={creatingTeam}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <p className="text-sm text-blue-900">
-                <strong>Next:</strong> You will answer 7 guided questions to define audience, topics, goals, and posting style.
+                <strong>Next:</strong> You can answer 7 guided questions or use AI quick setup from chat to auto-complete faster.
               </p>
             </div>
 
@@ -348,10 +623,10 @@ const StrategyBuilder = () => {
               {creatingTeam ? (
                 <>
                   <Loader2 size={20} className="animate-spin" />
-                  {formMode === 'edit' ? 'Updating...' : 'Creating...'}
+                  {isAdvancedEditMode ? 'Updating...' : 'Creating...'}
                 </>
               ) : (
-                <>{formMode === 'edit' ? 'Update Strategy' : 'Continue to Setup Questions'}</>
+                <>{isAdvancedEditMode ? 'Update Strategy' : 'Continue to Setup Questions'}</>
               )}
             </button>
 
@@ -408,7 +683,7 @@ const StrategyBuilder = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
+      <div className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -430,6 +705,20 @@ const StrategyBuilder = () => {
 
             {strategy && (
               <div className="flex items-center gap-2">
+                {strategyOptions.length > 1 && (
+                  <select
+                    value={switchingStrategyId || strategy.id}
+                    onChange={handleSwitchStrategy}
+                    className="max-w-[260px] px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    title="Switch strategy"
+                  >
+                    {strategyOptions.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {(item.niche || 'Untitled strategy')} ({item.status || 'draft'})
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <button
                   onClick={handleEditStrategy}
                   title="Edit strategy"
@@ -502,7 +791,11 @@ const StrategyBuilder = () => {
         )}
 
         {currentView === 'overview' && strategy && (
-          <StrategyOverview strategy={strategy} onGeneratePrompts={handleGeneratePrompts} />
+          <StrategyOverview
+            strategy={strategy}
+            onGeneratePrompts={handleGeneratePrompts}
+            onStrategyUpdated={handleStrategyUpdated}
+          />
         )}
 
         {currentView === 'prompts' && strategy && <PromptLibrary strategyId={strategy.id} />}

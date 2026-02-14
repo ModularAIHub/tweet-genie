@@ -76,11 +76,10 @@ const ChatInterface = ({ strategyId, onComplete }) => {
     }, 400);
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
-
-    const userMessage = input.trim();
-    setInput('');
+  const sendMessage = async (rawMessage) => {
+    if (isLoading) return;
+    const userMessage = String(rawMessage || '').trim();
+    if (!userMessage) return;
 
     setMessages((prev) => [
       ...prev,
@@ -125,6 +124,18 @@ const ChatInterface = ({ strategyId, onComplete }) => {
     }
   };
 
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+    const nextMessage = input.trim();
+    setInput('');
+    await sendMessage(nextMessage);
+  };
+
+  const handleAutoComplete = async () => {
+    if (isLoading) return;
+    await sendMessage('quick setup');
+  };
+
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -155,8 +166,9 @@ const ChatInterface = ({ strategyId, onComplete }) => {
 
       setInput(newSelections.join(', '));
     } else {
-      setInput(cleanText);
       setSelectedOptions([cleanText]);
+      setInput('');
+      sendMessage(cleanText);
     }
 
     inputRef.current?.focus();
@@ -190,7 +202,7 @@ const ChatInterface = ({ strategyId, onComplete }) => {
           </div>
           <div>
             <h3 className="text-white font-semibold text-lg">Strategy Setup</h3>
-            <p className="text-blue-100 text-sm">Answer a few guided questions to finish your plan</p>
+            <p className="text-blue-100 text-sm">Answer guided questions or auto-complete with AI</p>
           </div>
         </div>
 
@@ -253,6 +265,20 @@ const ChatInterface = ({ strategyId, onComplete }) => {
       </div>
 
       <div className="border-t border-gray-200 p-4 bg-gray-50">
+        {normalizedStep >= 1 && normalizedStep < TOTAL_STEPS && (
+          <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+            <p className="text-xs text-blue-800">Want fewer steps? Use AI quick setup and continue to prompts.</p>
+            <button
+              type="button"
+              onClick={handleAutoComplete}
+              disabled={isLoading}
+              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              Auto-complete
+            </button>
+          </div>
+        )}
+
         {quickReplies && quickReplies.length > 0 && (
           <div className="mb-3">
             {allowMultiple && (
@@ -260,6 +286,9 @@ const ChatInterface = ({ strategyId, onComplete }) => {
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Select multiple options if needed</span>
               </div>
+            )}
+            {!allowMultiple && (
+              <div className="mb-2 text-xs text-gray-500">Quick replies are sent instantly.</div>
             )}
             <div className="flex flex-wrap gap-2">
               {quickReplies.map((reply, idx) => (

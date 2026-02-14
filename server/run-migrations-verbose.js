@@ -29,6 +29,15 @@ async function runMigrations() {
     log('🤖 Executing autopilot enhancement migration...');
     await pool.query(sql2);
     log('✅ Autopilot enhancement complete\n');
+
+    // Run metric column compatibility migration
+    log('🩹 Reading tweet metric compatibility migration...');
+    const sql3 = fs.readFileSync('./migrations/20260214_fix_missing_tweet_metric_columns.sql', 'utf8');
+    log(`SQL file size: ${sql3.length} bytes`);
+
+    log('🩹 Executing tweet metric compatibility migration...');
+    await pool.query(sql3);
+    log('✅ Tweet metric compatibility complete\n');
     
     log('🎉 All migrations completed successfully!');
     await pool.end();

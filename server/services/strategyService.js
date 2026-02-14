@@ -2,6 +2,503 @@ import pool from '../config/database.js';
 import { aiService } from './aiService.js';
 
 class StrategyService {
+  stripMarkdownCodeFences(value = '') {
+    return String(value)
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+  }
+
+  normalizeJsonLikeText(content = '') {
+    return this.stripMarkdownCodeFences(content)
+      .replace(/[\u201C\u201D]/g, '"')
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/\u00A0/g, ' ')
+      .replace(/,\s*([}\]])/g, '$1')
+      .trim();
+  }
+
+  extractFirstJSONObject(text = '') {
+    const source = String(text || '');
+    const startIndex = source.indexOf('{');
+    if (startIndex === -1) {
+      return null;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let index = startIndex; index < source.length; index += 1) {
+      const char = source[index];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\' && inString) {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      if (char === '{') {
+        depth += 1;
+      } else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return source.slice(startIndex, index + 1);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  extractJSONArrayByKey(text = '', key = '') {
+    const source = String(text || '');
+    const escapedKey = String(key || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const keyPattern = new RegExp(`"${escapedKey}"\\s*:\\s*\\[`, 'i');
+    const match = source.match(keyPattern);
+    if (!match || typeof match.index !== 'number') {
+      return null;
+    }
+
+    const arrayStart = source.indexOf('[', match.index);
+    if (arrayStart === -1) {
+      return null;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let index = arrayStart; index < source.length; index += 1) {
+      const char = source[index];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\' && inString) {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      if (char === '[') {
+        depth += 1;
+      } else if (char === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          return source.slice(arrayStart, index + 1);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  splitJSONObjectArray(arrayText = '') {
+    const source = String(arrayText || '');
+    const objects = [];
+    let objectStart = -1;
+    let depth = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let index = 0; index < source.length; index += 1) {
+      const char = source[index];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\' && inString) {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      if (char === '{') {
+        if (depth === 0) {
+          objectStart = index;
+        }
+        depth += 1;
+      } else if (char === '}') {
+        depth -= 1;
+        if (depth === 0 && objectStart !== -1) {
+          objects.push(source.slice(objectStart, index + 1));
+          objectStart = -1;
+        }
+      }
+    }
+
+    return objects;
+  }
+
+  parsePromptItemsFromContent(content) {
+    const normalizedContent = this.normalizeJsonLikeText(content);
+
+    try {
+      const parsedObject = this.parseJSONObjectFromText(normalizedContent);
+      if (Array.isArray(parsedObject?.prompts)) {
+        return parsedObject.prompts;
+      }
+    } catch {
+      // Ignore and try tolerant extraction below.
+    }
+
+    const promptsArrayText = this.extractJSONArrayByKey(normalizedContent, 'prompts');
+    if (!promptsArrayText) {
+      return [];
+    }
+
+    const promptObjectChunks = this.splitJSONObjectArray(promptsArrayText);
+    const parsedPrompts = [];
+
+    for (const chunk of promptObjectChunks) {
+      const cleanedChunk = chunk
+        .replace(/,\s*([}\]])/g, '$1')
+        .trim();
+
+      if (!cleanedChunk) {
+        continue;
+      }
+
+      try {
+        const parsedItem = JSON.parse(cleanedChunk);
+        if (parsedItem && typeof parsedItem === 'object') {
+          parsedPrompts.push(parsedItem);
+        }
+      } catch {
+        // Skip malformed object and continue with remaining ones.
+      }
+    }
+
+    return parsedPrompts;
+  }
+
+  parseJSONObjectFromText(content) {
+    const normalizedContent = this.normalizeJsonLikeText(content);
+
+    try {
+      return JSON.parse(normalizedContent);
+    } catch (directParseError) {
+      const jsonObjectText = this.extractFirstJSONObject(normalizedContent);
+      if (!jsonObjectText) {
+        throw new Error('AI response is not valid JSON');
+      }
+      return JSON.parse(jsonObjectText);
+    }
+  }
+
+  normalizePromptCategory(rawCategory = '') {
+    const normalized = String(rawCategory || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[_-]+/g, ' ');
+
+    const aliasMap = {
+      education: 'educational',
+      educational: 'educational',
+      engage: 'engagement',
+      engagement: 'engagement',
+      story: 'storytelling',
+      storytelling: 'storytelling',
+      tips: 'tips & tricks',
+      'tips and tricks': 'tips & tricks',
+      'tips & tricks': 'tips & tricks',
+      promo: 'promotional',
+      promotional: 'promotional',
+      inspire: 'inspirational',
+      inspirational: 'inspirational',
+    };
+
+    return aliasMap[normalized] || 'educational';
+  }
+
+  cleanPromptText(value = '') {
+    return String(value || '')
+      .replace(/`{1,3}/g, '')
+      .replace(/\[\d+\]/g, '')
+      .replace(/\(\d+\)(?=\s|$)/g, '')
+      .replace(/^prompt\s+[^:]{1,50}\s+prompt:\s*/i, '')
+      .replace(
+        /^(educational|engagement|storytelling|tips(?:\s*&\s*|\s+and\s+)tricks|promotional|inspirational)\s*prompt:\s*/i,
+        ''
+      )
+      .replace(/^prompt\s*:\s*/i, '')
+      .replace(/^["'\s]+|["'\s]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  buildFallbackPromptTemplates(strategy, desiredCount = 30) {
+    const topics = this.normalizeAndDedupe(Array.isArray(strategy?.topics) ? strategy.topics : [], 10, 80);
+    const goals = this.normalizeAndDedupe(Array.isArray(strategy?.content_goals) ? strategy.content_goals : [], 10, 80);
+    const tone = strategy?.tone_style || 'clear and practical';
+    const audience = strategy?.target_audience || 'your target audience';
+    const niche = strategy?.niche || 'your niche';
+    const topicPool = topics.length > 0 ? topics : [niche];
+    const goalPool = goals.length > 0 ? goals : ['Build authority'];
+
+    const categories = [
+      'educational',
+      'engagement',
+      'storytelling',
+      'tips & tricks',
+      'promotional',
+      'inspirational',
+    ];
+
+    const templates = [];
+    for (let index = 0; index < desiredCount; index += 1) {
+      const category = categories[index % categories.length];
+      const topic = topicPool[index % topicPool.length];
+      const goal = goalPool[index % goalPool.length];
+
+      let promptText = '';
+      let instruction = '';
+      let recommendedFormat = 'single_tweet';
+
+      if (category === 'educational') {
+        promptText = `Teach one surprising lesson about ${topic} that ${audience} can apply this week.`;
+        instruction = 'Open with a myth or misconception, then give one concrete action and one outcome.';
+      } else if (category === 'engagement') {
+        promptText = `Ask ${audience} a focused question about their biggest blocker in ${topic}.`;
+        instruction = 'Use one clear question plus 2 short options so replies are easy.';
+      } else if (category === 'storytelling') {
+        promptText = `Share a short story about a real moment where ${goal.toLowerCase()} changed because of ${topic}.`;
+        instruction = 'Use 3-part structure: setup, turning point, lesson. End with a reflection question.';
+        recommendedFormat = 'thread';
+      } else if (category === 'tips & tricks') {
+        promptText = `Give a practical checklist for improving ${topic} without extra tools or budget.`;
+        instruction = 'Use numbered points with concrete verbs and a one-line summary.';
+        recommendedFormat = 'thread';
+      } else if (category === 'promotional') {
+        promptText = `Position your offer around ${topic} with a value-first angle for ${audience}.`;
+        instruction = 'Lead with problem and value, then soft CTA with one next step.';
+      } else {
+        promptText = `Share a mindset shift that helps ${audience} stay consistent with ${topic}.`;
+        instruction = 'Use a confident hook and a short motivational close tied to action.';
+      }
+
+      templates.push({
+        category,
+        prompt_text: promptText,
+        variables: {
+          instruction,
+          recommended_format: recommendedFormat,
+          goal,
+          tone_hint: tone,
+        },
+      });
+    }
+
+    return templates;
+  }
+
+  summarizeStrategy(strategy) {
+    const goals = Array.isArray(strategy?.content_goals) ? strategy.content_goals : [];
+    const topics = Array.isArray(strategy?.topics) ? strategy.topics : [];
+
+    return [
+      `Niche: ${strategy?.niche || 'Not set'}`,
+      `Audience: ${strategy?.target_audience || 'Not set'}`,
+      `Goals: ${goals.length > 0 ? goals.join(', ') : 'Not set'}`,
+      `Posting: ${strategy?.posting_frequency || 'Not set'}`,
+      `Tone: ${strategy?.tone_style || 'Not set'}`,
+      `Topics: ${topics.length > 0 ? topics.join(', ') : 'Not set'}`,
+    ].join('\n');
+  }
+
+  parseCsvList(text = '') {
+    if (typeof text !== 'string') {
+      return [];
+    }
+
+    return text
+      .split(',')
+      .map((item) => item.trim())
+      .map((item) => item.replace(/^\d+\.\s*/, ''))
+      .filter(Boolean);
+  }
+
+  normalizeAndDedupe(items = [], limit = 10, maxItemLength = Infinity) {
+    const normalized = [];
+    const seen = new Set();
+
+    for (const item of Array.isArray(items) ? items : []) {
+      if (typeof item !== 'string') {
+        continue;
+      }
+
+      const cleaned = item.trim().replace(/\s+/g, ' ').slice(0, maxItemLength);
+      if (!cleaned) {
+        continue;
+      }
+
+      const key = cleaned.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      normalized.push(cleaned);
+
+      if (normalized.length >= limit) {
+        break;
+      }
+    }
+
+    return normalized;
+  }
+
+  mergeLists(base = [], additions = [], limit = 10, maxItemLength = Infinity) {
+    return this.normalizeAndDedupe(
+      [...(Array.isArray(base) ? base : []), ...(Array.isArray(additions) ? additions : [])],
+      limit,
+      maxItemLength
+    );
+  }
+
+  async getLatestSuggestedTopics(strategyId) {
+    const { rows } = await pool.query(
+      `SELECT metadata
+       FROM strategy_chat_history
+       WHERE strategy_id = $1
+         AND role = 'assistant'
+         AND metadata->'suggested_topics' IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [strategyId]
+    );
+
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const suggestedTopics = rows[0]?.metadata?.suggested_topics;
+    return this.normalizeAndDedupe(Array.isArray(suggestedTopics) ? suggestedTopics : [], 10, 80);
+  }
+
+  buildStrategyMetadata(existingMetadata = {}, source = 'manual_edit') {
+    return {
+      ...(existingMetadata && typeof existingMetadata === 'object' && !Array.isArray(existingMetadata) ? existingMetadata : {}),
+      prompts_stale: true,
+      prompts_stale_at: new Date().toISOString(),
+      last_strategy_update_source: source,
+    };
+  }
+
+  appendWithDuplicateTracking(existingItems = [], incomingItems = [], limit = 20, maxItemLength = 80) {
+    const existingNormalized = this.normalizeAndDedupe(existingItems, limit, maxItemLength);
+    const incomingNormalized = this.normalizeAndDedupe(incomingItems, limit, maxItemLength);
+    const merged = [...existingNormalized];
+    const seen = new Set(existingNormalized.map((item) => item.toLowerCase()));
+    const added = [];
+    const ignoredDuplicates = [];
+
+    for (const item of incomingNormalized) {
+      const key = item.toLowerCase();
+      if (seen.has(key)) {
+        ignoredDuplicates.push(item);
+        continue;
+      }
+
+      if (merged.length >= limit) {
+        ignoredDuplicates.push(item);
+        continue;
+      }
+
+      merged.push(item);
+      seen.add(key);
+      added.push(item);
+    }
+
+    return {
+      merged,
+      added,
+      ignoredDuplicates,
+    };
+  }
+
+  async appendStrategyFields(strategyId, additions = {}, options = {}) {
+    const source = options.source || 'manual_add_on';
+    const strategy = await this.getStrategy(strategyId);
+    if (!strategy) {
+      return null;
+    }
+
+    const appendGoals = this.appendWithDuplicateTracking(
+      strategy.content_goals || [],
+      Array.isArray(additions.content_goals) ? additions.content_goals : [],
+      20,
+      80
+    );
+
+    const appendTopics = this.appendWithDuplicateTracking(
+      strategy.topics || [],
+      Array.isArray(additions.topics) ? additions.topics : [],
+      20,
+      80
+    );
+
+    const updatedMetadata = this.buildStrategyMetadata(strategy.metadata, source);
+
+    const { rows } = await pool.query(
+      `UPDATE user_strategies
+       SET content_goals = $1,
+           topics = $2,
+           metadata = $3
+       WHERE id = $4
+       RETURNING *`,
+      [appendGoals.merged, appendTopics.merged, updatedMetadata, strategyId]
+    );
+
+    return {
+      strategy: rows[0],
+      added: {
+        content_goals: appendGoals.added,
+        topics: appendTopics.added,
+      },
+      ignoredDuplicates: {
+        content_goals: appendGoals.ignoredDuplicates,
+        topics: appendTopics.ignoredDuplicates,
+      },
+      promptsStale: true,
+    };
+  }
+
   // Get or create active strategy for user
   async getOrCreateStrategy(userId, teamId = null) {
     const { rows } = await pool.query(
@@ -106,13 +603,42 @@ class StrategyService {
     );
     const strategy = rows[0];
 
+    const normalizedUserMessage = String(userMessage || '').trim().toLowerCase();
+    const quickSetupRequested =
+      currentStep > 0 &&
+      /(quick setup|auto[\s-]?complete|fast track|do it for me|finish for me|use ai setup|skip questions)/i.test(
+        normalizedUserMessage
+      );
+
+    if (quickSetupRequested) {
+      const completedStrategy = await this.quickCompleteStrategy(strategyId, userId);
+      const quickSummary = this.summarizeStrategy(completedStrategy);
+      const quickResponse =
+        `Quick setup complete. I filled the remaining fields using your current context.\n\n${quickSummary}\n\n` +
+        'Next step: open Prompts and generate your library.';
+
+      await this.addChatMessage(strategyId, 'assistant', quickResponse, {
+        step: -1,
+        quick_complete: true,
+      });
+
+      return {
+        message: quickResponse,
+        nextStep: -1,
+        isComplete: true,
+        quickReplies: null,
+        placeholder: '',
+        strategy: completedStrategy,
+      };
+    }
+
     // Define conversation steps
     const steps = [
       {
         key: 'welcome',
-        question: "Hey! 👋 I'm your Strategy Builder AI.\n\nI'll help you create a personalized Twitter content strategy in just **7 quick steps** - it takes about 3 minutes.\n\n**Let's start with the foundation - what's your niche or industry?**\n\nBe specific! Instead of \"tech\", say \"AI tools\" or \"SaaS for developers\".\n\nChoose from popular niches or type your own:",
+        question: "Hey! I am your Strategy Builder AI.\n\nI will help you create a personalized Twitter content strategy in 7 quick steps.\n\nTip: type \"quick setup\" at any time and I will auto-complete remaining steps.\n\nLet us start with the foundation. What is your niche or industry?",
         field: 'niche',
-        quickReplies: ['💼 SaaS & B2B', '🤖 AI & Tech', '💪 Health & Fitness', '📈 Marketing & Growth', '🛍️ E-commerce', '✍️ Content Creation', '💰 Finance & Investing', '⚡ Productivity'],
+        quickReplies: ['SaaS & B2B', 'AI & Tech', 'Health & Fitness', 'Marketing & Growth', 'E-commerce', 'Content Creation', 'Finance & Investing', 'Productivity', 'Quick setup'],
         placeholder: 'e.g., B2B SaaS, AI tools, fitness coaching, anime & manga...'
       },
       {
@@ -168,10 +694,10 @@ class StrategyService {
       },
       {
         key: 'topics',
-        question: "Almost done! Let's nail down your **core content pillars**.\n\n**What 3-5 topics will you consistently post about?**\n\nThese should be areas where you have:\n✅ Knowledge or expertise\n✅ Genuine interest\n✅ Value to share\n\nI'll suggest some based on your niche, or you can tell me yours:",
+        question: "Almost done! Let's nail down your **core content pillars**.\n\n**What 3-5 topics will you consistently post about?**\n\nThese should be areas where you have:\n✅ Knowledge or expertise\n✅ Genuine interest\n✅ Value to share\n\nI'll suggest some based on your niche, or you can tell me yours.\n\nType \"use these\" to accept suggestions.\nAdd your own comma-separated topics to include with suggestions.\nUse \"only mine:\" if you want to replace suggestions:",
         field: 'topics',
         isArray: true,
-        placeholder: 'e.g., Product launches, Growth tactics, Team building, Fundraising (or type "use suggestions")'
+        placeholder: 'Type "use these", add your own comma-separated topics to merge, or use "only mine: ..."'
       },
       {
         key: 'summary',
@@ -185,6 +711,7 @@ class StrategyService {
     let nextStep = currentStep;
     let aiResponse = '';
     let isComplete = false;
+    let suggestedTopicsForMessage = null;
 
     if (currentStep === 0) {
       // Welcome message
@@ -199,8 +726,11 @@ class StrategyService {
         
         // Validate input - reject gibberish/nonsense
         const isAcceptingSuggestions = value.toLowerCase().match(/^(use these?|accept|ok|yes|looks good|perfect)$/i);
-        const wantsSuggestions = value.toLowerCase().match(/(suggest|you.*tell|give.*suggest|recommend|help.*topic|what.*topic)/i) && !isAcceptingSuggestions;
-        const isRequestingHelp = wantsSuggestions || isAcceptingSuggestions;
+        const isOnlyMineMode = currentStepData.key === 'topics' && /^only mine\s*:/i.test(value);
+        const wantsSuggestions = value.toLowerCase().match(/(suggest|you.*tell|give.*suggest|recommend|help.*topic|what.*topic)/i)
+          && !isAcceptingSuggestions
+          && !isOnlyMineMode;
+        const isRequestingHelp = wantsSuggestions || isAcceptingSuggestions || isOnlyMineMode;
         
         if (!isRequestingHelp && isGibberish(value)) {
           const examplesByStep = {
@@ -224,28 +754,10 @@ class StrategyService {
             strategy: null
           };
         }
-        
-        // Special handling for accepting suggested topics  
-        if (currentStepData.key === 'topics' && isAcceptingSuggestions) {
-          // Extract topics from the last AI message
-          const { rows: messageRows } = await pool.query(
-            `SELECT message FROM strategy_chat_history 
-             WHERE strategy_id = $1 AND role = 'assistant' 
-             ORDER BY created_at DESC LIMIT 1`,
-            [strategyId]
-          );
-          
-          if (messageRows.length > 0) {
-            const lastMessage = messageRows[0].message;
-            // Extract numbered list from message (1. Topic, 2. Topic, etc.)
-            const topicMatches = lastMessage.match(/^\d+\.\s*(.+)$/gm);
-            if (topicMatches && topicMatches.length > 0) {
-              value = topicMatches.map(line => line.replace(/^\d+\.\s*/, '').trim());
-              console.log('📝 User accepted suggested topics:', value);
-            }
-          }
-        }
-        
+        const latestSuggestedTopics = currentStepData.key === 'topics'
+          ? await this.getLatestSuggestedTopics(strategyId)
+          : [];
+
         // Special handling for requesting new topic suggestions
         if (currentStepData.key === 'topics' && wantsSuggestions) {
           const { rows: strategyRows } = await pool.query(
@@ -265,14 +777,14 @@ Suggest 5-7 specific, actionable content topics for this niche. Make them concre
 Format: Just list topics separated by commas, no formatting.`;
 
               console.log('User requested topic suggestions for:', currentStrategy.niche);
-              const result = await aiService.generateStrategyContent(topicPrompt, 150);
+              const result = await aiService.generateStrategyContent(topicPrompt, 'professional');
               console.log('Generated topics result:', result);
               
               // Extract content from result object  
               const topicText = typeof result === 'string' ? result : result.content;
               // Remove any preamble text before the actual topics
               const cleanedText = topicText.replace(/^.*?:\s*\n+/i, '').trim();
-              value = cleanedText.split(',').map(t => t.trim().replace(/^\d+\.\s*/, '')).filter(Boolean).slice(0, 7);
+              value = this.normalizeAndDedupe(this.parseCsvList(cleanedText), 10);
               console.log('Generated topic suggestions:', value);
               
               if (!value || value.length === 0) {
@@ -291,14 +803,32 @@ Format: Just list topics separated by commas, no formatting.`;
               };
             }
           }
+        } else if (currentStepData.key === 'topics') {
+          if (isAcceptingSuggestions) {
+            value = latestSuggestedTopics;
+            console.log('User accepted suggested topics:', value);
+          } else if (isOnlyMineMode) {
+            const onlyMineValue = value.replace(/^only mine\s*:/i, '').trim();
+            value = this.normalizeAndDedupe(this.parseCsvList(onlyMineValue), 10);
+          } else {
+            const userTopics = this.normalizeAndDedupe(this.parseCsvList(value), 10);
+            const topicBase = latestSuggestedTopics.length > 0
+              ? latestSuggestedTopics
+              : (Array.isArray(strategy.topics) ? strategy.topics : []);
+            value = this.mergeLists(topicBase, userTopics, 10);
+          }
+        } else if (currentStepData.key === 'goals') {
+          const existingItems = Array.isArray(strategy[updateField]) ? strategy[updateField] : [];
+          const parsedItems = this.parseCsvList(value);
+          value = this.mergeLists(existingItems, parsedItems, 10);
         } else if (currentStepData.isArray && Array.isArray(value) === false) {
           // Parse array values
-          value = userMessage.split(',').map(s => s.trim()).filter(Boolean);
+          value = this.normalizeAndDedupe(this.parseCsvList(userMessage), 10);
         }
 
         // Validate topics array is not empty
         if (currentStepData.key === 'topics' && currentStepData.isArray && (!value || value.length === 0)) {
-          const retryResponse = `Please provide at least 3 topics (comma-separated), or say "suggest topics" and I'll generate some for you based on your niche!`;
+          const retryResponse = `Please provide at least 3 topics (comma-separated), type "use these" to accept suggestions, or say "suggest topics" and I'll generate some for you based on your niche!`;
           await this.addChatMessage(strategyId, 'assistant', retryResponse);
           return {
             strategy,
@@ -340,7 +870,7 @@ Format: Just list topics separated by commas, no formatting.`;
 Suggest 5-7 specific, actionable content topics for this niche. Make them concrete and relevant.
 Format: Just list topics separated by commas, no formatting.`;
 
-              const result = await aiService.generateStrategyContent(topicPrompt, 150);
+              const result = await aiService.generateStrategyContent(topicPrompt, 'professional');
               const elapsed = Date.now() - startTime;
               console.log(`✅ [Step 6] Topics generated in ${elapsed}ms with ${result.provider}`);
               
@@ -348,12 +878,15 @@ Format: Just list topics separated by commas, no formatting.`;
               const topicText = typeof result === 'string' ? result : result.content;
               // Remove any preamble text before the actual topics
               const cleanedText = topicText.replace(/^.*?:\s*\n+/i, '').trim();
-              const topicsList = cleanedText.split(',').map(t => t.trim().replace(/^\d+\.\s*/, '')).filter(Boolean).slice(0, 7);
+              const topicsList = this.normalizeAndDedupe(this.parseCsvList(cleanedText), 10);
               
               if (topicsList.length > 0) {
+                suggestedTopicsForMessage = topicsList;
                 aiResponse = `Almost done! Based on your **${currentStrategy.niche}** niche and your goals, here are content topics I recommend:\n\n` +
                   topicsList.map((t, i) => `${i + 1}. ${t}`).join('\n') + '\n\n' +
-                  `**Type \"use these\" to accept, or tell me your own 3-5 topics** (comma-separated)`;
+                  `**Type \"use these\" to accept.**\n` +
+                  `**Or add your own topics (comma-separated) to include with these.**\n` +
+                  `**Use \"only mine:\" if you want to replace suggestions.**`;
               }
             } catch (error) {
               console.error('❌ [Step 6] Failed to generate topic suggestions:', error.message);
@@ -395,7 +928,11 @@ Format: Just list topics separated by commas, no formatting.`;
     }
 
     // Save AI response
-    await this.addChatMessage(strategyId, 'assistant', aiResponse, { step: nextStep });
+    const responseMetadata = { step: nextStep };
+    if (Array.isArray(suggestedTopicsForMessage) && suggestedTopicsForMessage.length > 0) {
+      responseMetadata.suggested_topics = suggestedTopicsForMessage;
+    }
+    await this.addChatMessage(strategyId, 'assistant', aiResponse, responseMetadata);
 
     // Get quick replies and placeholder for the question we just asked
     // If nextStep is 1, we just asked steps[0], if nextStep is 2, we just asked steps[1], etc.
@@ -422,6 +959,133 @@ Format: Just list topics separated by commas, no formatting.`;
     return result;
   }
 
+  async quickCompleteStrategy(strategyId, userId, userToken = null) {
+    const strategy = await this.getStrategy(strategyId);
+    if (!strategy) {
+      throw new Error('Strategy not found');
+    }
+
+    const currentGoals = this.normalizeAndDedupe(
+      Array.isArray(strategy.content_goals) ? strategy.content_goals : [],
+      20,
+      80
+    );
+    const currentTopics = this.normalizeAndDedupe(
+      Array.isArray(strategy.topics) ? strategy.topics : [],
+      20,
+      80
+    );
+
+    const defaultGoals = [
+      'Build authority in my niche',
+      'Grow engaged followers',
+      'Drive meaningful conversations',
+      'Convert audience into qualified leads',
+    ];
+    const defaultTopics = this.normalizeAndDedupe(
+      [strategy.niche, 'Beginner mistakes', 'Actionable frameworks', 'Case studies', 'Weekly insights'],
+      10,
+      80
+    );
+
+    let generated = {
+      content_goals: [],
+      topics: [],
+      posting_frequency: '',
+      tone_style: '',
+    };
+
+    try {
+      const quickPrompt = [
+        'Return ONLY valid JSON. No markdown. No extra keys.',
+        'Schema:',
+        '{',
+        '  "content_goals": string[],',
+        '  "topics": string[],',
+        '  "posting_frequency": string,',
+        '  "tone_style": string',
+        '}',
+        'Rules:',
+        '- Keep goals and topics specific and beginner-friendly.',
+        '- posting_frequency must be realistic (example: "3-4x per week").',
+        '- tone_style should be a concise phrase.',
+        `Niche: ${strategy.niche || ''}`,
+        `Target audience: ${strategy.target_audience || ''}`,
+        `Existing goals: ${currentGoals.join(', ')}`,
+        `Existing topics: ${currentTopics.join(', ')}`,
+      ].join('\n');
+
+      const aiResult = await aiService.generateStrategyContent(
+        quickPrompt,
+        'professional',
+        userToken,
+        userId
+      );
+      const parsed = this.parseJSONObjectFromText(aiResult?.content || '');
+
+      generated = {
+        content_goals: this.normalizeAndDedupe(
+          Array.isArray(parsed?.content_goals) ? parsed.content_goals : [],
+          20,
+          80
+        ),
+        topics: this.normalizeAndDedupe(
+          Array.isArray(parsed?.topics) ? parsed.topics : [],
+          10,
+          80
+        ),
+        posting_frequency:
+          typeof parsed?.posting_frequency === 'string' ? parsed.posting_frequency.trim() : '',
+        tone_style: typeof parsed?.tone_style === 'string' ? parsed.tone_style.trim() : '',
+      };
+    } catch (error) {
+      console.error('Quick strategy completion fallback:', error?.message || error);
+    }
+
+    const mergedGoals = this.mergeLists(
+      currentGoals.length > 0 ? currentGoals : defaultGoals,
+      generated.content_goals,
+      20,
+      80
+    );
+    const mergedTopics = this.mergeLists(
+      currentTopics.length > 0 ? currentTopics : defaultTopics,
+      generated.topics,
+      10,
+      80
+    );
+
+    const finalPostingFrequency =
+      generated.posting_frequency ||
+      strategy.posting_frequency ||
+      '3-4x per week';
+    const finalToneStyle =
+      generated.tone_style ||
+      strategy.tone_style ||
+      'Clear, conversational, and practical';
+
+    const updatedMetadata = {
+      ...this.buildStrategyMetadata(strategy.metadata, 'quick_complete_ai'),
+      quick_completed: true,
+      quick_completed_at: new Date().toISOString(),
+    };
+
+    const { rows } = await pool.query(
+      `UPDATE user_strategies
+       SET content_goals = $1,
+           topics = $2,
+           posting_frequency = $3,
+           tone_style = $4,
+           status = 'active',
+           metadata = $5
+       WHERE id = $6
+       RETURNING *`,
+      [mergedGoals, mergedTopics, finalPostingFrequency, finalToneStyle, updatedMetadata, strategyId]
+    );
+
+    return rows[0];
+  }
+
   // Generate prompts for strategy
   async generatePrompts(strategyId, userId) {
     const strategy = await this.getStrategy(strategyId);
@@ -430,76 +1094,132 @@ Format: Just list topics separated by commas, no formatting.`;
       throw new Error('Strategy not found');
     }
 
-    // Build AI prompt for generating content prompts
-    const systemPrompt = `You are a Twitter content strategy expert. Generate 30 diverse, high-quality tweet prompts for a user with the following strategy:
-
-Niche: ${strategy.niche}
-Target Audience: ${strategy.target_audience}
-Goals: ${(strategy.content_goals || []).join(', ')}
-Tone: ${strategy.tone_style}
-Topics: ${(strategy.topics || []).join(', ')}
-
-Generate prompts in these categories (distribute evenly):
-- Educational (teach something valuable)
-- Engagement (questions, polls, discussions)
-- Storytelling (personal stories, case studies)
-- Tips & Tricks (actionable advice)
-- Promotional (soft sell, value-first)
-- Inspirational (motivation, mindset)
-
-Format each prompt as:
-CATEGORY: [category]
-PROMPT: [the prompt text]
----
-
-Make prompts specific, actionable, and aligned with their goals. Include variables in {curly braces} where appropriate.`;
-
     try {
-      // Use strategy-specific generation (Gemini first for better structured output)
-      const result = await aiService.generateStrategyContent(systemPrompt, 'professional', null, userId);
-      const content = result.content || result;
+      const desiredCount = 36;
+      const systemPrompt = [
+        'Return ONLY valid JSON. No markdown and no extra text.',
+        'Schema:',
+        '{',
+        '  "prompts": [',
+        '    {',
+        '      "category": "educational|engagement|storytelling|tips & tricks|promotional|inspirational",',
+        '      "prompt_text": "string",',
+        '      "instruction": "string",',
+        '      "recommended_format": "single_tweet|thread|question|poll",',
+        '      "goal": "string",',
+        '      "hashtags_hint": "string"',
+        '    }',
+        '  ]',
+        '}',
+        `Generate exactly ${desiredCount} prompts with balanced category distribution.`,
+        'Requirements:',
+        '- prompt_text should be specific and easy to execute.',
+        '- instruction should be concise and practical for beginners.',
+        '- avoid duplicates and generic wording.',
+        '- keep prompt_text focused on one angle.',
+        '- if placeholders are useful, use {placeholder_name} tokens.',
+        `Niche: ${strategy.niche || ''}`,
+        `Target Audience: ${strategy.target_audience || ''}`,
+        `Goals: ${(strategy.content_goals || []).join(', ')}`,
+        `Tone: ${strategy.tone_style || ''}`,
+        `Topics: ${(strategy.topics || []).join(', ')}`,
+      ].join('\n');
 
-      // Parse prompts from AI response
-      const promptBlocks = content.split('---').filter(b => b.trim());
-      const prompts = [];
+      let normalizedPrompts = [];
+      try {
+        const result = await aiService.generateStrategyContent(systemPrompt, 'professional', null, userId);
+        const promptItems = this.parsePromptItemsFromContent(result?.content || '');
 
-      for (const block of promptBlocks) {
-        const categoryMatch = block.match(/CATEGORY:\s*(.+)/i);
-        const promptMatch = block.match(/PROMPT:\s*(.+)/is);
+        normalizedPrompts = promptItems
+          .map((item) => {
+            const promptText = this.cleanPromptText(
+              typeof item?.prompt_text === 'string'
+                ? item.prompt_text.trim().replace(/\s+/g, ' ')
+                : ''
+            );
+            const instruction = this.cleanPromptText(
+              typeof item?.instruction === 'string'
+                ? item.instruction.trim().replace(/\s+/g, ' ')
+                : ''
+            );
+            const category = this.normalizePromptCategory(item?.category);
 
-        if (categoryMatch && promptMatch) {
-          const category = categoryMatch[1].trim().toLowerCase();
-          const promptText = promptMatch[1].trim();
+            const extractedVariables = {};
+            const variableMatches = promptText.match(/\{([^}]+)\}/g);
+            if (variableMatches) {
+              for (const variableToken of variableMatches) {
+                const key = variableToken.replace(/[{}]/g, '').trim();
+                if (key) extractedVariables[key] = '';
+              }
+            }
 
-          // Extract variables
-          const variables = {};
-          const varMatches = promptText.match(/\{([^}]+)\}/g);
-          if (varMatches) {
-            varMatches.forEach(v => {
-              const key = v.replace(/[{}]/g, '');
-              variables[key] = '';
-            });
-          }
+            return {
+              category,
+              prompt_text: promptText,
+              variables: {
+                ...extractedVariables,
+                instruction,
+                recommended_format:
+                  typeof item?.recommended_format === 'string'
+                    ? item.recommended_format.trim().toLowerCase()
+                    : 'single_tweet',
+                goal: typeof item?.goal === 'string' ? item.goal.trim() : '',
+                hashtags_hint: typeof item?.hashtags_hint === 'string' ? item.hashtags_hint.trim() : '',
+              },
+            };
+          })
+          .filter((prompt) => prompt.prompt_text.length >= 12);
 
-          prompts.push({
-            category,
-            promptText,
-            variables
-          });
+        if (normalizedPrompts.length === 0) {
+          throw new Error('No prompt items could be parsed from provider response');
         }
+      } catch (aiParseError) {
+        console.error('Prompt generation JSON parse failed, using fallback templates:', aiParseError?.message || aiParseError);
       }
 
-      // Insert prompts into database
+      if (normalizedPrompts.length < 24) {
+        const fallbackPrompts = this.buildFallbackPromptTemplates(strategy, desiredCount);
+        normalizedPrompts = [...normalizedPrompts, ...fallbackPrompts];
+      }
+
+      const dedupedPromptMap = new Map();
+      for (const prompt of normalizedPrompts) {
+        const key = prompt.prompt_text.toLowerCase();
+        if (!dedupedPromptMap.has(key)) {
+          dedupedPromptMap.set(key, prompt);
+        }
+      }
+      const finalPrompts = Array.from(dedupedPromptMap.values()).slice(0, desiredCount);
+
+      if (finalPrompts.length === 0) {
+        throw new Error('No prompts generated');
+      }
+
+      // Regeneration should replace existing prompt set to keep library clean.
+      await pool.query(`DELETE FROM strategy_prompts WHERE strategy_id = $1`, [strategyId]);
+
       const insertedPrompts = [];
-      for (const prompt of prompts) {
+      for (const prompt of finalPrompts) {
         const { rows } = await pool.query(
           `INSERT INTO strategy_prompts (strategy_id, category, prompt_text, variables)
            VALUES ($1, $2, $3, $4)
            RETURNING *`,
-          [strategyId, prompt.category, prompt.promptText, prompt.variables]
+          [strategyId, prompt.category, prompt.prompt_text, JSON.stringify(prompt.variables || {})]
         );
         insertedPrompts.push(rows[0]);
       }
+
+      const refreshedMetadata = {
+        ...(strategy.metadata && typeof strategy.metadata === 'object' && !Array.isArray(strategy.metadata) ? strategy.metadata : {}),
+        prompts_stale: false,
+        prompts_stale_at: null,
+        prompts_last_generated_at: new Date().toISOString(),
+      };
+
+      await pool.query(
+        `UPDATE user_strategies SET metadata = $1 WHERE id = $2`,
+        [refreshedMetadata, strategyId]
+      );
 
       return {
         success: true,
@@ -559,6 +1279,47 @@ Make prompts specific, actionable, and aligned with their goals. Include variabl
 
   // Update strategy
   async updateStrategy(strategyId, updates) {
+    const nextUpdates = { ...updates };
+    const promptRelevantFields = [
+      'niche',
+      'target_audience',
+      'posting_frequency',
+      'tone_style',
+      'content_goals',
+      'topics',
+    ];
+    const touchesPromptRelevantFields = promptRelevantFields
+      .some((field) => Object.prototype.hasOwnProperty.call(nextUpdates, field));
+    const touchesGoals = Object.prototype.hasOwnProperty.call(nextUpdates, 'content_goals');
+    const touchesTopics = Object.prototype.hasOwnProperty.call(nextUpdates, 'topics');
+
+    if (touchesGoals) {
+      nextUpdates.content_goals = this.normalizeAndDedupe(
+        Array.isArray(nextUpdates.content_goals) ? nextUpdates.content_goals : [],
+        20,
+        80
+      );
+    }
+
+    if (touchesTopics) {
+      nextUpdates.topics = this.normalizeAndDedupe(
+        Array.isArray(nextUpdates.topics) ? nextUpdates.topics : [],
+        20,
+        80
+      );
+    }
+
+    if (touchesPromptRelevantFields) {
+      const strategy = await this.getStrategy(strategyId);
+      const incomingMetadata = nextUpdates.metadata && typeof nextUpdates.metadata === 'object' && !Array.isArray(nextUpdates.metadata)
+        ? nextUpdates.metadata
+        : {};
+      nextUpdates.metadata = this.buildStrategyMetadata(
+        { ...(strategy?.metadata || {}), ...incomingMetadata },
+        incomingMetadata.last_strategy_update_source || 'manual_edit'
+      );
+    }
+
     const allowedFields = [
       'niche',
       'target_audience',
@@ -569,14 +1330,14 @@ Make prompts specific, actionable, and aligned with their goals. Include variabl
       'status',
       'metadata',
     ];
-    const fields = Object.keys(updates).filter(f => allowedFields.includes(f));
+    const fields = Object.keys(nextUpdates).filter(f => allowedFields.includes(f));
     
     if (fields.length === 0) {
       return null;
     }
 
     const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
-    const values = [strategyId, ...fields.map(f => updates[f])];
+    const values = [strategyId, ...fields.map(f => nextUpdates[f])];
 
     const { rows } = await pool.query(
       `UPDATE user_strategies SET ${setClause} WHERE id = $1 RETURNING *`,
@@ -609,3 +1370,4 @@ Make prompts specific, actionable, and aligned with their goals. Include variabl
 
 export const strategyService = new StrategyService();
 export default strategyService;
+
