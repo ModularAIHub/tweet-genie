@@ -1,6 +1,7 @@
 import React from 'react';
 import { decodeHTMLEntities } from '../../utils/decodeHTMLEntities';
 import { Plus, Trash2, Image, X } from 'lucide-react';
+import RichTextTextarea from '../RichTextTextarea';
 
 const ThreadComposer = ({
   isThread,
@@ -84,9 +85,9 @@ const ThreadComposer = ({
                       {tweetNumber}
                     </div>
                     <div className="flex-1">
-                      <textarea
+                      <RichTextTextarea
                         value={decodeHTMLEntities(tweet)}
-                        onChange={(e) => onThreadTweetChange(index, e.target.value)}
+                        onChange={(nextValue) => onThreadTweetChange(index, nextValue)}
                         placeholder={`Tweet ${tweetNumber}...`}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
                         rows={3}

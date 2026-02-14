@@ -14,10 +14,12 @@ const SYNC_LOCK_STALE_MS = Number(process.env.ANALYTICS_SYNC_LOCK_STALE_MS || 20
 const ANALYTICS_PRECOMPUTE_TTL_MS = Number(process.env.ANALYTICS_PRECOMPUTE_TTL_MS || 2 * 60 * 1000);
 const ANALYTICS_DEBUG = process.env.ANALYTICS_DEBUG === 'true';
 const ANALYTICS_CACHE_SCHEMA_VERSION = 'v2';
+const TWEET_ANALYTICS_COLUMNS = ['impressions', 'likes', 'retweets', 'replies', 'quote_count', 'bookmark_count'];
 
 const getSyncKey = (userId, accountId) => `${userId}:${accountId || 'personal'}`;
 let analyticsSyncStateReady = false;
 let analyticsPrecomputeCacheReady = false;
+let tweetAnalyticsColumnsReady = false;
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const analyticsInfo = (...args) => {
   if (ANALYTICS_DEBUG) {
@@ -73,6 +75,50 @@ const ensureAnalyticsPrecomputeCacheTable = async () => {
   `);
 
   analyticsPrecomputeCacheReady = true;
+};
+
+const ensureTweetAnalyticsColumns = async () => {
+  if (tweetAnalyticsColumnsReady) return;
+
+  const { rows } = await pool.query(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'tweets'`
+  );
+
+  const existingColumns = new Set((rows || []).map((row) => row.column_name));
+  const missingColumns = TWEET_ANALYTICS_COLUMNS.filter((columnName) => !existingColumns.has(columnName));
+
+  if (missingColumns.length > 0) {
+    const alterParts = missingColumns.map((columnName) => `ADD COLUMN IF NOT EXISTS ${columnName} INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE tweets ${alterParts.join(', ')}`);
+  }
+
+  const hasQuotesColumn = existingColumns.has('quotes');
+  const hasBookmarksColumn = existingColumns.has('bookmarks');
+  const hasQuoteCountColumn = existingColumns.has('quote_count') || missingColumns.includes('quote_count');
+  const hasBookmarkCountColumn = existingColumns.has('bookmark_count') || missingColumns.includes('bookmark_count');
+
+  if (hasQuotesColumn && hasQuoteCountColumn) {
+    await pool.query(`
+      UPDATE tweets
+      SET quote_count = COALESCE(NULLIF(quote_count, 0), quotes, 0)
+      WHERE COALESCE(quote_count, 0) = 0
+        AND COALESCE(quotes, 0) > 0
+    `);
+  }
+
+  if (hasBookmarksColumn && hasBookmarkCountColumn) {
+    await pool.query(`
+      UPDATE tweets
+      SET bookmark_count = COALESCE(NULLIF(bookmark_count, 0), bookmarks, 0)
+      WHERE COALESCE(bookmark_count, 0) = 0
+        AND COALESCE(bookmarks, 0) > 0
+    `);
+  }
+
+  tweetAnalyticsColumnsReady = true;
 };
 
 const normalizeScopeAccountId = (scope) => {
@@ -324,6 +370,8 @@ const injectScopeClause = (sql, scopeClause) => {
 // Get analytics overview
 router.get('/overview', authenticateToken, async (req, res) => {
   try {
+    await ensureTweetAnalyticsColumns();
+
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
     const requestTeamId = req.headers['x-team-id'] || null;
@@ -626,6 +674,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
   };
 
   try {
+    await ensureTweetAnalyticsColumns();
+
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
     const selectedAccountId = req.headers['x-selected-account-id'];
@@ -791,13 +841,13 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
         AND COALESCE(external_created_at, created_at) >= NOW() - ($${lookbackDaysIndex}::int * INTERVAL '1 day')
       ),
       force_candidates AS (
-        SELECT id, tweet_id, content, created_at, sort_ts
+        SELECT *
         FROM scoped_tweets
         ORDER BY sort_ts DESC
         LIMIT $${forceRefreshCountIndex}
       ),
       stale_candidates AS (
-        SELECT id, tweet_id, content, created_at, sort_ts
+        SELECT *
         FROM scoped_tweets
         WHERE
           impressions IS NULL
@@ -1276,6 +1326,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
 // Force refresh metrics for a single tweet card (debug/verification)
 router.post('/tweets/:tweetId/refresh', validateTwitterConnection, async (req, res) => {
   try {
+    await ensureTweetAnalyticsColumns();
+
     const userId = req.user.id;
     const dbTweetId = req.params.tweetId;
     const selectedAccountId = req.headers['x-selected-account-id'];
@@ -1471,6 +1523,8 @@ router.get('/debug-tokens', validateTwitterConnection, async (req, res) => {
 // Get detailed engagement insights
 router.get('/engagement', authenticateToken, async (req, res) => {
   try {
+    await ensureTweetAnalyticsColumns();
+
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
     const requestTeamId = req.headers['x-team-id'] || null;
@@ -1661,6 +1715,8 @@ router.get('/engagement', authenticateToken, async (req, res) => {
 // Get follower and reach analytics
 router.get('/audience', authenticateToken, async (req, res) => {
   try {
+    await ensureTweetAnalyticsColumns();
+
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
     const requestTeamId = req.headers['x-team-id'] || null;

@@ -9,6 +9,9 @@ import {
   invalidateCacheByPrefix,
 } from './requestCache';
 
+export const CREDIT_BALANCE_UPDATED_EVENT = 'suitegenie:credits-balance-updated';
+const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
 // Create axios instance
@@ -33,6 +36,66 @@ const cachedGet = ({ url, params = {}, scope, ttlMs = DEFAULT_CACHE_TTL_MS, bypa
   });
 };
 
+const toPathname = (url) => {
+  const raw = String(url || '');
+  try {
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      return new URL(raw).pathname;
+    }
+  } catch {
+    // Ignore malformed URL values and fall back to string parsing.
+  }
+  return raw.split('?')[0];
+};
+
+const hasCreditSignalInPayload = (payload) => {
+  if (!payload || typeof payload !== 'object') return false;
+  const creditKeys = [
+    'creditsUsed',
+    'credits_used',
+    'creditsDeducted',
+    'creditsRemaining',
+    'remainingCredits',
+    'creditSource',
+  ];
+  return creditKeys.some((key) => Object.prototype.hasOwnProperty.call(payload, key));
+};
+
+const shouldRefreshCreditsFromResponse = (response) => {
+  const method = String(response?.config?.method || 'get').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    return false;
+  }
+
+  const path = toPathname(response?.config?.url);
+  const creditAwarePaths = [
+    '/api/ai/',
+    '/api/tweets/ai-generate',
+    '/api/strategy/chat',
+    '/api/image-generation',
+    '/imageGeneration',
+  ];
+  const isCreditAwarePath = creditAwarePaths.some((prefix) => path.startsWith(prefix));
+  if (isCreditAwarePath) return true;
+
+  if (/^\/api\/strategy\/[^/]+\/(generate-prompts|add-on)$/.test(path)) {
+    return true;
+  }
+
+  return hasCreditSignalInPayload(response?.data) || hasCreditSignalInPayload(response?.data?.data);
+};
+
+const notifyCreditBalanceUpdated = (reason = 'unknown') => {
+  invalidateCacheByPrefix('credits_balance');
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent(CREDIT_BALANCE_UPDATED_EVENT, {
+        detail: { reason, at: Date.now() },
+      })
+    );
+  }
+};
+
 // Request interceptor to attach JWT token and selected account ID
 api.interceptors.request.use(
   (config) => {
@@ -42,31 +105,44 @@ api.interceptors.request.use(
       config.headers['Authorization'] = `Bearer ${token}`;
     }
     
-    // Team scope headers are sent only in team mode.
+    delete config.headers['X-Selected-Account-Id'];
+    delete config.headers['x-team-id'];
+
+    // Team scope is now derived from selected team account OR active team membership context.
+    let teamId = null;
+    let selectedAccountId = null;
+
     const selectedAccount = localStorage.getItem('selectedTwitterAccount');
     if (selectedAccount) {
       try {
         const account = JSON.parse(selectedAccount);
-        const hasTeamScope = Boolean(account?.team_id);
-        if (hasTeamScope && account?.id) {
-          config.headers['X-Selected-Account-Id'] = account.id;
-        } else {
-          delete config.headers['X-Selected-Account-Id'];
-        }
-
-        if (hasTeamScope) {
-          config.headers['x-team-id'] = account.team_id;
-        } else {
-          delete config.headers['x-team-id'];
+        selectedAccountId = account?.id || account?.account_id || null;
+        const accountTeamId = account?.team_id || account?.teamId || null;
+        if (accountTeamId) {
+          teamId = accountTeamId;
         }
       } catch (error) {
         console.error('Failed to parse selected account:', error);
-        delete config.headers['X-Selected-Account-Id'];
-        delete config.headers['x-team-id'];
       }
-    } else {
-      delete config.headers['X-Selected-Account-Id'];
-      delete config.headers['x-team-id'];
+    }
+
+    if (!teamId) {
+      try {
+        const teamContextRaw = localStorage.getItem(TEAM_CONTEXT_STORAGE_KEY);
+        if (teamContextRaw) {
+          const teamContext = JSON.parse(teamContextRaw);
+          teamId = teamContext?.team_id || teamContext?.teamId || null;
+        }
+      } catch (error) {
+        console.error('Failed to parse active team context:', error);
+      }
+    }
+
+    if (teamId) {
+      config.headers['x-team-id'] = teamId;
+      if (selectedAccountId) {
+        config.headers['X-Selected-Account-Id'] = selectedAccountId;
+      }
     }
     
     return config;
@@ -92,7 +168,12 @@ const processQueue = (error, token = null) => {
 
 // Response interceptor to handle errors and automatic token refresh
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (shouldRefreshCreditsFromResponse(response)) {
+      notifyCreditBalanceUpdated(toPathname(response?.config?.url));
+    }
+    return response;
+  },
   async (error) => {
     const originalRequest = error.config;
 
@@ -228,13 +309,13 @@ export const auth = {
 
 // Twitter endpoints
 export const twitter = {
-  getStatus: () => api.get('/api/twitter/status'),
+  getStatus: (config = {}) => api.get('/api/twitter/status', config),
   getStatusCached: ({ ttlMs = 60000, bypass = false } = {}) =>
     cachedGet({ url: '/api/twitter/status', scope: 'twitter_status', ttlMs, bypass }),
   getTokenStatus: () => api.get('/api/twitter/token-status'),
   getTokenStatusCached: ({ ttlMs = 60000, bypass = false } = {}) =>
     cachedGet({ url: '/api/twitter/token-status', scope: 'twitter_token_status', ttlMs, bypass }),
-  getTeamAccounts: () => api.get('/api/twitter/team-accounts'),
+  getTeamAccounts: (config = {}) => api.get('/api/twitter/team-accounts', config),
   connect: () => api.get('/api/twitter/connect', { params: { popup: 'true' } }),
   connectOAuth1: () => api.get('/api/twitter/connect-oauth1', { params: { popup: 'true' } }),
   disconnect: () => api.post('/api/twitter/disconnect'),
@@ -256,6 +337,8 @@ export const scheduling = {
   create: (scheduleData) => api.post('/api/scheduling', scheduleData),
   bulk: (bulkData) => api.post('/api/scheduling/bulk', bulkData),
   list: (params) => api.get('/api/scheduling', { params }),
+  status: () => api.get('/api/scheduling/status'),
+  retry: (scheduleId) => api.post('/api/scheduling/retry', { id: scheduleId }),
   update: (scheduleId, data) => api.put(`/api/scheduling/${scheduleId}`, data),
   cancel: (scheduleId) => api.delete(`/api/scheduling/${scheduleId}`),
 };
@@ -328,6 +411,7 @@ export const strategy = {
   list: () => api.get('/api/strategy/list'),
   create: (data) => api.post('/api/strategy', data),
   chat: (message, strategyId, currentStep) => api.post('/api/strategy/chat', { message, strategyId, currentStep }),
+  addOn: (strategyId, data) => api.post(`/api/strategy/${strategyId}/add-on`, data),
   generatePrompts: (strategyId) => api.post(`/api/strategy/${strategyId}/generate-prompts`),
   getPrompts: (strategyId, params) => api.get(`/api/strategy/${strategyId}/prompts`, { params }),
   toggleFavorite: (promptId) => api.post(`/api/strategy/prompts/${promptId}/favorite`),

@@ -14,8 +14,10 @@ import {
 import { twitter, providers } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
+import { useAccount } from '../contexts/AccountContext';
 
 const Settings = () => {
+  const { isTeamMode } = useAccount();
   const [activeTab, setActiveTab] = useState('twitter');
   const [twitterAccounts, setTwitterAccounts] = useState([]);
   const [aiProviders, setAiProviders] = useState([]);
@@ -23,6 +25,7 @@ const Settings = () => {
   const [showApiKey, setShowApiKey] = useState({});
   const oauthMessageReceivedRef = useRef(false);
   const OAUTH_RESULT_STORAGE_KEY = 'suitegenie_oauth_result';
+  const teamModeLockMessage = 'You are in Team mode. Personal Twitter connections are disabled.';
 
   const getAllowedPopupOrigins = () => {
     const allowed = new Set([window.location.origin]);
@@ -125,6 +128,11 @@ const Settings = () => {
   };
 
   const handleOAuth1Connect = async () => {
+    if (isTeamMode) {
+      toast.error(teamModeLockMessage);
+      return;
+    }
+
     try {
       oauthMessageReceivedRef.current = false;
       const response = await twitter.connectOAuth1();
@@ -176,11 +184,16 @@ const Settings = () => {
       
     } catch (error) {
       console.error('OAuth 1.0a connect error:', error);
-      toast.error('Failed to initiate OAuth 1.0a connection');
+      toast.error(error?.response?.data?.error || 'Failed to initiate OAuth 1.0a connection');
     }
   };
 
   const handleTwitterConnect = async () => {
+    if (isTeamMode) {
+      toast.error(teamModeLockMessage);
+      return;
+    }
+
     try {
       oauthMessageReceivedRef.current = false;
       const response = await twitter.connect();
@@ -240,11 +253,16 @@ const Settings = () => {
       
     } catch (error) {
       console.error('Twitter connect error:', error);
-      toast.error('Failed to initiate Twitter connection');
+      toast.error(error?.response?.data?.error || 'Failed to initiate Twitter connection');
     }
   };
 
   const handleTwitterDisconnect = async () => {
+    if (isTeamMode) {
+      toast.error(teamModeLockMessage);
+      return;
+    }
+
     if (!confirm('Are you sure you want to disconnect this Twitter account?')) {
       return;
     }
@@ -255,7 +273,7 @@ const Settings = () => {
       fetchData();
     } catch (error) {
       console.error('Twitter disconnect error:', error);
-      toast.error('Failed to disconnect Twitter account');
+      toast.error(error?.response?.data?.error || 'Failed to disconnect Twitter account');
     }
   };
 
@@ -340,6 +358,18 @@ const Settings = () => {
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
               Twitter Account Connection
             </h3>
+
+            {isTeamMode && (
+              <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-4">
+                <p className="text-sm font-semibold text-amber-900">
+                  Team mode is active
+                </p>
+                <p className="mt-1 text-sm text-amber-800">
+                  Personal Twitter account connect/disconnect is locked while you are posting as a team account.
+                  Connect a Twitter account in your team settings to continue.
+                </p>
+              </div>
+            )}
             
             {twitterAccounts.length > 0 ? (
               <div className="space-y-4">
@@ -376,7 +406,8 @@ const Settings = () => {
                         </span>
                         <button
                           onClick={() => handleTwitterDisconnect()}
-                          className="btn btn-secondary btn-sm"
+                          disabled={isTeamMode}
+                          className="btn btn-secondary btn-sm disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           <Unlink className="h-4 w-4 mr-1" />
                           Disconnect
@@ -413,7 +444,8 @@ const Settings = () => {
                         ) : (
                           <button
                             onClick={handleOAuth1Connect}
-                            className="btn btn-primary btn-sm"
+                            disabled={isTeamMode}
+                            className="btn btn-primary btn-sm disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <LinkIcon className="h-4 w-4 mr-1" />
                             Enable Media
@@ -428,14 +460,17 @@ const Settings = () => {
               <div className="text-center py-8">
                 <Twitter className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <h4 className="text-lg font-medium text-gray-900 mb-2">
-                  No Twitter Account Connected
+                  {isTeamMode ? 'Personal Twitter Is Locked In Team Mode' : 'No Twitter Account Connected'}
                 </h4>
                 <p className="text-gray-600 mb-6">
-                  Connect your Twitter account to start posting and managing your content
+                  {isTeamMode
+                    ? 'Connect a Twitter account to your team from Team settings, then use it here.'
+                    : 'Connect your Twitter account to start posting and managing your content'}
                 </p>
                 <button
                   onClick={handleTwitterConnect}
-                  className="btn btn-primary btn-md"
+                  disabled={isTeamMode}
+                  className="btn btn-primary btn-md disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <LinkIcon className="h-4 w-4 mr-2" />
                   Connect Twitter Account

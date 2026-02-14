@@ -3,6 +3,18 @@ import React, { useState } from 'react';
 import { Send, Calendar } from 'lucide-react';
 import Modal from './Modal';
 
+const TIMEZONE_ALIAS_MAP = {
+  'Asia/Calcutta': 'Asia/Kolkata',
+};
+
+const normalizeTimezone = (timezone) => TIMEZONE_ALIAS_MAP[timezone] || timezone || 'UTC';
+
+const toLocalDateTimeInputMin = () => {
+  const now = new Date();
+  const pad = (num) => String(num).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+};
+
 const TweetActions = ({
   isThread,
   content,
@@ -24,7 +36,7 @@ const TweetActions = ({
   const [scheduleDate, setScheduleDate] = useState('');
   const [localError, setLocalError] = useState('');
   // Detect user's timezone
-  const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const userTimezone = normalizeTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   return (
     <div className="flex space-x-3">
@@ -71,7 +83,7 @@ const TweetActions = ({
         <input
           type="datetime-local"
           value={scheduleDate}
-          min={new Date().toISOString().slice(0, 16)}
+          min={toLocalDateTimeInputMin()}
           onChange={e => setScheduleDate(e.target.value)}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
         />

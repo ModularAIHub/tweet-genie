@@ -537,10 +537,18 @@ export const validateTwitterConnection = async (req, res, next) => {
     
     // Check for selected team account first (from headers)
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const requestTeamId = req.headers['x-team-id'] || null;
+    const requestTeamId =
+      req.headers['x-team-id'] || req.user?.teamId || req.user?.team_id || null;
     const userId = req.user?.id || req.user?.userId;
 
-    // Team scope is explicit: only when x-team-id is present.
+    // Team scope applies when header is present or authenticated user belongs to a team.
+    if (requestTeamId && !selectedAccountId) {
+      return res.status(400).json({
+        error: 'Team account selection required. Please select a team Twitter account.',
+        code: 'TEAM_ACCOUNT_SELECTION_REQUIRED',
+      });
+    }
+
     if (selectedAccountId && requestTeamId) {
       try {
         // Try to get team account credentials (OAuth2)
@@ -562,15 +570,23 @@ export const validateTwitterConnection = async (req, res, next) => {
           isTeamAccount = true;
         }
       } catch (teamQueryErr) {
-        // If team account query fails (e.g., invalid UUID format), ignore and fall back to personal account
+        // Team-scoped requests must not fall back to personal credentials.
         authLog(
-          '[validateTwitterConnection] Team account query failed, falling back to personal account:',
+          '[validateTwitterConnection] Team account query failed:',
           teamQueryErr.message
         );
+        return res.status(400).json({
+          error: 'Failed to resolve selected team account. Please reselect your team account and retry.',
+          code: 'TEAM_ACCOUNT_LOOKUP_FAILED',
+        });
       }
     }
+
+    if (requestTeamId && !twitterAuthData) {
+      return sendReconnectRequired('team_account_not_connected');
+    }
     
-    // Fall back to personal twitter_auth if no team account
+    // Personal scope only.
     if (!twitterAuthData) {
       const { rows } = await pool.query(
         'SELECT * FROM twitter_auth WHERE user_id = $1',

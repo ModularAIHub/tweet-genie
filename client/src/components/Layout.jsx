@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useAccount } from '../contexts/AccountContext';
-import { credits } from '../utils/api';
+import { credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
 import AccountSwitcher from './AccountSwitcher';
 import TwitterTokenStatus from './TwitterTokenStatusV2';
 import { isPageVisible } from '../utils/requestCache';
@@ -29,6 +29,7 @@ const Layout = ({ children }) => {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [creditBalance, setCreditBalance] = useState(null);
   const [loadingCredits, setLoadingCredits] = useState(true);
+  const hasLoadedCreditsRef = useRef(false);
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -46,43 +47,67 @@ const Layout = ({ children }) => {
   // Fetch and refresh credit balance (visibility-aware)
   useEffect(() => {
     if (!user) {
+      hasLoadedCreditsRef.current = false;
       setCreditBalance(null);
       setLoadingCredits(false);
       return;
     }
 
     let cancelled = false;
-    const fetchCredits = async ({ bypass = false } = {}) => {
+    const fetchCredits = async ({ bypass = false, showLoader = false } = {}) => {
       try {
-        if (!cancelled) setLoadingCredits(true);
-        const response = await credits.getBalanceCached({ ttlMs: 60000, bypass });
+        if (!cancelled && showLoader) setLoadingCredits(true);
+        const response = bypass
+          ? await credits.getBalance()
+          : await credits.getBalanceCached({ ttlMs: 20000, bypass });
         if (!cancelled) {
           setCreditBalance(response.data.balance);
+          hasLoadedCreditsRef.current = true;
         }
       } catch (error) {
         if (!cancelled) {
           setCreditBalance(0);
         }
       } finally {
-        if (!cancelled) setLoadingCredits(false);
+        if (!cancelled && (showLoader || !hasLoadedCreditsRef.current)) {
+          setLoadingCredits(false);
+        }
       }
     };
 
-    fetchCredits({ bypass: true });
+    fetchCredits({ bypass: true, showLoader: true });
+
+    const onCreditBalanceUpdated = () => {
+      if (!isPageVisible()) return;
+      fetchCredits({ bypass: true, showLoader: false });
+    };
+
+    const onWindowFocus = () => {
+      fetchCredits({ bypass: false, showLoader: false });
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener(CREDIT_BALANCE_UPDATED_EVENT, onCreditBalanceUpdated);
+      window.addEventListener('focus', onWindowFocus);
+    }
 
     const interval = setInterval(async () => {
       if (!isPageVisible()) return;
-      await fetchCredits();
-    }, 5 * 60 * 1000); // 5 minutes
+      await fetchCredits({ showLoader: false });
+    }, 60 * 1000); // 1 minute
 
     return () => {
       cancelled = true;
       clearInterval(interval);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(CREDIT_BALANCE_UPDATED_EVENT, onCreditBalanceUpdated);
+        window.removeEventListener('focus', onWindowFocus);
+      }
     };
   }, [user]);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
+    <div className="h-screen overflow-hidden bg-gray-50 flex">
       {/* Twitter Token Status Monitor */}
       <TwitterTokenStatus />
       
@@ -96,7 +121,7 @@ const Layout = ({ children }) => {
 
       {/* Sidebar */}
       <div
-        className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:relative lg:flex lg:flex-col ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:sticky lg:top-0 lg:h-screen lg:flex lg:flex-col ${
           isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >

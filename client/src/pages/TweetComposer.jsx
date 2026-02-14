@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
   TwitterAccountInfo,
@@ -14,8 +15,10 @@ import { useTweetComposer } from '../hooks/useTweetComposer';
 import { fetchApiKeyPreference } from '../utils/byok-platform';
 
 const TweetComposer = () => {
+  const location = useLocation();
   const [imageModal, setImageModal] = useState({ open: false, src: null });
   const [apiKeyMode, setApiKeyMode] = useState('platform');
+  const [hasAppliedStrategyPrompt, setHasAppliedStrategyPrompt] = useState(false);
 
   // Fetch BYOK/platform mode on mount
   useEffect(() => {
@@ -76,23 +79,50 @@ const TweetComposer = () => {
     fetchScheduledTweets
   } = useTweetComposer();
 
-  // Check for prompt from Strategy Builder (after hook initialization)
+  // Check for prompt from Strategy Builder (route state first, then localStorage fallback)
   useEffect(() => {
-    const storedPrompt = localStorage.getItem('composerPrompt');
-    if (storedPrompt && setAiPrompt && handleAIButtonClick) {
-      setAiPrompt(storedPrompt);
-      localStorage.removeItem('composerPrompt'); // Clear after loading
+    if (hasAppliedStrategyPrompt) return;
+
+    let promptText = '';
+    const statePayload = location?.state?.composerPromptPayload;
+
+    if (statePayload?.text) {
+      promptText = String(statePayload.text);
+    } else {
+      const storedPayload = localStorage.getItem('composerPromptPayload');
+      if (storedPayload) {
+        try {
+          const parsed = JSON.parse(storedPayload);
+          promptText = parsed?.text ? String(parsed.text) : '';
+        } catch {
+          promptText = '';
+        }
+      }
+
+      if (!promptText) {
+        const storedPrompt = localStorage.getItem('composerPrompt');
+        promptText = storedPrompt ? String(storedPrompt) : '';
+      }
+    }
+
+    if (promptText && setAiPrompt && handleAIButtonClick) {
+      setAiPrompt(promptText);
+      localStorage.removeItem('composerPrompt');
+      localStorage.removeItem('composerPromptPayload');
+
       // Auto-open AI prompt panel
       setTimeout(() => {
         if (!showAIPrompt) {
           handleAIButtonClick();
         }
-      }, 100);
+      }, 80);
     }
-  }, [setAiPrompt, handleAIButtonClick, showAIPrompt]);
+
+    setHasAppliedStrategyPrompt(true);
+  }, [hasAppliedStrategyPrompt, location, setAiPrompt, handleAIButtonClick, showAIPrompt]);
 
   // Show loading state while checking Twitter account
-  if (isLoadingTwitterAccounts) {
+  if (isLoadingTwitterAccounts && (!twitterAccounts || twitterAccounts.length === 0)) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">

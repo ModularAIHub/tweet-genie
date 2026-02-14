@@ -22,6 +22,15 @@ const twitterDebug = (...args) => {
   }
 };
 
+const isTeamModeRequest = (req) =>
+  Boolean(req.headers['x-team-id'] || req.user?.teamId || req.user?.team_id);
+
+const sendTeamModePersonalLock = (res) =>
+  res.status(403).json({
+    error: 'You are in team mode. Personal Twitter account actions are locked.',
+    code: 'TEAM_MODE_PERSONAL_LOCKED',
+  });
+
 function sendPopupResult(
   res,
   messageType,
@@ -77,10 +86,6 @@ router.post('/upload-media', validateTwitterConnection, async (req, res) => {
   try {
     const { media } = req.body;
     const twitterAccount = req.twitterAccount;
-    const selectedAccountId = req.headers['x-selected-account-id'];
-    if (!selectedAccountId) {
-      return res.status(400).json({ error: 'Missing x-selected-account-id header. Please select a team Twitter account before uploading media.' });
-    }
     if (!media || !Array.isArray(media) || media.length === 0) {
       return res.status(400).json({ error: 'No media provided' });
     }
@@ -117,9 +122,21 @@ const pkceStore = new Map();
 router.get('/status', async (req, res) => {
   try {
     const userId = req.user?.id;
+    const requestTeamId = req.headers['x-team-id'] || req.user?.teamId || req.user?.team_id || null;
     if (!userId) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
+
+    // In team mode, personal status is intentionally hidden/locked.
+    if (requestTeamId) {
+      return res.json({
+        accounts: [],
+        teamMode: true,
+        personalLocked: true,
+        message: 'You are in team mode. Switch out of team mode to manage personal Twitter account connections.',
+      });
+    }
+
     const { rows } = await pool.query(
       `SELECT twitter_user_id, twitter_username, twitter_display_name, 
               twitter_profile_image_url, followers_count, following_count, 
@@ -158,6 +175,10 @@ router.get('/status', async (req, res) => {
 // GET /api/twitter/connect - OAuth 2.0 with PKCE
 router.get('/connect', authenticateToken, async (req, res) => {
   try {
+    if (isTeamModeRequest(req)) {
+      return sendTeamModePersonalLock(res);
+    }
+
     const userId = req.user.id;
     const popup = String(req.query.popup || '').toLowerCase() === 'true';
     
@@ -712,10 +733,17 @@ router.post('/disconnect', async (req, res) => {
   try {
     const userId = req.user?.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const requestTeamId = req.headers['x-team-id'] || null;
+    const requestTeamId = req.headers['x-team-id'] || req.user?.teamId || req.user?.team_id || null;
 
     if (!userId) {
       return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    if (requestTeamId && !selectedAccountId) {
+      return res.status(400).json({
+        error: 'Team account selection required. Please select a team Twitter account first.',
+        code: 'TEAM_ACCOUNT_SELECTION_REQUIRED',
+      });
     }
 
     if (selectedAccountId && requestTeamId) {
@@ -756,6 +784,10 @@ router.post('/disconnect', async (req, res) => {
       });
     }
 
+    if (requestTeamId) {
+      return sendTeamModePersonalLock(res);
+    }
+
     console.log('Disconnecting personal Twitter account for user:', userId);
 
     // Delete the Twitter auth record for this user
@@ -783,6 +815,10 @@ router.post('/disconnect', async (req, res) => {
 // GET /api/twitter/connect-oauth1 - OAuth 1.0a for media uploads
 router.get('/connect-oauth1', authenticateToken, async (req, res) => {
   try {
+    if (isTeamModeRequest(req)) {
+      return sendTeamModePersonalLock(res);
+    }
+
     const userId = req.user?.id;
     const popup = String(req.query.popup || '').toLowerCase() === 'true';
     if (!userId) {
@@ -1089,6 +1125,7 @@ router.get('/team-accounts', async (req, res) => {
 
     const oauth1Accounts = oauth1AccountsResult.rows.map(account => ({
       id: account.id,
+      team_id: teamId,
       twitter_user_id: account.account_id,
       username: account.account_username,
       display_name: account.account_display_name,
@@ -1128,6 +1165,7 @@ router.get('/team-accounts', async (req, res) => {
 
     const oauth2Accounts = oauth2AccountsResult.rows.map(account => ({
       id: account.id,
+      team_id: account.team_id || teamId,
       twitter_user_id: account.twitter_user_id,
       username: account.twitter_username,
       display_name: account.twitter_display_name,
@@ -1164,14 +1202,21 @@ router.get('/team-accounts', async (req, res) => {
 router.get('/token-status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id || req.user?.userId;
-    const requestTeamId = req.headers['x-team-id'] || null;
+    const requestTeamId = req.headers['x-team-id'] || req.user?.teamId || req.user?.team_id || null;
     const selectedAccountId = req.headers['x-selected-account-id'];
     
     twitterDebug('[token-status] Checking for user:', userId, 'team:', requestTeamId, 'account:', selectedAccountId);
     
     let tokenData = null;
     
-    // Team scope is explicit via x-team-id.
+    // Team scope applies via explicit header or authenticated team membership.
+    if (requestTeamId && !selectedAccountId) {
+      return res.status(400).json({
+        error: 'Team account selection required. Please select a team Twitter account.',
+        code: 'TEAM_ACCOUNT_SELECTION_REQUIRED',
+      });
+    }
+
     if (selectedAccountId && requestTeamId) {
       const { rows: teamRows } = await pool.query(
         `SELECT ta.token_expires_at, ta.oauth1_access_token
@@ -1192,10 +1237,8 @@ router.get('/token-status', authenticateToken, async (req, res) => {
           expiresAt: tokenData.token_expires_at 
         });
       }
-    }
-    
-    // Fall back to personal account
-    if (!tokenData) {
+    } else if (!requestTeamId) {
+      // Personal scope only.
       const { rows: personalRows } = await pool.query(
         'SELECT token_expires_at, oauth1_access_token FROM twitter_auth WHERE user_id = $1',
         [userId]

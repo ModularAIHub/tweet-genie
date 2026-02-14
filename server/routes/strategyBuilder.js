@@ -1,8 +1,40 @@
 import express from 'express';
 import { strategyService } from '../services/strategyService.js';
 import { creditService } from '../services/creditService.js';
+import { aiService } from '../services/aiService.js';
 
 const router = express.Router();
+
+const stripMarkdownCodeFences = (value = '') =>
+  String(value)
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+const parseAddonAIOutput = (content) => {
+  const normalizedContent = stripMarkdownCodeFences(content);
+  let parsed = null;
+
+  try {
+    parsed = JSON.parse(normalizedContent);
+  } catch (directParseError) {
+    const jsonMatch = normalizedContent.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('AI response is not valid JSON');
+    }
+    parsed = JSON.parse(jsonMatch[0]);
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('AI response is not a valid object');
+  }
+
+  return {
+    content_goals: Array.isArray(parsed.content_goals) ? parsed.content_goals : [],
+    topics: Array.isArray(parsed.topics) ? parsed.topics : [],
+  };
+};
 
 // Get or create current strategy
 router.get('/current', async (req, res) => {
@@ -141,6 +173,111 @@ router.post('/:id/generate-prompts', async (req, res) => {
   } catch (error) {
     console.error('Error generating prompts:', error);
     res.status(500).json({ error: 'Failed to generate prompts' });
+  }
+});
+
+// Incremental add-on for goals/topics
+router.post('/:id/add-on', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const { source, content_goals, topics, prompt } = req.body || {};
+
+    const strategy = await strategyService.getStrategy(id);
+    if (!strategy || strategy.user_id !== userId) {
+      return res.status(404).json({ error: 'Strategy not found' });
+    }
+
+    if (!source || !['manual', 'ai'].includes(source)) {
+      return res.status(400).json({ error: 'Invalid source. Use "manual" or "ai".' });
+    }
+
+    let additions = {
+      content_goals: [],
+      topics: [],
+    };
+
+    if (source === 'manual') {
+      if (!Array.isArray(content_goals) && !Array.isArray(topics)) {
+        return res.status(400).json({
+          error: 'Invalid payload. Provide content_goals and/or topics arrays.'
+        });
+      }
+
+      additions = {
+        content_goals: Array.isArray(content_goals) ? content_goals : [],
+        topics: Array.isArray(topics) ? topics : [],
+      };
+    } else {
+      if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5) {
+        return res.status(400).json({ error: 'Prompt is required for AI add-on and must be at least 5 characters.' });
+      }
+
+      const creditResult = await creditService.checkAndDeductCredits(
+        userId,
+        'strategy_addon_ai',
+        0.5
+      );
+
+      if (!creditResult.success) {
+        return res.status(402).json({
+          error: 'Insufficient credits',
+          available: creditResult.available,
+          required: creditResult.required
+        });
+      }
+
+      const authHeader = req.headers['authorization'];
+      const token = req.cookies?.accessToken || (authHeader && authHeader.split(' ')[1]) || null;
+
+      try {
+        const aiPrompt = [
+          'Return ONLY valid JSON. No markdown, no extra keys.',
+          'Schema: {"content_goals": string[], "topics": string[]}',
+          'Rules: max 20 items each, concise phrases, no numbering.',
+          `User request: ${prompt.trim()}`
+        ].join('\n');
+
+        const aiResult = await aiService.generateStrategyContent(
+          aiPrompt,
+          'professional',
+          token,
+          userId
+        );
+
+        additions = parseAddonAIOutput(aiResult?.content || '');
+      } catch (aiError) {
+        await creditService.refundCredits(userId, 'strategy_addon_ai_failed', 0.5);
+        throw aiError;
+      }
+    }
+
+    if (
+      (!Array.isArray(additions.content_goals) || additions.content_goals.length === 0) &&
+      (!Array.isArray(additions.topics) || additions.topics.length === 0)
+    ) {
+      if (source === 'ai') {
+        await creditService.refundCredits(userId, 'strategy_addon_ai_empty', 0.5);
+      }
+      return res.status(400).json({
+        error: 'No valid goals/topics to add.'
+      });
+    }
+
+    const result = await strategyService.appendStrategyFields(
+      id,
+      additions,
+      { source: source === 'ai' ? 'ai_add_on' : 'manual_add_on' }
+    );
+
+    if (!result) {
+      return res.status(404).json({ error: 'Strategy not found' });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error processing strategy add-on:', error);
+    res.status(500).json({ error: 'Failed to process strategy add-on' });
   }
 });
 

@@ -43,7 +43,7 @@ const toCachedFetchResponse = ({ ok, status, statusText, payload, headers, rawTe
  * This ensures all data fetching uses the currently selected Twitter account
  */
 export const useAccountAwareAPI = () => {
-  const { selectedAccount, getCurrentAccountId } = useAccount();
+  const { selectedAccount, getCurrentAccountId, isTeamMode, activeTeamId } = useAccount();
 
   /**
    * Fetch data for the currently selected account
@@ -53,7 +53,8 @@ export const useAccountAwareAPI = () => {
    */
   const fetchForCurrentAccount = async (endpoint, options = {}) => {
     const accountId = getCurrentAccountId();
-    const isTeamScope = Boolean(selectedAccount?.team_id);
+    const effectiveTeamId = selectedAccount?.team_id || selectedAccount?.teamId || activeTeamId || null;
+    const isTeamScope = Boolean(isTeamMode && effectiveTeamId);
     const url = buildRequestUrl(endpoint);
     const { cacheTtlMs = 0, bypassCache = false, ...requestOptions } = options;
     const method = (requestOptions.method || 'GET').toUpperCase();
@@ -69,7 +70,7 @@ export const useAccountAwareAPI = () => {
     }
 
     if (isTeamScope) {
-      headers['x-team-id'] = selectedAccount.team_id;
+      headers['x-team-id'] = effectiveTeamId;
     }
 
     const requestConfig = {
@@ -87,7 +88,7 @@ export const useAccountAwareAPI = () => {
       url,
       params: {
         accountId: isTeamScope ? accountId : null,
-        teamId: isTeamScope ? selectedAccount?.team_id : null,
+        teamId: isTeamScope ? effectiveTeamId : null,
       },
     });
 
@@ -139,7 +140,8 @@ export const useAccountAwareAPI = () => {
    */
   const postForCurrentAccount = async (endpoint, data = {}, options = {}) => {
     const accountId = getCurrentAccountId();
-    const isTeamScope = Boolean(selectedAccount?.team_id);
+    const effectiveTeamId = selectedAccount?.team_id || selectedAccount?.teamId || activeTeamId || null;
+    const isTeamScope = Boolean(isTeamMode && effectiveTeamId);
     
     // Include account_id only in team mode.
     const payload = isTeamScope && accountId ? { ...data, account_id: accountId } : data;
@@ -153,7 +155,7 @@ export const useAccountAwareAPI = () => {
       headers['X-Selected-Account-Id'] = accountId;
     }
     if (isTeamScope) {
-      headers['x-team-id'] = selectedAccount.team_id;
+      headers['x-team-id'] = effectiveTeamId;
     }
 
     return fetch(buildRequestUrl(endpoint), {

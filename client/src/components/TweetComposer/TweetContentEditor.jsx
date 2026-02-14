@@ -1,5 +1,6 @@
 import React from 'react';
 import { Sparkles, Wand2 } from 'lucide-react';
+import RichTextTextarea from '../RichTextTextarea';
 
 const TweetContentEditor = ({
   content,
@@ -35,9 +36,9 @@ const TweetContentEditor = ({
       {/* Content Editor */}
       {!isThread && (
         <div>
-          <textarea
+          <RichTextTextarea
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={setContent}
             placeholder="What's happening?"
             className="w-full px-3 py-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
             rows={4}
