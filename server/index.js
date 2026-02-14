@@ -29,7 +29,12 @@ import strategyAnalyticsRoutes from './routes/strategy-analytics.js';
 import autopilotRoutes from './routes/autopilot.js';
 
 // Middleware imports
-import { authenticateToken, getAuthPerfStats, resetAuthPerfStats } from './middleware/auth.js';
+import {
+  authenticateToken,
+  getAuthPerfStats,
+  resetAuthPerfStats,
+  validateTwitterConnection,
+} from './middleware/auth.js';
 // import { errorHandler } from './middleware/errorHandler.js';
 
 // Service imports
@@ -236,9 +241,14 @@ app.use('/api/image-generation', authenticateToken, imageGenerationRoutes);
 app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
 app.use('/api/approval', authenticateToken, approvalRoutes);
-app.use('/api/strategy', authenticateToken, strategyBuilderRoutes);
-app.use('/api/strategy-analytics', authenticateToken, strategyAnalyticsRoutes);
-app.use('/api/autopilot', authenticateToken, autopilotRoutes);
+app.use('/api/strategy', authenticateToken, validateTwitterConnection, strategyBuilderRoutes);
+app.use(
+  '/api/strategy-analytics',
+  authenticateToken,
+  validateTwitterConnection,
+  strategyAnalyticsRoutes
+);
+app.use('/api/autopilot', authenticateToken, validateTwitterConnection, autopilotRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
 // Global error handler to always set CORS headers, even for body parser errors (e.g., 413)

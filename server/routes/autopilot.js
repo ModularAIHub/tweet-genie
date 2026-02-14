@@ -1,6 +1,5 @@
 // Auto-Pilot Routes for Strategy Builder
 import express from 'express';
-import { authenticateToken } from '../middleware/auth.js';
 import * as autopilotService from '../services/autopilotService.js';
 
 const router = express.Router();
@@ -9,7 +8,7 @@ const router = express.Router();
  * GET /api/strategy/autopilot/:strategyId/config
  * Get autopilot configuration
  */
-router.get('/:strategyId/config', authenticateToken, async (req, res) => {
+router.get('/:strategyId/config', async (req, res) => {
   try {
     const { strategyId } = req.params;
     
@@ -39,7 +38,7 @@ router.get('/:strategyId/config', authenticateToken, async (req, res) => {
  * PUT /api/strategy/autopilot/:strategyId/config
  * Update autopilot configuration
  */
-router.put('/:strategyId/config', authenticateToken, async (req, res) => {
+router.put('/:strategyId/config', async (req, res) => {
   try {
     const { strategyId } = req.params;
     const updates = req.body;
@@ -78,7 +77,7 @@ router.put('/:strategyId/config', authenticateToken, async (req, res) => {
  * GET /api/strategy/autopilot/:strategyId/queue
  * Get content queue
  */
-router.get('/:strategyId/queue', authenticateToken, async (req, res) => {
+router.get('/:strategyId/queue', async (req, res) => {
   try {
     const { strategyId } = req.params;
     const { status, limit } = req.query;
@@ -113,7 +112,7 @@ router.get('/:strategyId/queue', authenticateToken, async (req, res) => {
  * POST /api/strategy/autopilot/:strategyId/generate
  * Generate new content and add to queue
  */
-router.post('/:strategyId/generate', authenticateToken, async (req, res) => {
+router.post('/:strategyId/generate', async (req, res) => {
   try {
     const { strategyId } = req.params;
     const { promptId, scheduledFor, count } = req.body;
@@ -159,7 +158,7 @@ router.post('/:strategyId/generate', authenticateToken, async (req, res) => {
  * POST /api/strategy/autopilot/:strategyId/fill-queue
  * Fill queue to max capacity
  */
-router.post('/:strategyId/fill-queue', authenticateToken, async (req, res) => {
+router.post('/:strategyId/fill-queue', async (req, res) => {
   try {
     const { strategyId } = req.params;
     
@@ -190,7 +189,7 @@ router.post('/:strategyId/fill-queue', authenticateToken, async (req, res) => {
  * POST /api/strategy/autopilot/queue/:queueId/approve
  * Approve queued content
  */
-router.post('/queue/:queueId/approve', authenticateToken, async (req, res) => {
+router.post('/queue/:queueId/approve', async (req, res) => {
   try {
     const { queueId } = req.params;
     
@@ -224,7 +223,7 @@ router.post('/queue/:queueId/approve', authenticateToken, async (req, res) => {
  * POST /api/strategy/autopilot/queue/:queueId/reject
  * Reject queued content
  */
-router.post('/queue/:queueId/reject', authenticateToken, async (req, res) => {
+router.post('/queue/:queueId/reject', async (req, res) => {
   try {
     const { queueId } = req.params;
     const { reason } = req.body;
@@ -259,7 +258,7 @@ router.post('/queue/:queueId/reject', authenticateToken, async (req, res) => {
  * PUT /api/strategy/autopilot/queue/:queueId
  * Edit queued content
  */
-router.put('/queue/:queueId', authenticateToken, async (req, res) => {
+router.put('/queue/:queueId', async (req, res) => {
   try {
     const { queueId } = req.params;
     const { content } = req.body;
@@ -298,7 +297,7 @@ router.put('/queue/:queueId', authenticateToken, async (req, res) => {
  * DELETE /api/strategy/autopilot/queue/:queueId
  * Delete queued content
  */
-router.delete('/queue/:queueId', authenticateToken, async (req, res) => {
+router.delete('/queue/:queueId', async (req, res) => {
   try {
     const { queueId } = req.params;
     

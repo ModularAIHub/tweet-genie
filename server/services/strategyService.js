@@ -29,13 +29,21 @@ class StrategyService {
 
   // Create new strategy with initial data
   async createStrategy(userId, teamId = null, data = {}) {
-    const { niche, target_audience, posting_frequency, content_goals, topics, status = 'draft' } = data;
+    const {
+      niche,
+      target_audience,
+      posting_frequency,
+      content_goals,
+      topics,
+      status = 'draft',
+      metadata = {},
+    } = data;
 
     const { rows } = await pool.query(
-      `INSERT INTO user_strategies (user_id, team_id, niche, target_audience, posting_frequency, content_goals, topics, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO user_strategies (user_id, team_id, niche, target_audience, posting_frequency, content_goals, topics, status, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [userId, teamId, niche, target_audience, posting_frequency, content_goals, topics, status]
+      [userId, teamId, niche, target_audience, posting_frequency, content_goals, topics, status, metadata]
     );
 
     return rows[0];
@@ -551,7 +559,16 @@ Make prompts specific, actionable, and aligned with their goals. Include variabl
 
   // Update strategy
   async updateStrategy(strategyId, updates) {
-    const allowedFields = ['niche', 'target_audience', 'content_goals', 'posting_frequency', 'tone_style', 'topics', 'status'];
+    const allowedFields = [
+      'niche',
+      'target_audience',
+      'content_goals',
+      'posting_frequency',
+      'tone_style',
+      'topics',
+      'status',
+      'metadata',
+    ];
     const fields = Object.keys(updates).filter(f => allowedFields.includes(f));
     
     if (fields.length === 0) {
