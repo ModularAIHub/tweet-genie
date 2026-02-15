@@ -3,6 +3,10 @@
 import pool from '../config/database.js';
 import { creditService } from './creditService.js';
 
+const TEAM_CREDITS_ENABLED = process.env.ENABLE_TEAM_CREDITS === 'true';
+
+const shouldUseTeamCredits = (teamId) => Boolean(TEAM_CREDITS_ENABLED && teamId);
+
 export const TeamCreditService = {
   /**
    * Get credits for team or user based on context
@@ -12,7 +16,7 @@ export const TeamCreditService = {
    */
   async getCredits(userId, teamId = null) {
     try {
-      if (teamId) {
+      if (shouldUseTeamCredits(teamId)) {
         // Team context - get team credits
         const result = await pool.query(
           'SELECT credits_remaining FROM teams WHERE id = $1',
@@ -24,7 +28,7 @@ export const TeamCreditService = {
         }
         
         return {
-          credits: result.rows[0].credits_remaining,
+          credits: Number.parseFloat(result.rows[0].credits_remaining || 0),
           source: 'team'
         };
       } else {
@@ -60,7 +64,7 @@ export const TeamCreditService = {
       };
     } catch (error) {
       console.error('[TEAM CREDIT] Check credits error:', error);
-      return { success: false, available: 0, source: teamId ? 'team' : 'user' };
+      return { success: false, available: 0, source: shouldUseTeamCredits(teamId) ? 'team' : 'user' };
     }
   },
 
@@ -77,7 +81,7 @@ export const TeamCreditService = {
     try {
       const roundedAmount = Math.round(amount * 100) / 100;
       
-      if (teamId) {
+      if (shouldUseTeamCredits(teamId)) {
         // Team context - deduct from team credits
         console.log(`[TEAM CREDIT] Deducting ${roundedAmount} from team ${teamId} for user ${userId}`);
         
@@ -134,16 +138,23 @@ export const TeamCreditService = {
           token
         );
         
+        const remainingCredits =
+          result.remainingCredits ??
+          result.remaining_balance ??
+          result.available ??
+          0;
+
         return {
           success: result.success,
-          remainingCredits: result.creditsRemaining || 0,
+          remainingCredits,
           source: 'user',
-          error: result.error
+          error: result.error,
+          creditsAvailable: result.creditsAvailable ?? result.available ?? remainingCredits,
         };
       }
     } catch (error) {
       console.error('[TEAM CREDIT] Deduct error:', error);
-      return { success: false, error: error.message, remainingCredits: 0, source: teamId ? 'team' : 'user' };
+      return { success: false, error: error.message, remainingCredits: 0, source: shouldUseTeamCredits(teamId) ? 'team' : 'user' };
     }
   },
 
@@ -158,7 +169,7 @@ export const TeamCreditService = {
     try {
       const roundedAmount = Math.round(amount * 100) / 100;
       
-      if (teamId) {
+      if (shouldUseTeamCredits(teamId)) {
         // Refund to team
         await pool.query(
           'UPDATE teams SET credits_remaining = credits_remaining + $1 WHERE id = $2',

@@ -181,7 +181,13 @@ const StrategyBuilder = () => {
         return;
       }
 
-      setError('Failed to load Strategy Builder. Please try again.');
+      const backendMessage =
+        loadError?.response?.data?.error ||
+        loadError?.response?.data?.details ||
+        loadError?.response?.data?.message ||
+        loadError?.message ||
+        null;
+      setError(backendMessage ? `Failed to load Strategy Builder: ${backendMessage}` : 'Failed to load Strategy Builder. Please try again.');
       setShowCreateForm(false);
     } finally {
       setLoading(false);
@@ -427,12 +433,12 @@ const StrategyBuilder = () => {
   if (showCreateForm) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-100 via-blue-50 to-indigo-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8">
+        <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-5 sm:p-8">
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-gray-900 mb-2">
+            <h1 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-2">
               {isAdvancedEditMode ? 'Edit Strategy' : 'Create Your Strategy'}
             </h1>
-            <p className="text-gray-600 text-lg">
+            <p className="text-gray-600 text-sm sm:text-lg">
               {isAdvancedEditMode ? 'Update your strategy details' : 'Set up your Twitter content strategy in under a minute'}
             </p>
           </div>
@@ -684,9 +690,9 @@ const StrategyBuilder = () => {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-3 sm:gap-4 w-full lg:w-auto">
               <button
                 onClick={() => {
                   window.location.href = '/dashboard';
@@ -696,7 +702,7 @@ const StrategyBuilder = () => {
                 <ArrowLeft className="w-5 h-5 text-gray-600" />
               </button>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900">Strategy Builder</h1>
+                <h1 className="text-xl sm:text-2xl font-bold text-gray-900 leading-tight">Strategy Builder</h1>
                 <p className="text-sm text-gray-600">
                   {strategy ? strategy.niche : 'Build your personalized Twitter content strategy'}
                 </p>
@@ -704,12 +710,12 @@ const StrategyBuilder = () => {
             </div>
 
             {strategy && (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {strategyOptions.length > 1 && (
                   <select
                     value={switchingStrategyId || strategy.id}
                     onChange={handleSwitchStrategy}
-                    className="max-w-[260px] px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="max-w-[260px] w-full sm:w-auto px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     title="Switch strategy"
                   >
                     {strategyOptions.map((item) => (
@@ -743,7 +749,7 @@ const StrategyBuilder = () => {
               </div>
             )}
 
-            <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-blue-50 rounded-lg ml-4">
+            <div className="hidden lg:flex items-center gap-2 px-4 py-2 bg-blue-50 rounded-lg lg:ml-4">
               <span className="text-sm text-gray-600">Chat: 0.5 credits</span>
               <span className="text-gray-400">|</span>
               <span className="text-sm text-gray-600">Generate Prompts: 10 credits</span>
@@ -751,7 +757,7 @@ const StrategyBuilder = () => {
           </div>
 
           {tabs.length > 1 && (
-            <div className="flex gap-1 mt-4 border-b border-gray-200">
+            <div className="flex gap-1 mt-4 border-b border-gray-200 overflow-x-auto scrollbar-thin">
               {tabs.map((tab) => {
                 const Icon = tab.icon;
                 const isActive = currentView === tab.id;
@@ -759,7 +765,7 @@ const StrategyBuilder = () => {
                   <button
                     key={tab.id}
                     onClick={() => setCurrentView(tab.id)}
-                    className={`flex items-center gap-2 px-6 py-3 font-medium transition-colors relative ${
+                    className={`flex items-center gap-2 px-4 sm:px-6 py-3 font-medium transition-colors relative whitespace-nowrap ${
                       isActive ? 'text-blue-600' : 'text-gray-600 hover:text-gray-900'
                     }`}
                   >
@@ -774,7 +780,7 @@ const StrategyBuilder = () => {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 sm:py-8">
         {!strategy && (
           <div className="flex items-center justify-center h-[calc(100vh-300px)]">
             <div className="text-center">
@@ -785,7 +791,7 @@ const StrategyBuilder = () => {
         )}
 
         {currentView === 'chat' && strategy && (
-          <div className="max-w-4xl mx-auto h-[calc(100vh-200px)]">
+          <div className="max-w-4xl mx-auto h-[calc(100dvh-170px)] min-h-[540px] sm:h-[calc(100vh-200px)]">
             <ChatInterface strategyId={strategy.id} onComplete={handleChatComplete} />
           </div>
         )}

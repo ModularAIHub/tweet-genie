@@ -11,6 +11,7 @@ import {
 
 export const CREDIT_BALANCE_UPDATED_EVENT = 'suitegenie:credits-balance-updated';
 const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
+const SELECTED_ACCOUNT_STORAGE_KEY = 'selectedTwitterAccount';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
@@ -96,6 +97,37 @@ const notifyCreditBalanceUpdated = (reason = 'unknown') => {
   }
 };
 
+const parseStoredJSON = (key) => {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+const resolveRequestScope = () => {
+  const selectedAccount = parseStoredJSON(SELECTED_ACCOUNT_STORAGE_KEY);
+  const selectedAccountId = selectedAccount?.id || selectedAccount?.account_id || null;
+  const selectedAccountTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
+  const hasExplicitPersonalSelection = Boolean(selectedAccountId) && !selectedAccountTeamId;
+
+  let teamId = selectedAccountTeamId || null;
+
+  // Preserve explicit personal selection. Only fall back to team context when no account is selected.
+  if (!teamId && !hasExplicitPersonalSelection) {
+    const teamContext = parseStoredJSON(TEAM_CONTEXT_STORAGE_KEY);
+    teamId = teamContext?.team_id || teamContext?.teamId || null;
+  }
+
+  return {
+    teamId,
+    selectedAccountId,
+  };
+};
+
 // Request interceptor to attach JWT token and selected account ID
 api.interceptors.request.use(
   (config) => {
@@ -108,35 +140,7 @@ api.interceptors.request.use(
     delete config.headers['X-Selected-Account-Id'];
     delete config.headers['x-team-id'];
 
-    // Team scope is now derived from selected team account OR active team membership context.
-    let teamId = null;
-    let selectedAccountId = null;
-
-    const selectedAccount = localStorage.getItem('selectedTwitterAccount');
-    if (selectedAccount) {
-      try {
-        const account = JSON.parse(selectedAccount);
-        selectedAccountId = account?.id || account?.account_id || null;
-        const accountTeamId = account?.team_id || account?.teamId || null;
-        if (accountTeamId) {
-          teamId = accountTeamId;
-        }
-      } catch (error) {
-        console.error('Failed to parse selected account:', error);
-      }
-    }
-
-    if (!teamId) {
-      try {
-        const teamContextRaw = localStorage.getItem(TEAM_CONTEXT_STORAGE_KEY);
-        if (teamContextRaw) {
-          const teamContext = JSON.parse(teamContextRaw);
-          teamId = teamContext?.team_id || teamContext?.teamId || null;
-        }
-      } catch (error) {
-        console.error('Failed to parse active team context:', error);
-      }
-    }
+    const { teamId, selectedAccountId } = resolveRequestScope();
 
     if (teamId) {
       config.headers['x-team-id'] = teamId;

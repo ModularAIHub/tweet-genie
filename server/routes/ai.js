@@ -7,6 +7,7 @@ import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/saniti
 // import { bulkGenerate } from '../controllers/aiController.js';
 
 const router = express.Router();
+const MAX_BULK_PROMPTS = 30;
 
 // Synchronous bulk generation endpoint (no queue, no Redis)
 // Scheduling service import (assume exists, adjust import if needed)
@@ -17,6 +18,11 @@ router.post('/bulk-generate', authenticateToken, async (req, res) => {
     const { prompts, options, schedule = false, scheduleOptions = {} } = req.body;
     if (!Array.isArray(prompts) || prompts.length === 0) {
       return res.status(400).json({ error: 'No prompts provided' });
+    }
+    if (prompts.length > MAX_BULK_PROMPTS) {
+      return res.status(400).json({
+        error: `Bulk generation is limited to ${MAX_BULK_PROMPTS} prompts per run.`,
+      });
     }
     const userId = req.user?.id;
     if (!userId) {
@@ -130,7 +136,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
         success: false,
         error: 'Insufficient credits',
         creditsRequired: estimatedCreditsNeeded,
-        creditsAvailable: creditCheck.available || 0,
+        creditsAvailable: creditCheck.available ?? creditCheck.creditsAvailable ?? 0,
         creditSource: creditCheck.source,
         estimatedThreads: estimatedThreadCount
       });
@@ -150,7 +156,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
         success: false,
         error: deductResult.error || 'Failed to deduct credits',
         creditsRequired: estimatedCreditsNeeded,
-        creditsAvailable: creditCheck.available || 0,
+        creditsAvailable: creditCheck.available ?? creditCheck.creditsAvailable ?? 0,
         creditSource: creditCheck.source
       });
     }
@@ -222,7 +228,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
           success: false,
           error: 'Insufficient credits for actual thread count',
           creditsRequired: actualCreditsNeeded,
-          creditsAvailable: additionalDeductResult.remainingCredits || 0,
+          creditsAvailable: additionalDeductResult.remainingCredits ?? additionalDeductResult.creditsAvailable ?? 0,
           threadCount: threadCount,
           estimatedThreads: estimatedThreadCount,
           creditSource: creditCheck.source
@@ -340,7 +346,7 @@ router.post('/generate-options', authenticateToken, async (req, res) => {
         success: false,
         error: 'Insufficient credits',
         creditsRequired,
-        creditsAvailable: creditCheck.creditsAvailable || 0
+        creditsAvailable: creditCheck.creditsAvailable ?? creditCheck.available ?? 0
       });
     }
 
@@ -417,7 +423,7 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
         success: false,
         error: 'Insufficient credits',
         creditsRequired: 2.5,
-        creditsAvailable: creditCheck.creditsAvailable || 0
+        creditsAvailable: creditCheck.creditsAvailable ?? creditCheck.available ?? 0
       });
     }
 

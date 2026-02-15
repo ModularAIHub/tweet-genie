@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { TwitterApi } from 'twitter-api-v2';
 import pool from '../config/database.js';
+import { markTweetDeleted } from '../services/tweetRetentionService.js';
 
 dotenv.config();
 
@@ -499,12 +500,7 @@ const updateTweetMetrics = async (tweetIdMap, tweetErrors) => {
       errInfo?.type?.includes('resource-not-found') ||
       String(errInfo?.title || '').toLowerCase().includes('not found');
     if (isNotFound) {
-      await pool.query(
-        `UPDATE tweets
-         SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [dbId]
-      );
+      await markTweetDeleted(dbId);
     } else {
       errors += 1;
     }

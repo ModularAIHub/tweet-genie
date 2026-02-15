@@ -194,15 +194,15 @@ const ChatInterface = ({ strategyId, onComplete }) => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-white rounded-xl shadow-lg border border-gray-200">
-      <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-blue-600 to-indigo-600">
+    <div className="flex flex-col h-full bg-white rounded-xl sm:rounded-2xl shadow-lg border border-gray-200">
+      <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-200 bg-gradient-to-r from-blue-600 to-indigo-600">
         <div className="flex items-center gap-3 mb-4">
-          <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center">
-            <Sparkles className="w-5 h-5 text-blue-600" />
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-white flex items-center justify-center">
+            <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-blue-600" />
           </div>
           <div>
-            <h3 className="text-white font-semibold text-lg">Strategy Setup</h3>
-            <p className="text-blue-100 text-sm">Answer guided questions or auto-complete with AI</p>
+            <h3 className="text-white font-semibold text-base sm:text-lg">Strategy Setup</h3>
+            <p className="text-blue-100 text-xs sm:text-sm">Answer guided questions or auto-complete with AI</p>
           </div>
         </div>
 
@@ -224,11 +224,11 @@ const ChatInterface = ({ strategyId, onComplete }) => {
         <p className="text-blue-100 text-xs mt-2">Question {normalizedStep} of {TOTAL_STEPS}</p>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4">
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fadeIn`}>
             <div
-              className={`max-w-[80%] rounded-2xl px-5 py-3 ${
+              className={`max-w-[92%] sm:max-w-[80%] rounded-2xl px-4 sm:px-5 py-2.5 sm:py-3 text-sm sm:text-base ${
                 msg.role === 'user'
                   ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white'
                   : msg.role === 'assistant'
@@ -264,15 +264,15 @@ const ChatInterface = ({ strategyId, onComplete }) => {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="border-t border-gray-200 p-4 bg-gray-50">
+      <div className="border-t border-gray-200 p-3 sm:p-4 bg-gray-50">
         {normalizedStep >= 1 && normalizedStep < TOTAL_STEPS && (
-          <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+          <div className="mb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
             <p className="text-xs text-blue-800">Want fewer steps? Use AI quick setup and continue to prompts.</p>
             <button
               type="button"
               onClick={handleAutoComplete}
               disabled={isLoading}
-              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 w-full sm:w-auto"
             >
               Auto-complete
             </button>
@@ -298,7 +298,7 @@ const ChatInterface = ({ strategyId, onComplete }) => {
           </div>
         )}
 
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <textarea
             ref={inputRef}
             value={input}
@@ -312,7 +312,7 @@ const ChatInterface = ({ strategyId, onComplete }) => {
           <button
             onClick={handleSend}
             disabled={isLoading || !input.trim()}
-            className="px-6 py-3 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl font-medium hover:from-blue-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2 shadow-md hover:shadow-lg"
+            className="px-6 py-3 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl font-medium hover:from-blue-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg w-full sm:w-auto"
           >
             {isLoading ? (
               <>
@@ -328,7 +328,7 @@ const ChatInterface = ({ strategyId, onComplete }) => {
           </button>
         </div>
 
-        <div className="mt-4 flex items-center justify-between text-sm">
+        <div className="mt-3 sm:mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between text-sm gap-2">
           <div className="flex items-center gap-2 text-gray-600">
             <div className="flex items-center gap-1">
               {[...Array(TOTAL_STEPS)].map((_, index) => (
@@ -348,7 +348,7 @@ const ChatInterface = ({ strategyId, onComplete }) => {
               {normalizedStep < TOTAL_STEPS ? `Step ${normalizedStep} of ${TOTAL_STEPS}` : 'Complete'}
             </span>
           </div>
-          <div className="text-xs text-gray-500">Enter to send, Shift+Enter for newline</div>
+          <div className="text-xs text-gray-500 sm:text-right">Enter to send, Shift+Enter for newline</div>
         </div>
       </div>
     </div>

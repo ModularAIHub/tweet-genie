@@ -664,10 +664,14 @@ export const useTweetComposer = () => {
       // Handle specific credit errors
       if (error.response?.status === 402) {
         const errorData = error.response.data;
-        if (errorData.threadCount > 1) {
-          toast.error(`Insufficient credits: Need ${errorData.creditsRequired} credits for ${errorData.threadCount} threads. Available: ${errorData.creditsAvailable}`);
+        const threadCount = Number(errorData.threadCount || errorData.estimatedThreads || 1);
+        const creditsRequired = errorData.creditsRequired ?? errorData.required ?? 0;
+        const creditsAvailable = errorData.creditsAvailable ?? errorData.available ?? 0;
+
+        if (threadCount > 1) {
+          toast.error(`Insufficient credits: Need ${creditsRequired} credits for ${threadCount} threads. Available: ${creditsAvailable}`);
         } else {
-          toast.error(`Insufficient credits: Need ${errorData.creditsRequired} credits. Available: ${errorData.creditsAvailable || 0}`);
+          toast.error(`Insufficient credits: Need ${creditsRequired} credits. Available: ${creditsAvailable}`);
         }
       } else {
         toast.error('Failed to generate content');

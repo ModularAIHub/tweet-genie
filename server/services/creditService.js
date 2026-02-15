@@ -60,7 +60,9 @@ class CreditService {
             success: false,
             error: 'insufficient_credits',
             available: currentBalance,
+            creditsAvailable: currentBalance,
             required: amount,
+            creditsRequired: amount,
           };
         }
 
@@ -84,6 +86,8 @@ class CreditService {
           success: true,
           transaction_id: transactionResult.rows[0].id,
           remaining_balance: newBalance,
+          remainingCredits: newBalance,
+          creditsRemaining: newBalance,
           creditsDeducted: amount,
         };
       } catch (error) {
@@ -216,4 +220,3 @@ class CreditService {
 }
 
 export const creditService = new CreditService();
-

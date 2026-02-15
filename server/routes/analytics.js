@@ -3,6 +3,7 @@ import pool from '../config/database.js';
 import { TwitterApi } from 'twitter-api-v2';
 import { authenticateToken, validateTwitterConnection } from '../middleware/auth.js';
 import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
+import { markTweetDeleted } from '../services/tweetRetentionService.js';
 
 const router = express.Router();
 const SYNC_COOLDOWN_MS = Number(process.env.ANALYTICS_SYNC_COOLDOWN_MS || 3 * 60 * 1000);
@@ -1148,10 +1149,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
           String(tweetLookupError?.title || '').toLowerCase().includes('not found');
 
         if (isNotFoundError) {
-          await pool.query(
-            `UPDATE tweets SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-            [tweet.id]
-          );
+          await markTweetDeleted(tweet.id);
           shouldInvalidateAnalyticsCache = true;
           skipReasons.not_found++;
           log('Tweet not found on Twitter, marked deleted', { tweetId, dbId: tweet.id });
@@ -1406,12 +1404,7 @@ router.post('/tweets/:tweetId/refresh', validateTwitterConnection, async (req, r
         lookupError?.type?.includes('resource-not-found') ||
         String(lookupError?.title || '').toLowerCase().includes('not found');
       if (notFound) {
-        await pool.query(
-          `UPDATE tweets
-           SET status = 'deleted', updated_at = CURRENT_TIMESTAMP
-           WHERE id = $1`,
-          [tweet.id]
-        );
+        await markTweetDeleted(tweet.id);
         await clearAnalyticsCachedPayload({ userId, accountId: effectiveAccountId });
         return res.json({
           success: true,

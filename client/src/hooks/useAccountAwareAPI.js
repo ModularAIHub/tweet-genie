@@ -38,6 +38,19 @@ const toCachedFetchResponse = ({ ok, status, statusText, payload, headers, rawTe
     typeof rawText === 'string' ? rawText : JSON.stringify(payload === undefined ? {} : payload),
 });
 
+const resolveTeamScope = ({ selectedAccount, activeTeamId, isTeamMode }) => {
+  const selectedAccountTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
+  const hasExplicitPersonalSelection = Boolean(selectedAccount) && !selectedAccountTeamId;
+  const effectiveTeamId = hasExplicitPersonalSelection
+    ? null
+    : selectedAccountTeamId || activeTeamId || null;
+
+  return {
+    effectiveTeamId,
+    isTeamScope: Boolean(isTeamMode && effectiveTeamId),
+  };
+};
+
 /**
  * Hook to make API calls account-aware
  * This ensures all data fetching uses the currently selected Twitter account
@@ -53,8 +66,11 @@ export const useAccountAwareAPI = () => {
    */
   const fetchForCurrentAccount = async (endpoint, options = {}) => {
     const accountId = getCurrentAccountId();
-    const effectiveTeamId = selectedAccount?.team_id || selectedAccount?.teamId || activeTeamId || null;
-    const isTeamScope = Boolean(isTeamMode && effectiveTeamId);
+    const { effectiveTeamId, isTeamScope } = resolveTeamScope({
+      selectedAccount,
+      activeTeamId,
+      isTeamMode,
+    });
     const url = buildRequestUrl(endpoint);
     const { cacheTtlMs = 0, bypassCache = false, ...requestOptions } = options;
     const method = (requestOptions.method || 'GET').toUpperCase();
@@ -140,8 +156,11 @@ export const useAccountAwareAPI = () => {
    */
   const postForCurrentAccount = async (endpoint, data = {}, options = {}) => {
     const accountId = getCurrentAccountId();
-    const effectiveTeamId = selectedAccount?.team_id || selectedAccount?.teamId || activeTeamId || null;
-    const isTeamScope = Boolean(isTeamMode && effectiveTeamId);
+    const { effectiveTeamId, isTeamScope } = resolveTeamScope({
+      selectedAccount,
+      activeTeamId,
+      isTeamMode,
+    });
     
     // Include account_id only in team mode.
     const payload = isTeamScope && accountId ? { ...data, account_id: accountId } : data;

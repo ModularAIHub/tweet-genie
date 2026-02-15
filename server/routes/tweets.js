@@ -1,6 +1,6 @@
 const router = express.Router();
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
-import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
+import { buildReconnectRequiredPayload, buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 
 // Bulk save generated tweets/threads as drafts
 router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
@@ -44,6 +44,14 @@ import { tweetSchema, aiGenerateSchema } from '../middleware/validation.js';
 import { creditService } from '../services/creditService.js';
 import { aiService } from '../services/aiService.js';
 import { mediaService } from '../services/mediaService.js';
+import {
+  DELETED_TWEET_RETENTION_DAYS,
+  ensureTweetDeletionRetentionSchema,
+  getTweetDeletionRetentionWindow,
+  getTweetDeletionVisibilityClause,
+  markTweetDeleted,
+  purgeExpiredDeletedTweets,
+} from '../services/tweetRetentionService.js';
 
 const THREAD_POST_DELAY_MS = Number.parseInt(process.env.THREAD_POST_DELAY_MS || '900', 10);
 const THREAD_POST_DELAY_JITTER_MS = Number.parseInt(process.env.THREAD_POST_DELAY_JITTER_MS || '300', 10);
@@ -80,6 +88,30 @@ function isRateLimitedError(error) {
     message.includes('rate limit') ||
     message.includes('too many requests') ||
     message.includes(' 429')
+  );
+}
+
+function isUnauthorizedError(error) {
+  const message = `${error?.message || ''} ${error?.data?.detail || ''}`.toLowerCase();
+  return (
+    error?.code === 401 ||
+    error?.status === 401 ||
+    error?.data?.status === 401 ||
+    message.includes(' 401') ||
+    message.includes('unauthorized') ||
+    message.includes('invalid or expired token') ||
+    message.includes('invalid token')
+  );
+}
+
+function isTwitterNotFoundError(error) {
+  const message = `${error?.message || ''} ${error?.data?.detail || ''}`.toLowerCase();
+  return (
+    error?.code === 404 ||
+    error?.status === 404 ||
+    error?.data?.status === 404 ||
+    message.includes('not found') ||
+    message.includes('resource-not-found')
   );
 }
 
@@ -455,6 +487,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       
       // Check if it's a rate limit error (429)
       const isRateLimitError = isRateLimitedError(twitterError);
+      const is401Error = isUnauthorizedError(twitterError);
       
       // Check if it's a 403 (permissions) error
       const is403Error = twitterError.code === 403 || 
@@ -483,6 +516,17 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           postedTweets: hasPartialSuccess ? postedCount : 0,
           totalTweets: thread?.length || 1
         });
+      } else if (is401Error) {
+        console.log('Twitter API returned 401 Unauthorized', {
+          accountId: twitterAccount?.id,
+          isTeamAccount: twitterAccount?.isTeamAccount,
+          hasRefreshToken: !!twitterAccount?.refresh_token,
+        });
+        throw {
+          code: 'TWITTER_AUTH_EXPIRED',
+          message: 'Twitter session expired or revoked. Please reconnect your account.',
+          details: twitterError.message
+        };
       } else if (is403Error) {
         console.log('🔐 Permissions error detected - Twitter API returned 403');
         throw {
@@ -511,6 +555,15 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         details: error.details,
         action: 'reconnect_twitter'
       });
+    }
+
+    if (error.code === 'TWITTER_AUTH_EXPIRED') {
+      return res.status(401).json(
+        buildReconnectRequiredPayload({
+          reason: 'token_invalid_or_revoked',
+          details: error.details || error.message,
+        })
+      );
     }
     
     if (error.code === 'TWITTER_API_ERROR') {
@@ -650,12 +703,16 @@ router.get(['/history', '/'], async (req, res) => {
     const safePage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
     const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 20;
     const parsedOffset = (safePage - 1) * safeLimit;
+    await ensureTweetDeletionRetentionSchema();
+    await purgeExpiredDeletedTweets({ userId });
     const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
+    const retention = getTweetDeletionRetentionWindow();
 
     if (!twitterScope.connected && twitterScope.mode === 'personal') {
       return res.json({
         disconnected: true,
         tweets: [],
+        retention: getTweetDeletionRetentionWindow(),
         pagination: {
           page: safePage,
           limit: safeLimit,
@@ -686,6 +743,14 @@ router.get(['/history', '/'], async (req, res) => {
         queryParams.push(status);
         countParams.push(status);
       }
+
+      const retentionParamIndex = queryParams.length + 1;
+      whereClause += getTweetDeletionVisibilityClause({
+        alias: 't',
+        retentionDaysParamIndex: retentionParamIndex,
+      });
+      queryParams.push(DELETED_TWEET_RETENTION_DAYS);
+      countParams.push(DELETED_TWEET_RETENTION_DAYS);
 
       sqlQuery = `
         SELECT t.*, 
@@ -733,6 +798,14 @@ router.get(['/history', '/'], async (req, res) => {
         countParams.push(status);
       }
 
+      const retentionParamIndex = queryParams.length + 1;
+      whereClause += getTweetDeletionVisibilityClause({
+        alias: 't',
+        retentionDaysParamIndex: retentionParamIndex,
+      });
+      queryParams.push(DELETED_TWEET_RETENTION_DAYS);
+      countParams.push(DELETED_TWEET_RETENTION_DAYS);
+
       sqlQuery = `
         SELECT t.*, 
                 ta.twitter_username as username, 
@@ -767,6 +840,7 @@ router.get(['/history', '/'], async (req, res) => {
     res.json({
       disconnected: false,
       tweets: rows,
+      retention,
       pagination: {
         page: safePage,
         limit: safeLimit,
@@ -830,6 +904,8 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
       tweet = teamTweetResult.rows[0];
     }
 
+    await ensureTweetDeletionRetentionSchema();
+
     // Create Twitter client with OAuth 2.0
     const twitterClient = new TwitterApi(req.twitterAccount.access_token);
 
@@ -837,16 +913,44 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
       // Delete from Twitter
       await twitterClient.v2.deleteTweet(tweet.tweet_id);
 
-      // Update status in database
-      await pool.query(
-        'UPDATE tweets SET status = $1 WHERE id = $2',
-        ['deleted', tweetId]
-      );
+      // Keep in history as deleted for retention window.
+      const deletedRow = await markTweetDeleted(tweetId);
+      const retention = getTweetDeletionRetentionWindow();
+      const deletedAt = deletedRow?.deleted_at || new Date().toISOString();
+      const deleteAfter = new Date(
+        new Date(deletedAt).getTime() + retention.days * 24 * 60 * 60 * 1000
+      ).toISOString();
 
-      res.json({ success: true, message: 'Tweet deleted successfully' });
+      res.json({
+        success: true,
+        message: `Tweet deleted. It will remain in history for ${retention.days} days before cleanup.`,
+        status: 'deleted',
+        deletedAt,
+        deleteAfter,
+        retention,
+      });
 
     } catch (twitterError) {
       console.error('Twitter delete error:', twitterError);
+
+      if (isTwitterNotFoundError(twitterError)) {
+        const deletedRow = await markTweetDeleted(tweetId);
+        const retention = getTweetDeletionRetentionWindow();
+        const deletedAt = deletedRow?.deleted_at || new Date().toISOString();
+        const deleteAfter = new Date(
+          new Date(deletedAt).getTime() + retention.days * 24 * 60 * 60 * 1000
+        ).toISOString();
+
+        return res.json({
+          success: true,
+          message: `Tweet was already removed on Twitter. Keeping a deleted record for ${retention.days} days.`,
+          status: 'deleted',
+          deletedAt,
+          deleteAfter,
+          retention,
+        });
+      }
+
       res.status(400).json({ error: 'Failed to delete tweet from Twitter' });
     }
 

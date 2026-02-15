@@ -109,10 +109,10 @@ CREATE INDEX IF NOT EXISTS idx_optimal_schedule_recommended ON optimal_posting_s
 
 -- Triggers for updated_at
 CREATE TRIGGER update_strategy_analytics_updated_at BEFORE UPDATE ON strategy_analytics
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 CREATE TRIGGER update_content_insights_updated_at BEFORE UPDATE ON content_insights
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
 CREATE TRIGGER update_optimal_posting_schedule_updated_at BEFORE UPDATE ON optimal_posting_schedule
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

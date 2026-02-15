@@ -28,6 +28,7 @@ const Layout = ({ children }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [creditBalance, setCreditBalance] = useState(null);
+  const [creditSource, setCreditSource] = useState('personal');
   const [loadingCredits, setLoadingCredits] = useState(true);
   const hasLoadedCreditsRef = useRef(false);
 
@@ -49,6 +50,7 @@ const Layout = ({ children }) => {
     if (!user) {
       hasLoadedCreditsRef.current = false;
       setCreditBalance(null);
+      setCreditSource('personal');
       setLoadingCredits(false);
       return;
     }
@@ -62,11 +64,13 @@ const Layout = ({ children }) => {
           : await credits.getBalanceCached({ ttlMs: 20000, bypass });
         if (!cancelled) {
           setCreditBalance(response.data.balance);
+          setCreditSource(response.data?.source === 'team' ? 'team' : 'personal');
           hasLoadedCreditsRef.current = true;
         }
       } catch (error) {
         if (!cancelled) {
           setCreditBalance(0);
+          setCreditSource('personal');
         }
       } finally {
         if (!cancelled && (showLoader || !hasLoadedCreditsRef.current)) {
@@ -183,7 +187,9 @@ const Layout = ({ children }) => {
                 creditBalance !== null ? creditBalance.toFixed(1) : '--'
               )}
             </div>
-            <p className="text-xs text-gray-500">Available credits</p>
+            <p className="text-xs text-gray-500">
+              {creditSource === 'team' ? 'Available team credits' : 'Available credits'}
+            </p>
           </div>
         </div>
       </div>

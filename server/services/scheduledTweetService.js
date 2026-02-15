@@ -16,6 +16,7 @@ const SCHEDULED_PROCESSING_STUCK_MINUTES = Number.parseInt(
 );
 const SCHEDULED_DUE_BATCH_LIMIT = Number.parseInt(process.env.SCHEDULED_DUE_BATCH_LIMIT || '10', 10);
 const SCHEDULED_DB_RETRY_MAX_ATTEMPTS = Number.parseInt(process.env.SCHEDULED_DB_RETRY_MAX_ATTEMPTS || '5', 10);
+const MAX_SCHEDULING_WINDOW_DAYS = Number.parseInt(process.env.MAX_SCHEDULING_WINDOW_DAYS || '15', 10);
 const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
 const TWITTER_OAUTH1_APP_SECRET = process.env.TWITTER_API_SECRET || process.env.TWITTER_CONSUMER_SECRET || null;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -279,6 +280,11 @@ class ScheduledTweetService {
     const scheduledFor = toUtcDbTimestamp(scheduledForInput);
     if (!scheduledFor) {
       throw new Error('Invalid scheduledFor value for scheduling');
+    }
+    const scheduledForDate = scheduledForInput instanceof Date ? scheduledForInput : new Date(scheduledForInput);
+    const maxScheduledAt = new Date(Date.now() + MAX_SCHEDULING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    if (scheduledForDate > maxScheduledAt) {
+      throw new Error(`Scheduling is limited to ${MAX_SCHEDULING_WINDOW_DAYS} days ahead.`);
     }
     const timezone = options.timezone || 'UTC';
     const mediaUrls = options.mediaUrls || options.media_urls || [];

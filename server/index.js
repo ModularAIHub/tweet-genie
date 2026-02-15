@@ -41,6 +41,10 @@ import {
 import { getDbScheduledTweetWorkerStatus, startDbScheduledTweetWorker } from './workers/dbScheduledTweetWorker.js';
 import { getAnalyticsAutoSyncStatus, startAnalyticsAutoSyncWorker } from './workers/analyticsSyncWorker.js';
 import { startAutopilotWorker, getAutopilotWorkerStatus } from './workers/autopilotWorker.js';
+import {
+  getDeletedTweetRetentionWorkerStatus,
+  startDeletedTweetRetentionWorker,
+} from './workers/deletedTweetRetentionWorker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, './.env') });
@@ -76,6 +80,8 @@ const START_ANALYTICS_WORKER = BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(pro
 const START_AUTOPILOT_WORKER = BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_AUTOPILOT_WORKER, false);
 const START_DB_SCHEDULER_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DB_SCHEDULER_WORKER, true);
+const START_DELETED_TWEET_RETENTION_WORKER =
+  BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DELETED_TWEET_RETENTION_WORKER, true);
 
 const requestLog = (...args) => {
   if (REQUEST_DEBUG) {
@@ -258,7 +264,8 @@ app.use('/api/image-generation', authenticateToken, imageGenerationRoutes);
 app.use('/imageGeneration', authenticateToken, imageGenerationRoutes);
 app.use('/api/team', authenticateToken, teamRoutes);
 app.use('/api/approval', authenticateToken, approvalRoutes);
-app.use('/api/strategy', authenticateToken, validateTwitterConnection, strategyBuilderRoutes);
+// Strategy Builder should be accessible even when Twitter team-account context is not resolved yet.
+app.use('/api/strategy', authenticateToken, strategyBuilderRoutes);
 app.use(
   '/api/strategy-analytics',
   authenticateToken,
@@ -319,5 +326,16 @@ app.listen(PORT, async () => {
     }
   } else {
     console.log('[Startup] DB scheduled tweet worker disabled.');
+  }
+
+  if (START_DELETED_TWEET_RETENTION_WORKER) {
+    try {
+      startDeletedTweetRetentionWorker();
+      console.log('[Startup] Deleted tweet retention worker status:', getDeletedTweetRetentionWorkerStatus());
+    } catch (error) {
+      console.error('[Startup] Deleted tweet retention worker initialization error:', error?.message || error);
+    }
+  } else {
+    console.log('[Startup] Deleted tweet retention worker disabled.');
   }
 });

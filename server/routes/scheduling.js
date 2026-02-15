@@ -8,6 +8,8 @@ import moment from 'moment-timezone';
 
 const router = express.Router();
 const SCHEDULING_DEBUG = process.env.SCHEDULING_DEBUG === 'true';
+const MAX_BULK_SCHEDULE_ITEMS = 30;
+const MAX_SCHEDULING_WINDOW_DAYS = 15;
 
 const schedulingDebug = (...args) => {
   if (SCHEDULING_DEBUG) {
@@ -191,8 +193,219 @@ function parseScheduledTimeToUtc(scheduledFor, timezone) {
   };
 }
 
-// Get scheduled tweets (frontend expects /scheduled)
-router.get('/scheduled', async (req, res) => {
+function getMaxSchedulingUtcMoment() {
+  return moment.utc().add(MAX_SCHEDULING_WINDOW_DAYS, 'days');
+}
+
+function isQueryTimeoutError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    message.includes('query read timeout') ||
+    message.includes('statement timeout') ||
+    message.includes('canceling statement due to statement timeout')
+  );
+}
+
+async function ensureActiveTeamMembership(teamId, userId) {
+  const { rows } = await pool.query(
+    `SELECT 1
+     FROM team_members
+     WHERE team_id = $1
+       AND user_id = $2
+       AND status = $3
+     LIMIT 1`,
+    [teamId, userId, 'active']
+  );
+  return rows.length > 0;
+}
+
+async function fetchTeamScheduledRows({ teamId, statuses, safeLimit, offset }) {
+  const teamStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
+  const teamParams = statuses
+    ? [teamId, statuses, safeLimit, offset]
+    : [teamId, safeLimit, offset];
+  const teamLimitIdx = statuses ? 3 : 2;
+  const teamOffsetIdx = statuses ? 4 : 3;
+
+  const result = await pool.query(
+    `SELECT st.*
+     FROM scheduled_tweets st
+     WHERE st.team_id = $1 ${teamStatusClause}
+     ORDER BY st.scheduled_for ASC
+     LIMIT $${teamLimitIdx} OFFSET $${teamOffsetIdx}`,
+    teamParams
+  );
+
+  return result.rows;
+}
+
+async function enrichTeamScheduledRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return rows || [];
+  }
+
+  const accountIds = [...new Set(
+    rows
+      .map((row) => row.account_id)
+      .filter((value) => value !== null && value !== undefined && String(value).trim() !== '')
+      .map((value) => String(value))
+  )];
+
+  const userIds = [...new Set(
+    rows
+      .map((row) => row.user_id)
+      .filter((value) => value !== null && value !== undefined && String(value).trim() !== '')
+      .map((value) => String(value))
+  )];
+
+  const accountUsernameById = new Map();
+  const userMetaById = new Map();
+
+  if (accountIds.length > 0) {
+    const { rows: accountRows } = await pool.query(
+      `SELECT id::text AS account_id, twitter_username
+       FROM team_accounts
+       WHERE id::text = ANY($1::text[])`,
+      [accountIds]
+    );
+
+    for (const accountRow of accountRows) {
+      accountUsernameById.set(String(accountRow.account_id), accountRow.twitter_username || null);
+    }
+  }
+
+  if (userIds.length > 0) {
+    const { rows: userRows } = await pool.query(
+      `SELECT id::text AS user_id, email, name
+       FROM users
+       WHERE id::text = ANY($1::text[])`,
+      [userIds]
+    );
+
+    for (const userRow of userRows) {
+      userMetaById.set(String(userRow.user_id), {
+        email: userRow.email || null,
+        name: userRow.name || null,
+      });
+    }
+  }
+
+  return rows.map((row) => {
+    const accountKey = row.account_id !== null && row.account_id !== undefined ? String(row.account_id) : null;
+    const userKey = row.user_id !== null && row.user_id !== undefined ? String(row.user_id) : null;
+    const userMeta = userKey ? userMetaById.get(userKey) : null;
+
+    return {
+      ...row,
+      account_username: accountKey ? accountUsernameById.get(accountKey) || null : null,
+      scheduled_by_email: userMeta?.email || null,
+      scheduled_by_name: userMeta?.name || null,
+    };
+  });
+}
+
+async function fetchPersonalScheduledRows({ userId, twitterScope, statuses, safeLimit, offset }) {
+  const hasAuthorScope = Boolean(twitterScope?.twitterUserId);
+  const statusParamIdx = hasAuthorScope ? 3 : 2;
+  const statusClause = statuses ? `AND st.status = ANY($${statusParamIdx}::text[])` : '';
+  const authorScopeClause = hasAuthorScope
+    ? 'AND (st.author_id = $2 OR (st.author_id IS NULL AND st.user_id = $1))'
+    : 'AND (st.author_id IS NULL AND st.user_id = $1)';
+
+  const personalParams = hasAuthorScope
+    ? [userId, twitterScope.twitterUserId]
+    : [userId];
+
+  if (statuses) {
+    personalParams.push(statuses);
+  }
+
+  const limitIdx = personalParams.length + 1;
+  const offsetIdx = personalParams.length + 2;
+  personalParams.push(safeLimit, offset);
+
+  const result = await pool.query(
+    `SELECT st.*
+     FROM scheduled_tweets st
+     WHERE st.user_id = $1
+       AND (st.team_id IS NULL OR st.team_id::text = '')
+       ${authorScopeClause}
+       ${statusClause}
+     ORDER BY st.scheduled_for ASC
+     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+    personalParams
+  );
+
+  const personalUsername = twitterScope?.twitterUsername || null;
+  return result.rows.map((row) => ({
+    ...row,
+    account_username: personalUsername,
+    twitter_username: personalUsername,
+  }));
+}
+
+async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimit, offset, requestedStatus, statuses }) {
+  const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId });
+
+  schedulingDebug('[ScheduledTweets] Request:', {
+    userId,
+    teamId,
+    selectedAccountId,
+    mode: twitterScope.mode,
+    pageSize: safeLimit,
+    offset,
+    status: requestedStatus,
+    statuses,
+  });
+
+  if (teamId) {
+    const isMember = await ensureActiveTeamMembership(teamId, userId);
+    if (!isMember) {
+      return { forbidden: true };
+    }
+
+    try {
+      const rows = await fetchTeamScheduledRows({ teamId, statuses, safeLimit, offset });
+      const enrichedRows = await enrichTeamScheduledRows(rows);
+      return { rows: enrichedRows, disconnected: false };
+    } catch (teamQueryError) {
+      if (!isQueryTimeoutError(teamQueryError)) {
+        throw teamQueryError;
+      }
+
+      console.warn('[ScheduledTweets] Team query timed out, retrying with reduced result window.', {
+        teamId,
+        requestedStatus,
+        limit: safeLimit,
+      });
+
+      const fallbackRows = await fetchTeamScheduledRows({
+        teamId,
+        statuses,
+        safeLimit: Math.min(safeLimit, 10),
+        offset: 0,
+      });
+      const fallbackEnrichedRows = await enrichTeamScheduledRows(fallbackRows);
+      return { rows: fallbackEnrichedRows, disconnected: false, degraded: true };
+    }
+  }
+
+  if (!twitterScope.connected && twitterScope.mode === 'personal') {
+    return { rows: [], disconnected: true };
+  }
+
+  const personalRows = await fetchPersonalScheduledRows({
+    userId,
+    twitterScope,
+    statuses,
+    safeLimit,
+    offset,
+  });
+
+  return { rows: personalRows, disconnected: false };
+}
+
+async function handleScheduledTweetsList(req, res) {
   try {
     const { page = 1, limit = 20, status = 'pending' } = req.query;
     const { safePage, safeLimit, offset } = getNormalizedPagination(page, limit);
@@ -200,113 +413,73 @@ router.get('/scheduled', async (req, res) => {
     const teamId = req.headers['x-team-id'] || null;
     const userId = req.user.id;
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId });
-
-    schedulingDebug('[ScheduledTweets] Request:', {
+    const result = await listScheduledTweets({
       userId,
       teamId,
       selectedAccountId,
-      mode: twitterScope.mode,
-      page: safePage,
-      limit: safeLimit,
-      status: requestedStatus,
+      safeLimit,
+      offset,
+      requestedStatus,
       statuses,
-      headers: req.headers
     });
 
-    let rows;
-    if (teamId) {
-      // Check if user is a member of the team
-      const { rows: memberRows } = await pool.query(
-        'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = $3',
-        [teamId, userId, 'active']
-      );
-      schedulingDebug('[ScheduledTweets] Team membership rows:', memberRows);
-      
-      if (memberRows.length === 0) {
-        schedulingDebug('[ScheduledTweets] Not a member of this team:', teamId);
-        return res.status(403).json({ error: 'Not a member of this team' });
-      }
-
-      // Fetch ALL scheduled tweets for the team (not just user's own)
-      const teamStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
-      const teamParams = statuses
-        ? [teamId, statuses, safeLimit, offset]
-        : [teamId, safeLimit, offset];
-      const teamLimitIdx = statuses ? 3 : 2;
-      const teamOffsetIdx = statuses ? 4 : 3;
-
-      const result = await pool.query(
-        `SELECT st.*, 
-                ta.twitter_username as account_username,
-                u.email as scheduled_by_email,
-                u.name as scheduled_by_name
-         FROM scheduled_tweets st
-         LEFT JOIN team_accounts ta ON st.account_id::text = ta.id::text
-         LEFT JOIN users u ON st.user_id = u.id
-         WHERE st.team_id = $1 ${teamStatusClause}
-         ORDER BY st.scheduled_for ASC
-         LIMIT $${teamLimitIdx} OFFSET $${teamOffsetIdx}`,
-        teamParams
-      );
-      schedulingDebug('[ScheduledTweets] Team scheduled tweets found:', result.rows.length);
-      rows = result.rows;
-    } else {
-      if (!twitterScope.connected && twitterScope.mode === 'personal') {
-        return res.json({ scheduled_tweets: [], disconnected: true });
-      }
-
-      // Fetch only user's personal scheduled tweets (no team_id)
-      const personalStatusClause = statuses ? 'AND st.status = ANY($3::text[])' : '';
-      const personalParams = statuses
-        ? [userId, twitterScope.twitterUserId, statuses, safeLimit, offset]
-        : [userId, twitterScope.twitterUserId, safeLimit, offset];
-      const personalLimitIdx = statuses ? 4 : 3;
-      const personalOffsetIdx = statuses ? 5 : 4;
-
-      const result = await pool.query(
-        `SELECT st.*, ta.twitter_username
-         FROM scheduled_tweets st
-         LEFT JOIN twitter_auth ta ON st.user_id = ta.user_id
-         WHERE st.user_id = $1
-          AND (st.team_id IS NULL OR st.team_id::text = '')
-          AND (
-            st.author_id = $2
-            OR (st.author_id IS NULL AND st.user_id = $1)
-          )
-          ${personalStatusClause}
-         ORDER BY st.scheduled_for ASC
-         LIMIT $${personalLimitIdx} OFFSET $${personalOffsetIdx}`,
-        personalParams
-      );
-      schedulingDebug('[ScheduledTweets] Personal scheduled tweets found:', result.rows.length);
-      rows = result.rows;
+    if (result.forbidden) {
+      return res.status(403).json({ error: 'Not a member of this team' });
     }
 
-    res.json({ scheduled_tweets: rows.map(serializeScheduledTweet), disconnected: false });
+    schedulingDebug('[ScheduledTweets] List query result:', {
+      userId,
+      teamId,
+      page: safePage,
+      limit: safeLimit,
+      requestedStatus,
+      statuses,
+      resultCount: result.rows?.length || 0,
+      degraded: Boolean(result.degraded),
+      disconnected: Boolean(result.disconnected),
+    });
+
+    return res.json({
+      scheduled_tweets: (result.rows || []).map(serializeScheduledTweet),
+      disconnected: Boolean(result.disconnected),
+      degraded: Boolean(result.degraded),
+    });
 
   } catch (error) {
     console.error('Get scheduled tweets error:', error);
-    res.status(500).json({ error: 'Failed to fetch scheduled tweets' });
+    return res.status(500).json({ error: 'Failed to fetch scheduled tweets' });
   }
-});
+}
+
+// Get scheduled tweets (frontend expects /scheduled)
+router.get('/scheduled', handleScheduledTweetsList);
 
 // Bulk schedule drafts
 router.post('/bulk', validateTwitterConnection, async (req, res) => {
   try {
     const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
-    const teamId = req.headers['x-team-id'] || null;
+    const teamId = req.headers['x-team-id'] || req.body.teamId || req.body.team_id || null;
     const normalizedTimezone = normalizeTimezoneInput(timezone);
+    const maxSchedulingUtc = getMaxSchedulingUtcMoment();
     
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'No items to schedule' });
+    }
+    if (items.length > MAX_BULK_SCHEDULE_ITEMS) {
+      return res.status(400).json({
+        error: `Bulk scheduling is limited to ${MAX_BULK_SCHEDULE_ITEMS} prompts at a time.`,
+      });
     }
     if (!normalizedTimezone) {
       return res.status(400).json({ error: 'Invalid timezone' });
     }
     
-    const selectedAccountId = req.headers['x-selected-account-id'] || null;
+    const selectedAccountId =
+      req.headers['x-selected-account-id'] ||
+      req.body.accountId ||
+      req.body.account_id ||
+      null;
     const accountIdColumnType = await getScheduledAccountIdColumnType();
 
     let teamAccount = null;
@@ -406,6 +579,11 @@ router.post('/bulk', validateTwitterConnection, async (req, res) => {
         const [hour, minute] = timeStr.split(':').map(Number);
         
         current = moment.tz(startDate, normalizedTimezone).add(dayOffset, 'day').set({ hour, minute, second: 0, millisecond: 0 });
+        if (current.clone().utc().isAfter(maxSchedulingUtc)) {
+          return res.status(400).json({
+            error: `Scheduling is limited to ${MAX_SCHEDULING_WINDOW_DAYS} days ahead.`,
+          });
+        }
         const scheduledForUTC = current.clone().utc().format(DB_UTC_TIMESTAMP_FORMAT);
         
         let mainContent = content;
@@ -439,6 +617,11 @@ router.post('/bulk', validateTwitterConnection, async (req, res) => {
         
         const next = moment.tz(startDate, normalizedTimezone).add(week, 'week').day(days[dayIndex]);
         next.set({ hour, minute, second: 0, millisecond: 0 });
+        if (next.clone().utc().isAfter(maxSchedulingUtc)) {
+          return res.status(400).json({
+            error: `Scheduling is limited to ${MAX_SCHEDULING_WINDOW_DAYS} days ahead.`,
+          });
+        }
         const scheduledForUTC = next.clone().utc().format(DB_UTC_TIMESTAMP_FORMAT);
         
         let mainContent = content;
@@ -467,6 +650,11 @@ router.post('/bulk', validateTwitterConnection, async (req, res) => {
         
         const next = moment.tz(startDate, normalizedTimezone).add(week, 'week').day(daysOfWeek[dayIndex]);
         next.set({ hour, minute, second: 0, millisecond: 0 });
+        if (next.clone().utc().isAfter(maxSchedulingUtc)) {
+          return res.status(400).json({
+            error: `Scheduling is limited to ${MAX_SCHEDULING_WINDOW_DAYS} days ahead.`,
+          });
+        }
         const scheduledForUTC = next.clone().utc().format(DB_UTC_TIMESTAMP_FORMAT);
         
         let mainContent = content;
@@ -569,6 +757,13 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     if (parsedSchedule.utcDate < minTime) {
       return res.status(400).json({ 
         error: 'Scheduled time must be at least 5 minutes in the future' 
+      });
+    }
+
+    const maxTime = moment().add(MAX_SCHEDULING_WINDOW_DAYS, 'days').toDate();
+    if (parsedSchedule.utcDate > maxTime) {
+      return res.status(400).json({
+        error: `Scheduling is limited to ${MAX_SCHEDULING_WINDOW_DAYS} days ahead.`,
       });
     }
 
@@ -801,98 +996,7 @@ router.get('/status', async (req, res) => {
 });
 
 // Get scheduled tweets (alternative endpoint)
-router.get('/', async (req, res) => {
-  try {
-    const { page = 1, limit = 20, status = 'pending' } = req.query;
-    const { safePage, safeLimit, offset } = getNormalizedPagination(page, limit);
-    const { requestedStatus, statuses } = resolveScheduledStatuses(status);
-    const teamId = req.headers['x-team-id'] || null;
-    const userId = req.user.id;
-    const selectedAccountId = req.headers['x-selected-account-id'];
-    const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId });
-
-    let rows;
-    if (teamId) {
-      // Check team membership
-      const { rows: memberRows } = await pool.query(
-        'SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 AND status = $3',
-        [teamId, userId, 'active']
-      );
-      
-      if (memberRows.length === 0) {
-        return res.status(403).json({ error: 'Not a member of this team' });
-      }
-
-      // Fetch ALL team scheduled tweets
-      const teamStatusClause = statuses ? 'AND st.status = ANY($2::text[])' : '';
-      const teamParams = statuses
-        ? [teamId, statuses, safeLimit, offset]
-        : [teamId, safeLimit, offset];
-      const teamLimitIdx = statuses ? 3 : 2;
-      const teamOffsetIdx = statuses ? 4 : 3;
-
-      const result = await pool.query(
-        `SELECT st.*, 
-                ta.twitter_username as account_username,
-                u.email as scheduled_by_email,
-                u.name as scheduled_by_name
-         FROM scheduled_tweets st
-         LEFT JOIN team_accounts ta ON st.account_id::text = ta.id::text
-         LEFT JOIN users u ON st.user_id = u.id
-         WHERE st.team_id = $1 ${teamStatusClause}
-         ORDER BY st.scheduled_for ASC
-         LIMIT $${teamLimitIdx} OFFSET $${teamOffsetIdx}`,
-        teamParams
-      );
-      rows = result.rows;
-    } else {
-      if (!twitterScope.connected && twitterScope.mode === 'personal') {
-        return res.json({ scheduled_tweets: [], disconnected: true });
-      }
-
-      // Fetch personal scheduled tweets only
-      const personalStatusClause = statuses ? 'AND st.status = ANY($3::text[])' : '';
-      const personalParams = statuses
-        ? [userId, twitterScope.twitterUserId, statuses, safeLimit, offset]
-        : [userId, twitterScope.twitterUserId, safeLimit, offset];
-      const personalLimitIdx = statuses ? 4 : 3;
-      const personalOffsetIdx = statuses ? 5 : 4;
-
-      const result = await pool.query(
-         `SELECT st.*, ta.twitter_username
-          FROM scheduled_tweets st
-          LEFT JOIN twitter_auth ta ON st.user_id = ta.user_id
-          WHERE st.user_id = $1
-           AND (st.team_id IS NULL OR st.team_id::text = '')
-           AND (
-             st.author_id = $2
-             OR (st.author_id IS NULL AND st.user_id = $1)
-           )
-          ${personalStatusClause}
-          ORDER BY st.scheduled_for ASC
-          LIMIT $${personalLimitIdx} OFFSET $${personalOffsetIdx}`,
-         personalParams
-      );
-      rows = result.rows;
-    }
-
-    schedulingDebug('[ScheduledTweets] List query:', {
-      userId,
-      teamId,
-      page: safePage,
-      limit: safeLimit,
-      requestedStatus,
-      statuses,
-      resultCount: rows.length
-    });
-
-    res.json({ scheduled_tweets: rows.map(serializeScheduledTweet), disconnected: false });
-
-  } catch (error) {
-    console.error('Get scheduled tweets error:', error);
-    res.status(500).json({ error: 'Failed to fetch scheduled tweets' });
-  }
-});
+router.get('/', handleScheduledTweetsList);
 
 // Retry a failed scheduled tweet immediately (LinkedIn parity endpoint)
 router.post('/retry', async (req, res) => {

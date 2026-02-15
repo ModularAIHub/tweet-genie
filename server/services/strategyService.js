@@ -262,6 +262,189 @@ class StrategyService {
       .trim();
   }
 
+  getPromptCategories() {
+    return [
+      'educational',
+      'engagement',
+      'storytelling',
+      'tips & tricks',
+      'promotional',
+      'inspirational',
+    ];
+  }
+
+  tokenizePromptForSimilarity(value = '') {
+    const stopWords = new Set([
+      'the', 'and', 'for', 'with', 'that', 'this', 'your', 'our', 'their', 'from',
+      'into', 'about', 'around', 'than', 'then', 'have', 'has', 'had', 'are', 'was',
+      'were', 'can', 'you', 'they', 'them', 'its', 'one', 'two', 'use', 'using',
+      'help', 'helps', 'helping', 'stay', 'make', 'more', 'less', 'over', 'under',
+      'without', 'within', 'across', 'through', 'where', 'when', 'what', 'why',
+      'how', 'who', 'all', 'any', 'but', 'not', 'new', 'best', 'next', 'step',
+      'value', 'first', 'angle', 'around', 'share', 'give', 'lead', 'around',
+    ]);
+
+    return this.cleanPromptText(value)
+      .toLowerCase()
+      .replace(/\{[^}]+\}/g, ' ')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !stopWords.has(token));
+  }
+
+  buildPromptFingerprint(value = '') {
+    const cleaned = this.cleanPromptText(value).toLowerCase();
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    return {
+      prefix: words.slice(0, 6).join(' '),
+      tokens: this.tokenizePromptForSimilarity(cleaned),
+    };
+  }
+
+  calculateJaccardSimilarity(tokensA = [], tokensB = []) {
+    const setA = new Set(Array.isArray(tokensA) ? tokensA : []);
+    const setB = new Set(Array.isArray(tokensB) ? tokensB : []);
+    if (setA.size === 0 || setB.size === 0) {
+      return 0;
+    }
+
+    let intersection = 0;
+    for (const token of setA) {
+      if (setB.has(token)) {
+        intersection += 1;
+      }
+    }
+
+    const union = setA.size + setB.size - intersection;
+    return union > 0 ? intersection / union : 0;
+  }
+
+  isNearDuplicateFingerprint(fingerprint, existingFingerprints = [], threshold = 0.75) {
+    if (!fingerprint || (!fingerprint.prefix && (!fingerprint.tokens || fingerprint.tokens.length === 0))) {
+      return false;
+    }
+
+    for (const current of existingFingerprints) {
+      if (!current) continue;
+      if (fingerprint.prefix && current.prefix && fingerprint.prefix === current.prefix) {
+        return true;
+      }
+      const similarity = this.calculateJaccardSimilarity(fingerprint.tokens, current.tokens);
+      if (similarity >= threshold) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  selectDiverseBalancedPrompts(rawPrompts = [], desiredCount = 36) {
+    const categories = this.getPromptCategories();
+    const exactSeen = new Set();
+    const candidates = [];
+
+    for (const item of Array.isArray(rawPrompts) ? rawPrompts : []) {
+      const promptText = this.cleanPromptText(item?.prompt_text || '');
+      if (promptText.length < 12) continue;
+
+      const key = promptText.toLowerCase();
+      if (exactSeen.has(key)) continue;
+      exactSeen.add(key);
+
+      const category = categories.includes(item?.category) ? item.category : 'educational';
+      const variables =
+        item?.variables && typeof item.variables === 'object' && !Array.isArray(item.variables)
+          ? item.variables
+          : {};
+
+      candidates.push({
+        category,
+        prompt_text: promptText,
+        variables,
+        _fingerprint: this.buildPromptFingerprint(promptText),
+      });
+    }
+
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    const selected = [];
+    const selectedByCategory = Object.fromEntries(categories.map((category) => [category, 0]));
+    const selectedFingerprintsByCategory = Object.fromEntries(categories.map((category) => [category, []]));
+    const selectedFingerprintsGlobal = [];
+    const selectedIndexes = new Set();
+    const perCategoryTarget = Math.max(1, Math.floor(desiredCount / categories.length));
+
+    const trySelect = (candidate, categoryThreshold, globalThreshold) => {
+      const category = candidate.category;
+      const categoryFingerprints = selectedFingerprintsByCategory[category] || [];
+      if (this.isNearDuplicateFingerprint(candidate._fingerprint, categoryFingerprints, categoryThreshold)) {
+        return false;
+      }
+      if (this.isNearDuplicateFingerprint(candidate._fingerprint, selectedFingerprintsGlobal, globalThreshold)) {
+        return false;
+      }
+
+      selected.push(candidate);
+      selectedByCategory[category] = (selectedByCategory[category] || 0) + 1;
+      categoryFingerprints.push(candidate._fingerprint);
+      selectedFingerprintsGlobal.push(candidate._fingerprint);
+      return true;
+    };
+
+    const categoryThresholds = [0.72, 0.78, 0.86];
+    for (const threshold of categoryThresholds) {
+      for (const category of categories) {
+        if (selectedByCategory[category] >= perCategoryTarget) {
+          continue;
+        }
+
+        for (let index = 0; index < candidates.length; index += 1) {
+          if (selectedIndexes.has(index)) continue;
+          const candidate = candidates[index];
+          if (candidate.category !== category) continue;
+          if (selectedByCategory[category] >= perCategoryTarget) break;
+
+          const chosen = trySelect(candidate, threshold, Math.min(0.92, threshold + 0.12));
+          if (chosen) {
+            selectedIndexes.add(index);
+          }
+        }
+      }
+    }
+
+    const fillThresholds = [0.72, 0.78, 0.86, 0.92];
+    for (const threshold of fillThresholds) {
+      if (selected.length >= desiredCount) break;
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        if (selected.length >= desiredCount) break;
+        if (selectedIndexes.has(index)) continue;
+
+        const candidate = candidates[index];
+        const chosen = trySelect(candidate, threshold, Math.min(0.95, threshold + 0.1));
+        if (chosen) {
+          selectedIndexes.add(index);
+        }
+      }
+    }
+
+    if (selected.length < desiredCount) {
+      for (let index = 0; index < candidates.length; index += 1) {
+        if (selected.length >= desiredCount) break;
+        if (selectedIndexes.has(index)) continue;
+        selected.push(candidates[index]);
+        selectedIndexes.add(index);
+      }
+    }
+
+    return selected
+      .slice(0, desiredCount)
+      .map(({ _fingerprint, ...prompt }) => prompt);
+  }
+
   buildFallbackPromptTemplates(strategy, desiredCount = 30) {
     const topics = this.normalizeAndDedupe(Array.isArray(strategy?.topics) ? strategy.topics : [], 10, 80);
     const goals = this.normalizeAndDedupe(Array.isArray(strategy?.content_goals) ? strategy.content_goals : [], 10, 80);
@@ -270,54 +453,133 @@ class StrategyService {
     const niche = strategy?.niche || 'your niche';
     const topicPool = topics.length > 0 ? topics : [niche];
     const goalPool = goals.length > 0 ? goals : ['Build authority'];
+    const categories = this.getPromptCategories();
 
-    const categories = [
-      'educational',
-      'engagement',
-      'storytelling',
-      'tips & tricks',
-      'promotional',
-      'inspirational',
-    ];
+    const templateBank = {
+      educational: [
+        {
+          prompt_text: 'Break down one overlooked lesson about {topic} that {audience} can apply in under 15 minutes.',
+          instruction: 'Start with a myth, then give a simple framework and one concrete action.',
+          recommended_format: 'thread',
+        },
+        {
+          prompt_text: 'Explain {topic} with a simple real-world example that makes the concept click for beginners.',
+          instruction: 'Use plain language, one short example, and finish with a takeaway sentence.',
+          recommended_format: 'single_tweet',
+        },
+        {
+          prompt_text: 'Teach a before vs after approach for {topic} so {audience} avoid common beginner mistakes.',
+          instruction: 'Contrast old method vs improved method with one measurable outcome.',
+          recommended_format: 'thread',
+        },
+      ],
+      engagement: [
+        {
+          prompt_text: 'Ask {audience} what is the hardest part of improving {topic} right now.',
+          instruction: 'Use one focused question and 2 short reply options to increase comments.',
+          recommended_format: 'question',
+        },
+        {
+          prompt_text: 'Run a quick this-or-that poll about {topic} to understand audience preferences.',
+          instruction: 'Keep options clear and close with why their answer matters.',
+          recommended_format: 'poll',
+        },
+        {
+          prompt_text: 'Invite {audience} to share one small win they got from improving {topic}.',
+          instruction: 'Lead with encouragement and include a friendly reply prompt.',
+          recommended_format: 'question',
+        },
+      ],
+      storytelling: [
+        {
+          prompt_text: 'Tell a short story where focusing on {topic} helped achieve {goal}.',
+          instruction: 'Use setup, conflict, resolution, then a one-line lesson.',
+          recommended_format: 'thread',
+        },
+        {
+          prompt_text: 'Share a behind-the-scenes moment where a mistake in {topic} turned into progress.',
+          instruction: 'Be specific about the mistake and what changed afterward.',
+          recommended_format: 'thread',
+        },
+        {
+          prompt_text: 'Write a mini case study about a client or creator who improved results by changing {topic}.',
+          instruction: 'Include baseline, action taken, and concrete result.',
+          recommended_format: 'thread',
+        },
+      ],
+      'tips & tricks': [
+        {
+          prompt_text: 'Create a 5-step checklist to improve {topic} this week without extra tools.',
+          instruction: 'Each step should start with an action verb and stay practical.',
+          recommended_format: 'thread',
+        },
+        {
+          prompt_text: 'Share 3 quick wins for {audience} to make immediate progress in {topic}.',
+          instruction: 'Use concise bullet format and include one realistic expected outcome.',
+          recommended_format: 'single_tweet',
+        },
+        {
+          prompt_text: 'Build a do this / avoid this tip list for {topic} aimed at beginners.',
+          instruction: 'Pair each tip with one short reason so it is actionable.',
+          recommended_format: 'thread',
+        },
+      ],
+      promotional: [
+        {
+          prompt_text: 'Show how your offer helps {audience} solve {topic} faster, without hard selling.',
+          instruction: 'Lead with pain point and transformation, then use a soft CTA.',
+          recommended_format: 'single_tweet',
+        },
+        {
+          prompt_text: 'Position your product around {topic} with one concrete use case and one business outcome.',
+          instruction: 'Avoid hype words, stay specific, and end with one next step.',
+          recommended_format: 'single_tweet',
+        },
+        {
+          prompt_text: 'Write a value-first post connecting {topic} to {goal}, then introduce your solution briefly.',
+          instruction: 'Give value first for at least 70% of the post before any CTA.',
+          recommended_format: 'thread',
+        },
+      ],
+      inspirational: [
+        {
+          prompt_text: 'Share a mindset shift that helps {audience} stay consistent with {topic} for 30 days.',
+          instruction: 'Use a bold opening line and finish with a practical challenge.',
+          recommended_format: 'single_tweet',
+        },
+        {
+          prompt_text: 'Write a motivational post about small daily progress in {topic} leading to bigger wins.',
+          instruction: 'Keep it grounded in realistic actions, not generic motivation.',
+          recommended_format: 'single_tweet',
+        },
+        {
+          prompt_text: 'Inspire {audience} by reframing setbacks in {topic} as data for improvement.',
+          instruction: 'Use one short example and end with a clear encouragement line.',
+          recommended_format: 'single_tweet',
+        },
+      ],
+    };
 
     const templates = [];
     for (let index = 0; index < desiredCount; index += 1) {
       const category = categories[index % categories.length];
-      const topic = topicPool[index % topicPool.length];
-      const goal = goalPool[index % goalPool.length];
+      const topic = topicPool[(index + Math.floor(index / categories.length)) % topicPool.length];
+      const goal = goalPool[(index * 2 + 1) % goalPool.length];
+      const variants = templateBank[category] || templateBank.educational;
+      const variant = variants[Math.floor(index / categories.length) % variants.length];
 
-      let promptText = '';
-      let instruction = '';
-      let recommendedFormat = 'single_tweet';
-
-      if (category === 'educational') {
-        promptText = `Teach one surprising lesson about ${topic} that ${audience} can apply this week.`;
-        instruction = 'Open with a myth or misconception, then give one concrete action and one outcome.';
-      } else if (category === 'engagement') {
-        promptText = `Ask ${audience} a focused question about their biggest blocker in ${topic}.`;
-        instruction = 'Use one clear question plus 2 short options so replies are easy.';
-      } else if (category === 'storytelling') {
-        promptText = `Share a short story about a real moment where ${goal.toLowerCase()} changed because of ${topic}.`;
-        instruction = 'Use 3-part structure: setup, turning point, lesson. End with a reflection question.';
-        recommendedFormat = 'thread';
-      } else if (category === 'tips & tricks') {
-        promptText = `Give a practical checklist for improving ${topic} without extra tools or budget.`;
-        instruction = 'Use numbered points with concrete verbs and a one-line summary.';
-        recommendedFormat = 'thread';
-      } else if (category === 'promotional') {
-        promptText = `Position your offer around ${topic} with a value-first angle for ${audience}.`;
-        instruction = 'Lead with problem and value, then soft CTA with one next step.';
-      } else {
-        promptText = `Share a mindset shift that helps ${audience} stay consistent with ${topic}.`;
-        instruction = 'Use a confident hook and a short motivational close tied to action.';
-      }
+      const replaceTokens = (text = '') =>
+        String(text)
+          .replace(/\{topic\}/g, topic)
+          .replace(/\{goal\}/g, goal.toLowerCase())
+          .replace(/\{audience\}/g, audience);
 
       templates.push({
         category,
-        prompt_text: promptText,
+        prompt_text: replaceTokens(variant.prompt_text),
         variables: {
-          instruction,
-          recommended_format: recommendedFormat,
+          instruction: replaceTokens(variant.instruction),
+          recommended_format: variant.recommended_format || 'single_tweet',
           goal,
           tone_hint: tone,
         },
@@ -1117,6 +1379,8 @@ Format: Just list topics separated by commas, no formatting.`;
         '- instruction should be concise and practical for beginners.',
         '- avoid duplicates and generic wording.',
         '- keep prompt_text focused on one angle.',
+        '- each category must contain multiple distinct frameworks, not the same sentence pattern.',
+        '- avoid repeating the same first 5-6 words across prompts in the same category.',
         '- if placeholders are useful, use {placeholder_name} tokens.',
         `Niche: ${strategy.niche || ''}`,
         `Target Audience: ${strategy.target_audience || ''}`,
@@ -1182,14 +1446,7 @@ Format: Just list topics separated by commas, no formatting.`;
         normalizedPrompts = [...normalizedPrompts, ...fallbackPrompts];
       }
 
-      const dedupedPromptMap = new Map();
-      for (const prompt of normalizedPrompts) {
-        const key = prompt.prompt_text.toLowerCase();
-        if (!dedupedPromptMap.has(key)) {
-          dedupedPromptMap.set(key, prompt);
-        }
-      }
-      const finalPrompts = Array.from(dedupedPromptMap.values()).slice(0, desiredCount);
+      const finalPrompts = this.selectDiverseBalancedPrompts(normalizedPrompts, desiredCount);
 
       if (finalPrompts.length === 0) {
         throw new Error('No prompts generated');

@@ -23,6 +23,10 @@ const History = () => {
   const [expandedThreads, setExpandedThreads] = useState(new Set()); // Track which threads are expanded
   const [deleteModal, setDeleteModal] = useState({ open: false, tweet: null });
   const [isDisconnected, setIsDisconnected] = useState(false);
+  const [retentionInfo, setRetentionInfo] = useState({
+    days: 15,
+    message: 'Deleted tweets stay visible for 15 days before permanent cleanup.',
+  });
 
   // Load saved filters when account changes (per-account persistence)
   useEffect(() => {
@@ -121,10 +125,24 @@ const History = () => {
         const data = await apiResponse.json();
         console.log('[History] Parsed JSON data:', data);
         setIsDisconnected(Boolean(data?.disconnected || data?.data?.disconnected));
+        const retention = data?.retention || data?.data?.retention;
+        if (retention?.days) {
+          setRetentionInfo({
+            days: retention.days,
+            message: retention.message || `Deleted tweets stay visible for ${retention.days} days before permanent cleanup.`,
+          });
+        }
         response = { data: { tweets: data.data?.tweets || data.tweets || [] } };
       } else {
         response = await tweetsAPI.list(params);
         setIsDisconnected(Boolean(response.data?.disconnected));
+        const retention = response.data?.retention;
+        if (retention?.days) {
+          setRetentionInfo({
+            days: retention.days,
+            message: retention.message || `Deleted tweets stay visible for ${retention.days} days before permanent cleanup.`,
+          });
+        }
       }
       
       let fetchedTweets = response.data.tweets || [];
@@ -253,26 +271,17 @@ const History = () => {
     
     try {
       setDeletingTweets(prev => new Set([...prev, tweet.id]));
-      await tweetsAPI.delete(tweet.id);
-      
-      // Update UI after successful deletion
-      setPostedTweets(prev => prev.filter(t => t.id !== tweet.id));
-      toast.success('Tweet deleted successfully');
+      const response = await tweetsAPI.delete(tweet.id);
+      const retentionDays = response?.data?.retention?.days || retentionInfo.days || 15;
+      toast.success(response?.data?.message || `Tweet deleted. It will be auto-cleaned after ${retentionDays} days.`);
+      await fetchPostedTweets();
     } catch (error) {
-      // Handle specific error cases
-      if (error.response?.status === 404) {
-        // Tweet not found on Twitter, but remove from our database anyway
-        try {
-          await tweetsAPI.delete(tweet.id);
-          setPostedTweets(prev => prev.filter(t => t.id !== tweet.id));
-          toast.success('Tweet removed from history (was already deleted from Twitter)');
-        } catch (dbError) {
-          toast.error('Failed to remove tweet from history');
-        }
+      if (error.response?.status === 404 || error.response?.status === 400) {
+        toast.error(error.response?.data?.error || 'Tweet could not be deleted on Twitter right now.');
       } else if (error.response?.status === 403) {
         toast.error('Cannot delete tweet: insufficient permissions or tweet is too old');
       } else {
-        toast.error('Failed to delete tweet: ' + (error.response?.data?.message || error.message));
+        toast.error('Failed to delete tweet: ' + (error.response?.data?.error || error.response?.data?.message || error.message));
       }
     } finally {
       setDeletingTweets(prev => {
@@ -322,6 +331,11 @@ const History = () => {
             View and analyze your posted tweets from both platform and Twitter
           </p>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <span className="font-medium">Deleted tweet policy:</span>{' '}
+        {retentionInfo.message || `Deleted tweets stay visible for ${retentionInfo.days} days before permanent cleanup.`}
       </div>
 
       {/* Filters and Controls */}
@@ -620,12 +634,12 @@ const History = () => {
                   {/* Action Buttons and Badges */}
                   <div className="ml-4 flex flex-col items-end space-y-2">
                     {/* Delete Button - Only for platform tweets */}
-                    {tweet.source !== 'external' && (
+                    {tweet.source !== 'external' && tweet.status !== 'deleted' && (
                       <button
                         onClick={() => setDeleteModal({ open: true, tweet })}
                         disabled={deletingTweets.has(tweet.id)}
                         className="flex items-center px-2 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                        title="Delete tweet from Twitter and history"
+                        title={`Delete tweet from Twitter (kept as deleted for ${retentionInfo.days} days)`}
                       >
                         {deletingTweets.has(tweet.id) ? (
                           <div className="animate-spin h-4 w-4 border-2 border-red-600 border-t-transparent rounded-full"></div>

@@ -109,4 +109,4 @@ CREATE INDEX IF NOT EXISTS idx_strategy_queue_priority ON strategy_queue(priorit
 
 -- Triggers
 CREATE TRIGGER update_autopilot_config_updated_at BEFORE UPDATE ON autopilot_config
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

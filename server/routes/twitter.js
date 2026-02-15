@@ -1211,7 +1211,9 @@ router.get('/token-status', authenticateToken, async (req, res) => {
     
     // Team scope applies via explicit header or authenticated team membership.
     if (requestTeamId && !selectedAccountId) {
-      return res.status(400).json({
+      return res.json({
+        connected: false,
+        requiresTeamAccountSelection: true,
         error: 'Team account selection required. Please select a team Twitter account.',
         code: 'TEAM_ACCOUNT_SELECTION_REQUIRED',
       });

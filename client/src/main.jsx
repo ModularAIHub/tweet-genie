@@ -14,7 +14,7 @@ const honeybadger = Honeybadger.configure({
 
 const appTree = (
   <HoneybadgerErrorBoundary honeybadger={honeybadger}>
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <ScrollToTop />
       <App />
       <Toaster

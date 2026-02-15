@@ -1,5 +1,6 @@
 import express from 'express';
 import { creditService } from '../services/creditService.js';
+import { TeamCreditService } from '../services/teamCreditService.js';
 
 const router = express.Router();
 
@@ -7,12 +8,16 @@ const router = express.Router();
 router.get('/balance', async (req, res) => {
   try {
     const userId = req.user.id;
-    
-    const balance = await creditService.getBalance(userId);
+    const requestTeamId = req.headers['x-team-id'] || null;
+    const { credits, source } = await TeamCreditService.getCredits(userId, requestTeamId);
+    const balance = Number.parseFloat(credits || 0);
     
     res.json({
-      balance: balance,
-      creditsRemaining: balance
+      balance,
+      creditsRemaining: balance,
+      source,
+      scope: source === 'team' ? 'team' : 'personal',
+      teamId: source === 'team' ? requestTeamId : null,
     });
 
   } catch (error) {

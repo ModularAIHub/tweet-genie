@@ -9,10 +9,15 @@ import moment from 'moment-timezone';
 import { useLocation } from 'react-router-dom';
 
 const BULK_GENERATION_SEED_KEY = 'bulkGenerationSeed';
+const MAX_BULK_PROMPTS = 30;
+const MAX_SCHEDULING_WINDOW_DAYS = 15;
+const RECOMMENDED_SCHEDULING_WINDOW_DAYS = 14;
+const PROMPT_LIMIT_WARNING = `Only the first ${MAX_BULK_PROMPTS} prompts will be used.`;
 
 const BulkGeneration = () => {
   const location = useLocation();
   const hasAppliedSeedRef = useRef(false);
+  const outputSectionRef = useRef(null);
   const [prompts, setPrompts] = useState('');
   const [promptList, setPromptList] = useState([]); // [{ prompt, isThread }]
   // outputs: { [idx]: { ...result, loading, error } }
@@ -31,6 +36,7 @@ const BulkGeneration = () => {
   const [error, setError] = useState('');
   const [showCreditInfo, setShowCreditInfo] = useState(true);
   const [seedMessage, setSeedMessage] = useState('');
+  const outputCount = Object.keys(outputs).length;
 
   const frequencyOptions = [
     { value: 'daily', label: 'Daily posting' },
@@ -65,17 +71,27 @@ const BulkGeneration = () => {
         isThread: Boolean(item?.isThread),
         id: index,
       }))
-      .filter((item) => item.prompt.length > 0);
+      .filter((item) => item.prompt.length > 0)
+      .slice(0, MAX_BULK_PROMPTS);
 
     if (normalizedItems.length > 0) {
       setPrompts(normalizedItems.map((item) => item.prompt).join('\n'));
       setPromptList(normalizedItems);
-      setSeedMessage(`Loaded ${normalizedItems.length} prompt${normalizedItems.length === 1 ? '' : 's'} from Strategy Builder.`);
+      const wasTrimmed = parsedSeed.items.length > normalizedItems.length;
+      setSeedMessage(
+        `Loaded ${normalizedItems.length} prompt${normalizedItems.length === 1 ? '' : 's'} from Strategy Builder.${wasTrimmed ? ` Capped to ${MAX_BULK_PROMPTS}.` : ''}`
+      );
     }
 
     localStorage.removeItem(BULK_GENERATION_SEED_KEY);
     hasAppliedSeedRef.current = true;
   }, [location?.state]);
+
+  useEffect(() => {
+    if (outputCount > 0 && outputSectionRef.current) {
+      outputSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [outputCount]);
 
   // Handle posts per day change
   const handlePostsPerDayChange = (count) => {
@@ -125,6 +141,11 @@ const BulkGeneration = () => {
         alert('No tweets/threads to schedule.');
         return;
       }
+      if (toSchedule.length > MAX_BULK_PROMPTS) {
+        setSchedulingStatus('error');
+        alert(`You can schedule up to ${MAX_BULK_PROMPTS} prompts at a time.`);
+        return;
+      }
       const timezone = moment.tz.guess();
       // Calculate scheduled times for each item based on frequency, startDate, dailyTimes, daysOfWeek
       let scheduledTimes = [];
@@ -167,6 +188,14 @@ const BulkGeneration = () => {
         for (let i = 0; i < toSchedule.length; i++) {
           scheduledTimes.push(current.add(i, 'day').hour(hour).minute(minute).second(0).format());
         }
+      }
+
+      const maxSchedulingTime = dayjs().add(MAX_SCHEDULING_WINDOW_DAYS, 'day');
+      const exceedsWindow = scheduledTimes.some((time) => dayjs(time).isAfter(maxSchedulingTime));
+      if (exceedsWindow) {
+        setSchedulingStatus('error');
+        alert(`Scheduling is limited to ${MAX_SCHEDULING_WINDOW_DAYS} days ahead. For best results, plan up to ${RECOMMENDED_SCHEDULING_WINDOW_DAYS} days and then revisit strategy.`);
+        return;
       }
 
       // Prepare items for bulk scheduling
@@ -286,9 +315,37 @@ const BulkGeneration = () => {
   // Handle prompt input (one per line)
   // When textarea changes, update promptList
   const handlePromptsChange = (e) => {
-    setPrompts(e.target.value);
-    const lines = e.target.value.split('\n').map(p => p.trim()).filter(Boolean);
-    setPromptList(lines.map((prompt, idx) => ({ prompt, isThread: false, id: idx })));
+    const rawValue = e.target.value.replace(/\r\n/g, '\n');
+    const lines = rawValue.split('\n').map((p) => p.trim()).filter(Boolean);
+    const cappedLines = lines.slice(0, MAX_BULK_PROMPTS);
+    setPrompts(rawValue);
+    if (lines.length > MAX_BULK_PROMPTS) {
+      setError(PROMPT_LIMIT_WARNING);
+    } else {
+      setError((prev) => (prev === PROMPT_LIMIT_WARNING ? '' : prev));
+    }
+    setPromptList((prev) =>
+      cappedLines.map((prompt, idx) => ({
+        prompt,
+        isThread: prev[idx]?.isThread ?? false,
+        id: idx,
+      }))
+    );
+  };
+
+  const handlePromptThreadToggle = (idx, isThread) => {
+    setPromptList((list) => list.map((item, i) => (i === idx ? { ...item, isThread } : item)));
+  };
+
+  const handlePromptRemove = (idx) => {
+    setPromptList((list) => {
+      const next = list
+        .filter((_, i) => i !== idx)
+        .map((item, index) => ({ ...item, id: index }));
+      setPrompts(next.map((item) => item.prompt).join('\n'));
+      return next;
+    });
+    setError((prev) => (prev === PROMPT_LIMIT_WARNING ? '' : prev));
   };
 
   // Call backend for bulk generation directly (no queue)
@@ -395,6 +452,10 @@ const handleGenerate = async () => {
     setError('');
     setOutputs({});
     try {
+      if (promptList.length > MAX_BULK_PROMPTS) {
+        setError(`Bulk generation is limited to ${MAX_BULK_PROMPTS} prompts.`);
+        return;
+      }
       const newOutputs = {};
       for (let idx = 0; idx < promptList.length; idx++) {
         const { prompt, isThread } = promptList[idx];
@@ -531,10 +592,14 @@ const handleGenerate = async () => {
             Prompts (one per line)
           </label>
           <div className="absolute right-4 bottom-3 text-xs text-blue-400 select-none">
-            {prompts.split('\n').filter(Boolean).length} lines
+            {Math.min(prompts.split('\n').map((line) => line.trim()).filter(Boolean).length, MAX_BULK_PROMPTS)}/{MAX_BULK_PROMPTS} prompts
           </div>
         </div>
-        <div className="text-xs text-blue-500 mb-4">Tip: Paste or type multiple prompts, one per line. Each line will generate a tweet or thread. You can edit or discard results after generation.</div>
+        <div className="text-xs text-blue-500 mb-2">Tip: Paste or type multiple prompts, one per line. Each line will generate a tweet or thread. You can edit or discard results after generation.</div>
+        <div className="text-xs text-blue-600 mb-2">Use <b>Space</b> for normal typing and press <b>Enter</b> for a new prompt line.</div>
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+          Limit: up to {MAX_BULK_PROMPTS} prompts per run. Recommendation: plan bulk content for up to {RECOMMENDED_SCHEDULING_WINDOW_DAYS} days, then revisit your strategy before generating the next batch.
+        </div>
         {promptList.length > 0 && (
           <div className="mt-4 space-y-2">
             {promptList.map((p, idx) => (
@@ -545,13 +610,23 @@ const handleGenerate = async () => {
                     <input
                       type="checkbox"
                       checked={p.isThread}
-                      onChange={e => setPromptList(list => list.map((item, i) => i === idx ? { ...item, isThread: e.target.checked } : item))}
+                      onChange={(e) => handlePromptThreadToggle(idx, e.target.checked)}
                       disabled={loading}
                       className="form-checkbox h-4 w-4 text-fuchsia-600 transition"
                     />
                     <span className="ml-2 text-xs text-gray-600">Thread</span>
                   </label>
                   {!p.isThread && <span className="ml-2 text-xs text-blue-500">Single Tweet</span>}
+                  <button
+                    type="button"
+                    onClick={() => handlePromptRemove(idx)}
+                    disabled={loading}
+                    className="ml-3 h-6 w-6 rounded-full border border-red-300 bg-white text-sm font-bold leading-none text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Remove prompt"
+                    aria-label={`Remove prompt ${idx + 1}`}
+                  >
+                    -
+                  </button>
                 </div>
               </div>
             ))}
@@ -569,7 +644,8 @@ const handleGenerate = async () => {
         </button>
         {error && <div className="mt-4 text-red-600 font-medium">{error}</div>}
       </div>
-  {Object.keys(outputs).length > 0 && (
+      <div ref={outputSectionRef}>
+  {outputCount > 0 && (
         <>
           {/* Scheduling Modal UI */}
           {showScheduleModal && (
@@ -587,7 +663,17 @@ const handleGenerate = async () => {
                 </div>
                 <div className="mb-4">
                   <label className="block font-semibold mb-1">Start Date:</label>
-                  <input type="date" className="border rounded px-3 py-2 w-full" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                  <input
+                    type="date"
+                    className="border rounded px-3 py-2 w-full"
+                    value={startDate}
+                    min={dayjs().format('YYYY-MM-DD')}
+                    max={dayjs().add(MAX_SCHEDULING_WINDOW_DAYS, 'day').format('YYYY-MM-DD')}
+                    onChange={e => setStartDate(e.target.value)}
+                  />
+                  <p className="mt-1 text-xs text-amber-700">
+                    Hard limit: {MAX_SCHEDULING_WINDOW_DAYS} days ahead. Best practice: schedule up to {RECOMMENDED_SCHEDULING_WINDOW_DAYS} days, review strategy, then generate next batch.
+                  </p>
                 </div>
                 <div className="mb-4">
                   <label className="block font-semibold mb-1">Posts per Day:</label>
@@ -641,23 +727,23 @@ const handleGenerate = async () => {
               <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden mr-4">
                 <div
                   className="h-2 bg-blue-500 transition-all duration-500"
-                  style={{ width: `${(Object.values(outputs).filter(o => o.loading === false).length / (Object.keys(outputs).length || 1)) * 100}%` }}
+                  style={{ width: `${(Object.values(outputs).filter(o => o.loading === false).length / (outputCount || 1)) * 100}%` }}
                 ></div>
               </div>
               <span className="text-sm text-gray-600 font-medium">
-                {Object.values(outputs).filter(o => o.loading === false).length} of {Object.keys(outputs).length} generated
+                {Object.values(outputs).filter(o => o.loading === false).length} of {outputCount} generated
               </span>
               {loading && <span className="ml-3 animate-spin h-5 w-5 border-2 border-blue-400 border-t-transparent rounded-full"></span>}
             </div>
             {/* Schedule All button */}
             <div className="flex justify-end mb-2">
-              <button
-                className="btn btn-success px-5 py-2 rounded font-semibold shadow"
-                onClick={handleScheduleAll}
-                disabled={Object.keys(outputs).length === 0 || Object.keys(outputs).filter(idx => !discarded.includes(Number(idx))).length === 0}
-              >
-                Schedule All
-              </button>
+                <button
+                  className="btn btn-success px-5 py-2 rounded font-semibold shadow"
+                  onClick={handleScheduleAll}
+                  disabled={outputCount === 0 || Object.keys(outputs).filter(idx => !discarded.includes(Number(idx))).length === 0}
+                >
+                  Schedule All
+                </button>
             </div>
             <Masonry
               breakpointCols={{ default: 2, 900: 1 }}
@@ -684,6 +770,7 @@ const handleGenerate = async () => {
                         </div>
                       ) : (
                         <Collapsible
+                          key={`generated-output-${idx}-${output.isThread ? 'thread' : 'single'}`}
                           title={
                             <span>
                               <span className={`px-3 py-1 rounded-full text-xs font-semibold mr-3 transition-colors ${output.isThread ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
@@ -692,7 +779,7 @@ const handleGenerate = async () => {
                               <span className="text-gray-500 text-xs italic">Prompt: {output.prompt}</span>
                             </span>
                           }
-                          defaultOpen={Object.keys(outputs).length <= 3}
+                          defaultOpen
                         >
                           {output.isThread ? (
                             <div className="grid grid-cols-1 gap-4 mb-2">
@@ -747,7 +834,7 @@ const handleGenerate = async () => {
                                               onClick={() => removeImage(Number(idx), tIdx, imgIdx)}
                                               className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition"
                                             >
-                                              ×
+                                              x
                                             </button>
                                           </div>
                                         ))}
@@ -796,7 +883,7 @@ const handleGenerate = async () => {
                                           onClick={() => removeImage(Number(idx), 0, imgIdx)}
                                           className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition"
                                         >
-                                          ×
+                                          x
                                         </button>
                                       </div>
                                     ))}
@@ -832,6 +919,7 @@ const handleGenerate = async () => {
           </>
         </>
       )}
+      </div>
       
     </div>
   );

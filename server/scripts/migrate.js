@@ -245,6 +245,39 @@ const migrations = [
     `
   },
   {
+    version: 16,
+    name: 'add_tweet_deletion_retention_columns',
+    sql: `
+      ALTER TABLE tweets
+        ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
+
+      CREATE INDEX IF NOT EXISTS idx_tweets_deleted_retention
+        ON tweets(deleted_at)
+        WHERE status = 'deleted';
+    `
+  },
+  {
+    version: 17,
+    name: 'add_scheduled_listing_indexes',
+    sql: `
+      CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_team_status_scheduled_for
+        ON scheduled_tweets(team_id, status, scheduled_for)
+        WHERE team_id IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_personal_status_scheduled_for
+        ON scheduled_tweets(user_id, status, scheduled_for)
+        WHERE team_id IS NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_tweets_personal_author_status_scheduled_for
+        ON scheduled_tweets(user_id, author_id, status, scheduled_for)
+        WHERE team_id IS NULL AND author_id IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_team_members_active_lookup
+        ON team_members(team_id, user_id)
+        WHERE status = 'active';
+    `
+  },
+  {
     version: 5,
     name: 'create_ai_generations_table',
     sql: `
