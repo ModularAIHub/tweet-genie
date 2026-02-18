@@ -394,28 +394,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
               
               logger.info('Background thread tweet posted', { index: i + 1, tweetId: threadResponse.data.id });
               
-              const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
-              const authorId = twitterAccount.twitter_user_id || null;
-              const threadTweetMediaUrls = threadMedia && threadMedia[i] ? threadMedia[i] : [];
-              
-              await pool.query(
-                `INSERT INTO tweets (
-                  user_id, account_id, author_id, tweet_id, content, 
-                  media_urls, credits_used, is_thread, thread_count,
-                  impressions, likes, retweets, replies, status, source
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, 0, 0, 'posted', 'platform')`,
-                [
-                  userId,
-                  accountId,
-                  authorId,
-                  threadResponse.data.id,
-                  threadTweetText,
-                  JSON.stringify(threadTweetMediaUrls),
-                  0,
-                  true,  // is_thread
-                  thread.length  // thread_count
-                ]
-              );
+              // Don't save individual thread tweets to database - only the main thread record contains all content
             } catch (error) {
               logger.error('Background failed to post thread tweet', { index: i + 1, error: error.message });
               if (isRateLimitedError(error)) {
@@ -451,7 +430,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       }
 
       // Store tweet in database
-      const mainContent = thread && thread.length > 0 ? thread[0] : content;
+      const mainContent = thread && thread.length > 0 ? thread.join('\n---\n') : content;
       const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
       const authorId = twitterAccount.twitter_user_id || null;
       

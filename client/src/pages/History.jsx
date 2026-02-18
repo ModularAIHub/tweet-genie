@@ -433,7 +433,7 @@ const History = () => {
             <div className="flex flex-col sm:flex-row sm:items-center gap-3">
               <div className="flex items-center space-x-2">
                 <div className="p-1.5 bg-purple-50 rounded-lg">
-                  <Calendar className="h-4 w-4 text-purple-600" />
+                  <Calendar className="h-4 w-4 text-blue-600" />
                 </div>
                 <span className="text-sm font-semibold text-gray-700">Status</span>
               </div>
@@ -448,7 +448,7 @@ const History = () => {
                     onClick={() => setStatusFilter(option.value)}
                     className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
                       statusFilter === option.value
-                        ? 'bg-gradient-to-r from-purple-500 to-purple-600 text-white shadow-md scale-105'
+                        ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md scale-105'
                         : 'bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200'
                     }`}
                   >
@@ -498,13 +498,13 @@ const History = () => {
               <div className="text-4xl">🔄</div>
             </div>
           </div>
-          <div className="card bg-gradient-to-br from-purple-50 to-purple-100 border-purple-200 hover:shadow-lg transition-shadow">
+          <div className="card bg-gradient-to-br from-purple-50 to-purple-100 border-blue-200 hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-3xl font-bold text-purple-600">
+                <div className="text-3xl font-bold text-blue-600">
                   {postedTweets.reduce((sum, tweet) => sum + (tweet.replies || 0), 0).toLocaleString()}
                 </div>
-                <div className="text-sm text-purple-700 font-medium mt-1">Total Replies</div>
+                <div className="text-sm text-blue-700 font-medium mt-1">Total Replies</div>
               </div>
               <div className="text-4xl">💬</div>
             </div>
@@ -523,7 +523,7 @@ const History = () => {
 
             return (
               <div key={tweet.id} className={`card hover:shadow-lg transition-all duration-200 border ${
-                isThreadTweet ? 'border-l-4 border-l-purple-500 bg-gradient-to-r from-purple-50/30 to-transparent' : 'border-gray-200'
+                isThreadTweet ? 'border-l-4 border-l-blue-500 bg-gradient-to-r from-blue-50/30 to-transparent' : 'border-gray-200'
               } ${tweet.status === 'deleted' ? 'opacity-75 bg-gray-50' : 'bg-white'}`}>
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">
@@ -565,7 +565,7 @@ const History = () => {
                         
                         {/* Thread Badge */}
                         {isThreadTweet && (
-                          <span className="flex items-center gap-1.5 px-2.5 py-1 bg-gradient-to-r from-purple-500 via-pink-500 to-purple-600 text-white rounded-lg text-xs font-bold shadow-md">
+                          <span className="flex items-center gap-1.5 px-2.5 py-1 bg-gradient-to-r from-blue-500 via-sky-500 to-blue-600 text-white rounded-lg text-xs font-bold shadow-md">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="h-3.5 w-3.5">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M7 8h10M7 12h6m-6 4h10" />
                             </svg>
@@ -607,24 +607,24 @@ const History = () => {
                         {!isExpanded ? (
                           <div className="relative">
                             {/* Thread connector line */}
-                            <div className="absolute left-6 top-12 bottom-12 w-0.5 bg-gradient-to-b from-purple-300 to-pink-300"></div>
+                            <div className="absolute left-6 top-12 bottom-12 w-0.5 bg-gradient-to-b from-blue-300 to-blue-400"></div>
                             
-                            <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border-2 border-purple-300 shadow-sm">
+                            <div className="bg-gradient-to-br from-blue-50 to-sky-50 rounded-xl p-4 border-2 border-blue-300 shadow-sm">
                               {/* Thread header */}
-                              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-purple-200">
+                              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-blue-200">
                                 <div className="flex items-center gap-1.5">
-                                  <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-                                  <div className="w-2 h-2 rounded-full bg-pink-500"></div>
-                                  <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                                  <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                                  <div className="w-2 h-2 rounded-full bg-sky-500"></div>
+                                  <div className="w-2 h-2 rounded-full bg-blue-500"></div>
                                 </div>
-                                <span className="text-xs font-bold text-purple-700 uppercase tracking-wide">
+                                <span className="text-xs font-bold text-blue-700 uppercase tracking-wide">
                                   Thread • {threadPreview.count} tweets
                                 </span>
                               </div>
                               
                               {/* First tweet */}
                               <div className="relative pl-8 mb-3">
-                                <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-gradient-to-br from-purple-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold shadow-sm">
+                                <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 text-white flex items-center justify-center text-xs font-bold shadow-sm">
                                   1
                                 </div>
                                 <p className="text-gray-900 whitespace-pre-wrap font-medium leading-relaxed">
@@ -635,7 +635,7 @@ const History = () => {
                               {/* Second tweet preview */}
                               {threadPreview.second && (
                                 <div className="relative pl-8 mb-3">
-                                  <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-gradient-to-br from-pink-500 to-pink-600 text-white flex items-center justify-center text-xs font-bold shadow-sm">
+                                  <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-gradient-to-br from-sky-500 to-sky-600 text-white flex items-center justify-center text-xs font-bold shadow-sm">
                                     2
                                   </div>
                                   <p className="text-gray-700 whitespace-pre-wrap text-sm leading-relaxed bg-white/70 rounded-lg p-2">
@@ -645,14 +645,14 @@ const History = () => {
                               )}
                               
                               {threadPreview.count > 2 && (
-                                <div className="pl-8 text-sm text-purple-600 font-medium">
+                                <div className="pl-8 text-sm text-blue-600 font-medium">
                                   + {threadPreview.count - 2} more tweet{threadPreview.count - 2 > 1 ? 's' : ''}
                                 </div>
                               )}
                               
                               <button
                                 onClick={() => toggleThreadExpansion(tweet.id)}
-                                className="flex items-center text-sm text-purple-600 hover:text-purple-800 font-semibold cursor-pointer bg-white px-3 py-2 rounded-lg hover:bg-purple-100 transition-colors mt-3 w-full justify-center border border-purple-200"
+                                className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-semibold cursor-pointer bg-white px-3 py-2 rounded-lg hover:bg-blue-100 transition-colors mt-3 w-full justify-center border border-blue-200"
                               >
                                 <ChevronDown className="h-4 w-4 mr-1" />
                                 Show all {threadPreview.count} tweets in thread
@@ -660,29 +660,29 @@ const History = () => {
                             </div>
                           </div>
                         ) : (
-                          <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border-2 border-purple-300 shadow-sm">
+                          <div className="bg-gradient-to-br from-blue-50 to-sky-50 rounded-xl p-4 border-2 border-blue-300 shadow-sm">
                             {/* Thread header */}
-                            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-purple-200">
+                            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-blue-200">
                               <div className="flex items-center gap-1.5">
-                                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-                                <div className="w-2 h-2 rounded-full bg-pink-500"></div>
-                                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                                <div className="w-2 h-2 rounded-full bg-sky-500"></div>
+                                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
                               </div>
-                              <span className="text-xs font-bold text-purple-700 uppercase tracking-wide">
+                              <span className="text-xs font-bold text-blue-700 uppercase tracking-wide">
                                 Full Thread • {threadTweets.length} tweets
                               </span>
                             </div>
                             
                             <div className="space-y-3 relative">
                               {/* Connecting line */}
-                              <div className="absolute left-3 top-6 bottom-6 w-0.5 bg-gradient-to-b from-purple-300 via-pink-300 to-purple-300"></div>
+                              <div className="absolute left-3 top-6 bottom-6 w-0.5 bg-gradient-to-b from-blue-300 via-sky-300 to-blue-300"></div>
                               
                               {threadTweets.map((tweetContent, index) => (
                                 <div key={index} className="relative pl-10">
-                                  <div className="absolute left-0 top-1 w-7 h-7 rounded-full bg-gradient-to-br from-purple-500 to-pink-600 text-white flex items-center justify-center text-xs font-bold shadow-md z-10">
+                                  <div className="absolute left-0 top-1 w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-sky-600 text-white flex items-center justify-center text-xs font-bold shadow-md z-10">
                                     {index + 1}
                                   </div>
-                                  <div className="bg-white rounded-lg py-3 px-4 shadow-sm hover:shadow-md transition-shadow border border-purple-200">
+                                  <div className="bg-white rounded-lg py-3 px-4 shadow-sm hover:shadow-md transition-shadow border border-blue-200">
                                     <p className="text-gray-900 whitespace-pre-wrap leading-relaxed">
                                       {tweetContent}
                                     </p>
@@ -693,7 +693,7 @@ const History = () => {
                             
                             <button
                               onClick={() => toggleThreadExpansion(tweet.id)}
-                              className="flex items-center text-sm text-purple-600 hover:text-purple-800 font-semibold mt-4 cursor-pointer bg-white px-3 py-2 rounded-lg hover:bg-purple-100 transition-colors w-full justify-center border border-purple-200"
+                              className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-semibold mt-4 cursor-pointer bg-white px-3 py-2 rounded-lg hover:bg-blue-100 transition-colors w-full justify-center border border-blue-200"
                             >
                               <ChevronUp className="h-4 w-4 mr-1" />
                               Collapse thread
