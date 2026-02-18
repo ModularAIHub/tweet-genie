@@ -213,10 +213,31 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
 
     const liBody = await liRes.json().catch(() => ({}));
 
-    logger.info('[LinkedIn Cross-post] Response received', { 
-      status: liRes.status, 
+    // Sanitize and summarise liBody for safe logging (avoid logging full potentially-sensitive response)
+    let bodyString = '';
+    try {
+      bodyString = typeof liBody === 'string' ? liBody : JSON.stringify(liBody);
+    } catch (e) {
+      bodyString = '';
+    }
+    const bodyLength = bodyString ? bodyString.length : 0;
+    const safeFields = {};
+    if (liBody && typeof liBody === 'object') {
+      if (liBody.id) safeFields.id = liBody.id;
+      if (liBody.status) safeFields.status = liBody.status;
+      if (liBody.code) safeFields.code = liBody.code;
+      if (liBody.message && typeof liBody.message === 'string') {
+        safeFields.message = liBody.message.length > 200 ? liBody.message.slice(0, 197) + '...' : liBody.message;
+      }
+    }
+    const sanitizedSummary = bodyString ? (bodyString.length > 200 ? bodyString.slice(0, 197) + '...' : bodyString) : undefined;
+
+    logger.info('[LinkedIn Cross-post] Response received', {
+      status: liRes.status,
       ok: liRes.ok,
-      body: liBody 
+      bodyLength,
+      safeFields,
+      sanitizedSummary
     });
 
     if (liRes.status === 404 && liBody.code === 'LINKEDIN_NOT_CONNECTED') {
@@ -225,7 +246,7 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
     }
 
     if (!liRes.ok) {
-      logger.warn('[LinkedIn Cross-post] Failed', { status: liRes.status, body: liBody });
+      logger.warn('[LinkedIn Cross-post] Failed', { status: liRes.status, bodyLength, safeFields });
       return 'failed';
     }
 
