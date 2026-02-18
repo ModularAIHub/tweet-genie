@@ -253,7 +253,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast.error(warning));
+        validation.warnings.forEach(warning => toast(warning, { icon: '⚠️' }));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
@@ -305,7 +305,7 @@ export const useTweetComposer = () => {
           return;
         }
         if (validation.warnings.length > 0) {
-          validation.warnings.forEach(warning => toast.error(`Tweet ${i + 1}: ${warning}`));
+          validation.warnings.forEach(warning => toast(`Tweet ${i + 1}: ${warning}`, { icon: '⚠️' }));
         }
       }
       if (validTweets.length === 0 && selectedImages.length === 0) {
@@ -319,7 +319,7 @@ export const useTweetComposer = () => {
         return;
       }
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast.error(warning));
+        validation.warnings.forEach(warning => toast(warning, { icon: '⚠️' }));
       }
       if (!content.trim() && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -815,9 +815,9 @@ export const useTweetComposer = () => {
         continue;
       }
 
-      if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast.error(warning));
-      }
+        if (validation.warnings.length > 0) {
+          validation.warnings.forEach(warning => toast(warning, { icon: '⚠️' }));
+        }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
       const isValidSize = file.size <= MAX_IMAGE_SIZE;

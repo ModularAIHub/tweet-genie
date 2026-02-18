@@ -991,8 +991,12 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
         batchLookup = await twitterClient.v2.tweets(tweetIds, {
           'tweet.fields': ['public_metrics', 'created_at'],
         });
-        // Debug: Log Twitter API response for this batch
-        console.log('[SYNC DEBUG] Twitter API response for tweetIds:', tweetIds, JSON.stringify(batchLookup, null, 2));
+        // Debug: Log a small Twitter API response summary for this batch (only when enabled)
+        if (ANALYTICS_DEBUG) {
+          const returnedCount = Array.isArray(batchLookup?.data) ? batchLookup.data.length : 0;
+          const returnedIds = Array.isArray(batchLookup?.data) ? batchLookup.data.map((d) => d.id) : [];
+          log('[SYNC DEBUG] Twitter API response summary', { tweetIds, returnedCount, returnedIds });
+        }
       } catch (batchError) {
         if (isRateLimitError(batchError)) {
           const { resetTimestamp, waitMinutes } = getRateLimitResetInfo(batchError);
