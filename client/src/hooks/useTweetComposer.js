@@ -387,25 +387,44 @@ export const useTweetComposer = () => {
 
       if (isThread) {
         const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
-        await tweets.create({
+        const response = await tweets.create({
           thread: validTweets,
           threadMedia,
           media: mediaIds.length > 0 ? mediaIds : undefined,
           // Only include postToLinkedin in the request if it's true
           ...(postToLinkedin && { postToLinkedin: true }),
         });
-        toast.success(`Thread with ${validTweets.length} tweets posted successfully!`);
+        const linkedinStatus = response?.data?.linkedin;
+        if (linkedinStatus === 'posted') {
+          toast.success(`Thread posted & cross-posted to LinkedIn! ✓`);
+        } else if (linkedinStatus === 'failed') {
+          toast.success(`Thread posted!`);
+          toast.error('LinkedIn cross-post failed — check your connection.');
+        } else {
+          toast.success(`Thread with ${validTweets.length} tweets posted successfully!`);
+        }
         setThreadTweets(['']);
         setThreadImages([]);
         setIsThread(false);
       } else {
-        await tweets.create({
+        const response = await tweets.create({
           content: content.trim(),
           media: mediaIds.length > 0 ? mediaIds : undefined,
           // Only include postToLinkedin in the request if it's true
           ...(postToLinkedin && { postToLinkedin: true }),
         });
-        toast.success('Tweet posted successfully!');
+        const linkedinStatus = response?.data?.linkedin;
+        if (linkedinStatus === 'posted') {
+          toast.success('Tweet posted & cross-posted to LinkedIn! ✓');
+        } else if (linkedinStatus === 'failed') {
+          toast.success('Tweet posted!');
+          toast.error('LinkedIn cross-post failed — check your connection.');
+        } else if (linkedinStatus === 'not_connected') {
+          toast.success('Tweet posted!');
+          toast.error('LinkedIn not connected — post was Twitter only.');
+        } else {
+          toast.success('Tweet posted successfully!');
+        }
         setContent('');
       }
 

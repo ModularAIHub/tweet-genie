@@ -178,6 +178,10 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
   const linkedinGenieUrl = process.env.LINKEDIN_GENIE_URL;
   const internalApiKey = process.env.INTERNAL_API_KEY;
 
+  // Diagnostic: log configured endpoint and whether an internal key is present
+  logger.debug('[LinkedIn Cross-post] URL:', { url: linkedinGenieUrl });
+  logger.debug('[LinkedIn Cross-post] Key set:', { hasKey: !!internalApiKey });
+
   if (!linkedinGenieUrl || !internalApiKey) {
     logger.warn('LinkedIn Cross-post skipped: missing LINKEDIN_GENIE_URL or INTERNAL_API_KEY');
     return 'skipped';
