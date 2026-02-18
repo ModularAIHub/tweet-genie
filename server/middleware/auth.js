@@ -711,12 +711,22 @@ export const validateTwitterConnection = async (req, res, next) => {
       username: twitterAuthData.twitter_username,
       display_name: twitterAuthData.twitter_display_name || twitterAuthData.twitter_username,
       access_token: twitterAuthData.access_token,
+      token_expires_at: twitterAuthData.token_expires_at,
       access_token_secret: twitterAuthData.access_token_secret,
       refresh_token: twitterAuthData.refresh_token,
       oauth1_access_token: twitterAuthData.oauth1_access_token,
       oauth1_access_token_secret: twitterAuthData.oauth1_access_token_secret,
       isTeamAccount: isTeamAccount
     };
+    authLog('[validateTwitterConnection] twitterAccount mapped', {
+      accountId: req.twitterAccount.id,
+      twitterUserId: req.twitterAccount.twitter_user_id,
+      hasAccessToken: !!req.twitterAccount.access_token,
+      hasRefreshToken: !!req.twitterAccount.refresh_token,
+      hasOauth1: !!(req.twitterAccount.oauth1_access_token && req.twitterAccount.oauth1_access_token_secret),
+      tokenExpiresAt: req.twitterAccount.token_expires_at ? new Date(req.twitterAccount.token_expires_at).toISOString() : null,
+      isTeamAccount
+    });
     
     next();
   } catch (error) {

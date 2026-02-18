@@ -178,18 +178,24 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
   const linkedinGenieUrl = process.env.LINKEDIN_GENIE_URL;
   const internalApiKey = process.env.INTERNAL_API_KEY;
 
-  // Diagnostic: log configured endpoint and whether an internal key is present
-  logger.info('[LinkedIn Cross-post] URL', { url: linkedinGenieUrl });
-  logger.info('[LinkedIn Cross-post] Key set', { hasKey: !!internalApiKey });
+  logger.info('[LinkedIn Cross-post] Config check', { 
+    url: linkedinGenieUrl, 
+    hasKey: !!internalApiKey 
+  });
 
   if (!linkedinGenieUrl || !internalApiKey) {
-    logger.warn('LinkedIn Cross-post skipped: missing LINKEDIN_GENIE_URL or INTERNAL_API_KEY');
+    logger.warn('[LinkedIn Cross-post] Skipped: missing LINKEDIN_GENIE_URL or INTERNAL_API_KEY');
     return 'skipped';
   }
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), LINKEDIN_CROSSPOST_TIMEOUT_MS);
+
+    logger.info('[LinkedIn Cross-post] Sending request', { 
+      url: `${linkedinGenieUrl}/api/internal/cross-post`,
+      userId 
+    });
 
     const liRes = await fetch(`${linkedinGenieUrl}/api/internal/cross-post`, {
       method: 'POST',
@@ -207,8 +213,14 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
 
     const liBody = await liRes.json().catch(() => ({}));
 
+    logger.info('[LinkedIn Cross-post] Response received', { 
+      status: liRes.status, 
+      ok: liRes.ok,
+      body: liBody 
+    });
+
     if (liRes.status === 404 && liBody.code === 'LINKEDIN_NOT_CONNECTED') {
-      logger.warn('LinkedIn Cross-post: user has no LinkedIn account connected', { userId });
+      logger.warn('[LinkedIn Cross-post] User has no LinkedIn account connected', { userId });
       return 'not_connected';
     }
 
@@ -224,18 +236,10 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
       logger.warn('[LinkedIn Cross-post] Timeout reached', { timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS, userId });
       return 'timeout';
     }
-    const errInfo = {
-      name: err?.name || 'Error',
-      message: err?.message || String(err),
-    };
-    try {
-      if (err?.stack && typeof err.stack === 'string') {
-        errInfo.stack = err.stack.split('\n').slice(0, 6).join('\n');
-      }
-    } catch (e) {
-      // ignore stack formatting errors
-    }
-    logger.error('[LinkedIn Cross-post] Request error', errInfo);
+    logger.error('[LinkedIn Cross-post] Request error', { 
+      name: err?.name, 
+      message: err?.message 
+    });
     return 'failed';
   }
 }
@@ -257,8 +261,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       threadLength: thread?.length,
       postToLinkedin: !!postToLinkedin,
     });
-
-    logger.debug('Tweet posting is free - no credits deducted');
 
     const twitterClient = new TwitterApi(twitterAccount.access_token);
     let tweetResponse;
@@ -410,7 +412,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         });
 
       } else {
-        logger.debug('Preparing single tweet data');
         const tweetData = {
           text: decodeHTMLEntities(content),
           ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
@@ -450,29 +451,24 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         ]
       );
 
-      // ── LinkedIn cross-post (fire and forget after Twitter success) ──────────
+      // ── LinkedIn cross-post (awaited so Vercel doesn't kill it) ─────────────
       let linkedinStatus = null;
       if (postToLinkedin === true) {
         const postContent = thread && thread.length > 0
           ? thread.join('\n\n')
           : content;
 
-        // Fire-and-forget: don't await cross-post so we don't delay the tweet response
-        (async () => {
-          try {
-            const status = await crossPostToLinkedIn({
-              userId,
-              content: postContent,
-              tweetUrl: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
-            });
-            logger.info('Background LinkedIn cross-post completed', { userId, status });
-          } catch (err) {
-            logger.warn('Background LinkedIn cross-post error', { userId, error: err?.message || String(err) });
-          }
-        })();
-
-        // indicate pending to client immediately
-        linkedinStatus = 'pending';
+        try {
+          linkedinStatus = await crossPostToLinkedIn({
+            userId,
+            content: postContent,
+            tweetUrl: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
+          });
+          logger.info('LinkedIn cross-post completed', { userId, status: linkedinStatus });
+        } catch (err) {
+          logger.error('LinkedIn cross-post error', { userId, error: err?.message || String(err) });
+          linkedinStatus = 'failed';
+        }
       }
       // ─────────────────────────────────────────────────────────────────────────
 
@@ -489,11 +485,12 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
             ? 'First tweet posted, remaining tweets posting in background...'
             : 'Posted',
         },
-        // null = toggle was off
-        // 'posted' = cross-posted successfully
-        // 'not_connected' = no LinkedIn account linked
-        // 'failed' = LinkedIn API error (tweet still posted fine)
-        // 'skipped' = env vars missing
+        // null    = toggle was off
+        // posted  = cross-posted successfully
+        // not_connected = no LinkedIn account linked
+        // failed  = LinkedIn API error (tweet still posted fine)
+        // skipped = env vars missing
+        // timeout = LinkedIn Genie took too long
         linkedin: linkedinStatus,
       });
 
@@ -884,6 +881,13 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
 
     await ensureTweetDeletionRetentionSchema();
 
+    logger.info('[DELETE /tweets] deleting tweet', {
+      accountId: req.twitterAccount?.id,
+      twitterUserId: req.twitterAccount?.twitter_user_id,
+      hasAccessToken: !!req.twitterAccount?.access_token,
+      hasOauth1: !!(req.twitterAccount?.oauth1_access_token && req.twitterAccount?.oauth1_access_token_secret),
+    });
+
     const twitterClient = new TwitterApi(req.twitterAccount.access_token);
 
     try {
@@ -924,6 +928,28 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
           deleteAfter,
           retention,
         });
+      }
+
+      if (isUnauthorizedError(twitterError)) {
+        return res.status(401).json(
+          buildReconnectRequiredPayload({
+            reason: 'token_invalid_or_revoked',
+            details: twitterError?.message || 'Unauthorized',
+          })
+        );
+      }
+
+      const is403 = twitterError.code === 403 ||
+        (twitterError.message && twitterError.message.toString().includes('403')) ||
+        (twitterError.toString && twitterError.toString().includes('403'));
+
+      if (is403) {
+        return res.status(403).json(
+          buildReconnectRequiredPayload({
+            reason: 'permissions_revoked',
+            details: twitterError?.message || 'Forbidden',
+          })
+        );
       }
 
       res.status(400).json({ error: 'Failed to delete tweet from Twitter' });
