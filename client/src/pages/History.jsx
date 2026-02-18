@@ -319,52 +319,62 @@ const History = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 flex items-center">
-            <HistoryIcon className="h-8 w-8 mr-3 text-blue-600" />
+      <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-2xl p-6 border border-blue-100">
+        <div className="flex items-center space-x-3 mb-2">
+          <div className="p-2 bg-blue-600 rounded-xl">
+            <HistoryIcon className="h-6 w-6 text-white" />
+          </div>
+          <h1 className="text-3xl font-bold text-gray-900">
             Tweet History
           </h1>
-          <p className="mt-2 text-gray-600">
-            View and analyze your posted tweets from both platform and Twitter
-          </p>
+        </div>
+        <p className="text-gray-600 ml-14">
+          View and analyze your posted tweets from both platform and Twitter
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 px-5 py-4 text-sm text-amber-900 shadow-sm">
+        <div className="flex items-start space-x-2">
+          <span className="text-lg">ℹ️</span>
+          <div>
+            <span className="font-semibold">Deleted tweet policy:</span>{' '}
+            {retentionInfo.message || `Deleted tweets stay visible for ${retentionInfo.days} days before permanent cleanup.`}
+          </div>
         </div>
       </div>
 
-      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        <span className="font-medium">Deleted tweet policy:</span>{' '}
-        {retentionInfo.message || `Deleted tweets stay visible for ${retentionInfo.days} days before permanent cleanup.`}
-      </div>
-
       {/* Filters and Controls */}
-      <div className="card">
+      <div className="card bg-white shadow-sm border border-gray-200">
         <div className="space-y-6">
           {/* First Row: Time Filter and Sort */}
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
             {/* Time Filter */}
-            <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
               <div className="flex items-center space-x-2">
-                <Filter className="h-4 w-4 text-gray-500" />
-                <span className="text-sm font-medium text-gray-700">Time:</span>
+                <div className="p-1.5 bg-blue-50 rounded-lg">
+                  <Filter className="h-4 w-4 text-blue-600" />
+                </div>
+                <span className="text-sm font-semibold text-gray-700">Time Period</span>
               </div>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { value: 'all', label: 'All Time' },
-                  { value: 'today', label: 'Today' },
-                  { value: 'week', label: 'This Week' },
-                  { value: 'month', label: 'This Month' }
+                  { value: 'all', label: 'All Time', icon: '📅' },
+                  { value: 'today', label: 'Today', icon: '📆' },
+                  { value: 'week', label: 'This Week', icon: '📊' },
+                  { value: 'month', label: 'This Month', icon: '📈' }
                 ].map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setFilter(option.value)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors cursor-pointer ${
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
                       filter === option.value
-                        ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+                        ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md scale-105'
+                        : 'bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200'
                     }`}
                   >
+                    <span className="mr-1">{option.icon}</span>
                     {option.label}
                   </button>
                 ))}
@@ -372,44 +382,47 @@ const History = () => {
             </div>
 
             {/* Sort Options */}
-            <div className="flex items-center space-x-3">
-              <span className="text-sm font-medium text-gray-700">Sort:</span>
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-gray-700">Sort by</span>
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white cursor-pointer"
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white cursor-pointer shadow-sm hover:border-gray-400 transition-colors"
               >
-                <option value="newest">Newest First</option>
-                <option value="oldest">Oldest First</option>
-                <option value="most_likes">Most Likes</option>
-                <option value="most_retweets">Most Retweets</option>
+                <option value="newest">⏰ Newest First</option>
+                <option value="oldest">🕐 Oldest First</option>
+                <option value="most_likes">❤️ Most Likes</option>
+                <option value="most_retweets">🔄 Most Retweets</option>
               </select>
             </div>
           </div>
 
           {/* Second Row: Source and Status Filters */}
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pt-4 border-t border-gray-100">
             {/* Source Filter */}
-            <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
               <div className="flex items-center space-x-2">
-                <ExternalLink className="h-4 w-4 text-gray-500" />
-                <span className="text-sm font-medium text-gray-700">Source:</span>
+                <div className="p-1.5 bg-green-50 rounded-lg">
+                  <ExternalLink className="h-4 w-4 text-green-600" />
+                </div>
+                <span className="text-sm font-semibold text-gray-700">Source</span>
               </div>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { value: 'all', label: 'All Tweets' },
-                  { value: 'platform', label: 'Platform' },
-                  { value: 'external', label: 'Twitter' }
+                  { value: 'all', label: 'All Tweets', icon: '🌐' },
+                  { value: 'platform', label: 'Platform', icon: '🚀' },
+                  { value: 'external', label: 'Twitter', icon: '🐦' }
                 ].map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setSourceFilter(option.value)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors cursor-pointer ${
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
                       sourceFilter === option.value
-                        ? 'bg-green-100 text-green-700 border border-green-200'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+                        ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-md scale-105'
+                        : 'bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200'
                     }`}
                   >
+                    <span className="mr-1">{option.icon}</span>
                     {option.label}
                   </button>
                 ))}
@@ -417,26 +430,29 @@ const History = () => {
             </div>
 
             {/* Status Filter */}
-            <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-4">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
               <div className="flex items-center space-x-2">
-                <Calendar className="h-4 w-4 text-gray-500" />
-                <span className="text-sm font-medium text-gray-700">Status:</span>
+                <div className="p-1.5 bg-purple-50 rounded-lg">
+                  <Calendar className="h-4 w-4 text-purple-600" />
+                </div>
+                <span className="text-sm font-semibold text-gray-700">Status</span>
               </div>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { value: 'all', label: 'All Status' },
-                  { value: 'posted', label: 'Live' },
-                  { value: 'deleted', label: 'Deleted' }
+                  { value: 'all', label: 'All Status', icon: '📋' },
+                  { value: 'posted', label: 'Live', icon: '✅' },
+                  { value: 'deleted', label: 'Deleted', icon: '🗑️' }
                 ].map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setStatusFilter(option.value)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors cursor-pointer ${
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
                       statusFilter === option.value
-                        ? 'bg-purple-100 text-purple-700 border border-purple-200'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+                        ? 'bg-gradient-to-r from-purple-500 to-purple-600 text-white shadow-md scale-105'
+                        : 'bg-gray-50 text-gray-700 hover:bg-gray-100 border border-gray-200'
                     }`}
                   >
+                    <span className="mr-1">{option.icon}</span>
                     {option.label}
                   </button>
                 ))}
@@ -448,30 +464,50 @@ const History = () => {
 
       {/* Stats Summary */}
       {postedTweets.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="card text-center">
-            <div className="text-2xl font-bold text-blue-600">
-              {postedTweets.length}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="card bg-gradient-to-br from-blue-50 to-blue-100 border-blue-200 hover:shadow-lg transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-3xl font-bold text-blue-600">
+                  {postedTweets.length}
+                </div>
+                <div className="text-sm text-blue-700 font-medium mt-1">Total Tweets</div>
+              </div>
+              <div className="text-4xl">📝</div>
             </div>
-            <div className="text-sm text-gray-600">Total Tweets</div>
           </div>
-          <div className="card text-center">
-            <div className="text-2xl font-bold text-red-600">
-              {postedTweets.reduce((sum, tweet) => sum + (tweet.likes || 0), 0).toLocaleString()}
+          <div className="card bg-gradient-to-br from-red-50 to-red-100 border-red-200 hover:shadow-lg transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-3xl font-bold text-red-600">
+                  {postedTweets.reduce((sum, tweet) => sum + (tweet.likes || 0), 0).toLocaleString()}
+                </div>
+                <div className="text-sm text-red-700 font-medium mt-1">Total Likes</div>
+              </div>
+              <div className="text-4xl">❤️</div>
             </div>
-            <div className="text-sm text-gray-600">Total Likes</div>
           </div>
-          <div className="card text-center">
-            <div className="text-2xl font-bold text-green-600">
-              {postedTweets.reduce((sum, tweet) => sum + (tweet.retweets || 0), 0).toLocaleString()}
+          <div className="card bg-gradient-to-br from-green-50 to-green-100 border-green-200 hover:shadow-lg transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-3xl font-bold text-green-600">
+                  {postedTweets.reduce((sum, tweet) => sum + (tweet.retweets || 0), 0).toLocaleString()}
+                </div>
+                <div className="text-sm text-green-700 font-medium mt-1">Total Retweets</div>
+              </div>
+              <div className="text-4xl">🔄</div>
             </div>
-            <div className="text-sm text-gray-600">Total Retweets</div>
           </div>
-          <div className="card text-center">
-            <div className="text-2xl font-bold text-purple-600">
-              {postedTweets.reduce((sum, tweet) => sum + (tweet.replies || 0), 0).toLocaleString()}
+          <div className="card bg-gradient-to-br from-purple-50 to-purple-100 border-purple-200 hover:shadow-lg transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-3xl font-bold text-purple-600">
+                  {postedTweets.reduce((sum, tweet) => sum + (tweet.replies || 0), 0).toLocaleString()}
+                </div>
+                <div className="text-sm text-purple-700 font-medium mt-1">Total Replies</div>
+              </div>
+              <div className="text-4xl">💬</div>
             </div>
-            <div className="text-sm text-gray-600">Total Replies</div>
           </div>
         </div>
       )}
@@ -486,63 +522,82 @@ const History = () => {
             const isExpanded = expandedThreads.has(tweet.id);
 
             return (
-              <div key={tweet.id} className={`card hover:shadow-md transition-shadow ${isThreadTweet ? 'border-l-4 border-l-blue-500' : ''}`}>
-                <div className="flex items-start justify-between">
+              <div key={tweet.id} className={`card hover:shadow-lg transition-all duration-200 border ${
+                isThreadTweet ? 'border-l-4 border-l-purple-500 bg-gradient-to-r from-purple-50/30 to-transparent' : 'border-gray-200'
+              } ${tweet.status === 'deleted' ? 'opacity-75 bg-gray-50' : 'bg-white'}`}>
+                <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">
                     {/* Tweet Header */}
-                    <div className="flex items-center space-x-3 mb-3">
+                    <div className="flex flex-wrap items-center gap-2 mb-3">
                       <div className="flex items-center space-x-2">
-                        <div className="h-8 w-8 bg-blue-500 rounded-full flex items-center justify-center">
-                          <span className="text-white text-sm font-medium">
+                        <div className="h-10 w-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center shadow-sm">
+                          <span className="text-white text-sm font-bold">
                             {tweet.username?.charAt(0).toUpperCase() || 'T'}
                           </span>
                         </div>
-                        <span className="text-sm font-medium text-gray-900">
+                        <span className="text-sm font-semibold text-gray-900">
                           @{tweet.username}
                         </span>
-                        {/* Source Indicator */}
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      </div>
+                      
+                      {/* Badges Row */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {/* Source Badge */}
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold shadow-sm ${
                           tweet.source === 'external' 
-                            ? 'bg-green-100 text-green-700' 
-                            : 'bg-blue-100 text-blue-700'
+                            ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white' 
+                            : 'bg-gradient-to-r from-blue-500 to-blue-600 text-white'
                         }`}>
                           {tweet.source === 'external' ? '🐦 Twitter' : '🚀 Platform'}
                         </span>
-                        {/* Status Indicator */}
+                        
+                        {/* Status Badge */}
                         {tweet.status === 'deleted' && (
-                          <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full text-xs font-medium">
+                          <span className="px-2.5 py-1 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-lg text-xs font-semibold shadow-sm">
                             🗑️ Deleted
                           </span>
                         )}
                         {tweet.status === 'posted' && (
-                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                          <span className="px-2.5 py-1 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg text-xs font-semibold shadow-sm">
                             ✅ Live
                           </span>
                         )}
+                        
+                        {/* Thread Badge */}
                         {isThreadTweet && (
-                          <span className="flex items-center gap-1 px-2 py-1 bg-gradient-to-r from-purple-500 via-pink-500 to-blue-500 text-white rounded-full text-xs font-semibold shadow-sm">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="h-4 w-4">
+                          <span className="flex items-center gap-1.5 px-2.5 py-1 bg-gradient-to-r from-purple-500 via-pink-500 to-purple-600 text-white rounded-lg text-xs font-bold shadow-md">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="h-3.5 w-3.5">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M7 8h10M7 12h6m-6 4h10" />
                             </svg>
-                            Thread
-                            <span className="ml-1 font-bold">({threadPreview.count} tweets)</span>
+                            Thread ({threadPreview.count})
+                          </span>
+                        )}
+                        
+                        {/* AI Generated Badge */}
+                        {tweet.ai_generated === true && (
+                          <span className="px-2.5 py-1 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg text-xs font-semibold shadow-sm">
+                            ✨ AI
                           </span>
                         )}
                       </div>
-                      <span className="text-sm text-gray-500">
-                        {formatDate(tweet.display_created_at || tweet.posted_at || tweet.created_at)}
-                      </span>
-                      {getTweetUrl(tweet) && (
-                        <a
-                          href={getTweetUrl(tweet)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-500 hover:text-blue-700 cursor-pointer"
-                          title="View on Twitter"
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
-                      )}
+                      
+                      {/* Time and Link */}
+                      <div className="flex items-center gap-2 ml-auto">
+                        <span className="text-xs text-gray-500 font-medium">
+                          {formatDate(tweet.display_created_at || tweet.posted_at || tweet.created_at)}
+                        </span>
+                        {getTweetUrl(tweet) && (
+                          <a
+                            href={getTweetUrl(tweet)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                            title="View on Twitter"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        )}
+                      </div>
                     </div>
                     
                     {/* Tweet Content - Thread or Single Tweet */}
@@ -550,44 +605,95 @@ const History = () => {
                       <div className="mb-4">
                         {/* Thread Preview or Full Thread */}
                         {!isExpanded ? (
-                          <div>
-                            <div className="mb-2">
-                              <p className="text-gray-900 whitespace-pre-wrap font-semibold">
-                                {threadPreview.preview}
-                              </p>
-                              {threadPreview.second && (
-                                <p className="text-gray-700 whitespace-pre-wrap mt-1 border-l-2 border-purple-200 pl-3 text-sm">
-                                  {threadPreview.second}
+                          <div className="relative">
+                            {/* Thread connector line */}
+                            <div className="absolute left-6 top-12 bottom-12 w-0.5 bg-gradient-to-b from-purple-300 to-pink-300"></div>
+                            
+                            <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border-2 border-purple-300 shadow-sm">
+                              {/* Thread header */}
+                              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-purple-200">
+                                <div className="flex items-center gap-1.5">
+                                  <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                                  <div className="w-2 h-2 rounded-full bg-pink-500"></div>
+                                  <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                                </div>
+                                <span className="text-xs font-bold text-purple-700 uppercase tracking-wide">
+                                  Thread • {threadPreview.count} tweets
+                                </span>
+                              </div>
+                              
+                              {/* First tweet */}
+                              <div className="relative pl-8 mb-3">
+                                <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-gradient-to-br from-purple-500 to-purple-600 text-white flex items-center justify-center text-xs font-bold shadow-sm">
+                                  1
+                                </div>
+                                <p className="text-gray-900 whitespace-pre-wrap font-medium leading-relaxed">
+                                  {threadPreview.preview}
                                 </p>
+                              </div>
+                              
+                              {/* Second tweet preview */}
+                              {threadPreview.second && (
+                                <div className="relative pl-8 mb-3">
+                                  <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-gradient-to-br from-pink-500 to-pink-600 text-white flex items-center justify-center text-xs font-bold shadow-sm">
+                                    2
+                                  </div>
+                                  <p className="text-gray-700 whitespace-pre-wrap text-sm leading-relaxed bg-white/70 rounded-lg p-2">
+                                    {threadPreview.second}
+                                  </p>
+                                </div>
                               )}
+                              
+                              {threadPreview.count > 2 && (
+                                <div className="pl-8 text-sm text-purple-600 font-medium">
+                                  + {threadPreview.count - 2} more tweet{threadPreview.count - 2 > 1 ? 's' : ''}
+                                </div>
+                              )}
+                              
+                              <button
+                                onClick={() => toggleThreadExpansion(tweet.id)}
+                                className="flex items-center text-sm text-purple-600 hover:text-purple-800 font-semibold cursor-pointer bg-white px-3 py-2 rounded-lg hover:bg-purple-100 transition-colors mt-3 w-full justify-center border border-purple-200"
+                              >
+                                <ChevronDown className="h-4 w-4 mr-1" />
+                                Show all {threadPreview.count} tweets in thread
+                              </button>
                             </div>
-                            <button
-                              onClick={() => toggleThreadExpansion(tweet.id)}
-                              className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-medium cursor-pointer"
-                            >
-                              <ChevronDown className="h-4 w-4 mr-1" />
-                              Show all {threadPreview.count} tweets in thread
-                            </button>
                           </div>
                         ) : (
-                          <div>
-                            <div className="space-y-3">
+                          <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border-2 border-purple-300 shadow-sm">
+                            {/* Thread header */}
+                            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-purple-200">
+                              <div className="flex items-center gap-1.5">
+                                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                                <div className="w-2 h-2 rounded-full bg-pink-500"></div>
+                                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                              </div>
+                              <span className="text-xs font-bold text-purple-700 uppercase tracking-wide">
+                                Full Thread • {threadTweets.length} tweets
+                              </span>
+                            </div>
+                            
+                            <div className="space-y-3 relative">
+                              {/* Connecting line */}
+                              <div className="absolute left-3 top-6 bottom-6 w-0.5 bg-gradient-to-b from-purple-300 via-pink-300 to-purple-300"></div>
+                              
                               {threadTweets.map((tweetContent, index) => (
-                                <div key={index} className="border-l-2 border-purple-300 pl-4 bg-purple-50/30 rounded-md py-2">
-                                  <div className="flex items-center space-x-2 mb-1">
-                                    <span className="text-xs text-purple-700 bg-purple-100 px-2 py-1 rounded">
-                                      {index + 1}/{threadTweets.length}
-                                    </span>
+                                <div key={index} className="relative pl-10">
+                                  <div className="absolute left-0 top-1 w-7 h-7 rounded-full bg-gradient-to-br from-purple-500 to-pink-600 text-white flex items-center justify-center text-xs font-bold shadow-md z-10">
+                                    {index + 1}
                                   </div>
-                                  <p className="text-gray-900 whitespace-pre-wrap">
-                                    {tweetContent}
-                                  </p>
+                                  <div className="bg-white rounded-lg py-3 px-4 shadow-sm hover:shadow-md transition-shadow border border-purple-200">
+                                    <p className="text-gray-900 whitespace-pre-wrap leading-relaxed">
+                                      {tweetContent}
+                                    </p>
+                                  </div>
                                 </div>
                               ))}
                             </div>
+                            
                             <button
                               onClick={() => toggleThreadExpansion(tweet.id)}
-                              className="flex items-center text-sm text-blue-600 hover:text-blue-800 font-medium mt-3 cursor-pointer"
+                              className="flex items-center text-sm text-purple-600 hover:text-purple-800 font-semibold mt-4 cursor-pointer bg-white px-3 py-2 rounded-lg hover:bg-purple-100 transition-colors w-full justify-center border border-purple-200"
                             >
                               <ChevronUp className="h-4 w-4 mr-1" />
                               Collapse thread
@@ -597,7 +703,7 @@ const History = () => {
                       </div>
                     ) : (
                       /* Single Tweet Content */
-                      <p className="text-gray-900 mb-4 whitespace-pre-wrap">
+                      <p className="text-gray-900 mb-4 whitespace-pre-wrap leading-relaxed">
                         {tweet.content}
                       </p>
                     )}
@@ -605,40 +711,38 @@ const History = () => {
                     {/* Media Indicators */}
                     {tweet.media_urls && tweet.media_urls.length > 0 && (
                       <div className="mb-4">
-                        <div className="flex items-center text-sm text-gray-500">
-                          <span>📷 {tweet.media_urls.filter(url => url && url !== null).length} media file(s) attached</span>
+                        <div className="flex items-center gap-2 text-sm bg-blue-50 text-blue-700 px-3 py-2 rounded-lg border border-blue-200 w-fit">
+                          <span className="text-lg">📷</span>
+                          <span className="font-medium">{tweet.media_urls.filter(url => url && url !== null).length} media file(s) attached</span>
                         </div>
                       </div>
                     )}
                     
-                    {/* Engagement Metrics */}
-                    {/* Engagement Metrics removed as requested */}
-
                     {/* Performance Indicators */}
-                    {/* Performance Indicators */}
-{tweet.impressions > 0 && (
-  <div className="mt-2 flex items-center space-x-4 text-xs text-gray-500">
-    <span>
-      Engagement Rate: {getEngagementRate(tweet)}%
-    </span>
-    {tweet.impressions > 1000 && (
-      <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full">
-        High Reach
-      </span>
-    )}
-  </div>
-)}
+                    {tweet.impressions > 0 && (
+                      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+                        <div className="flex items-center gap-2 bg-gradient-to-r from-blue-50 to-indigo-50 px-3 py-2 rounded-lg border border-blue-200">
+                          <span className="font-semibold text-gray-700">Engagement Rate:</span>
+                          <span className="font-bold text-blue-600">{getEngagementRate(tweet)}%</span>
+                        </div>
+                        {tweet.impressions > 1000 && (
+                          <span className="px-3 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg font-semibold shadow-sm">
+                            🔥 High Reach
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                   </div>
 
-                  {/* Action Buttons and Badges */}
-                  <div className="ml-4 flex flex-col items-end space-y-2">
+                  {/* Action Buttons */}
+                  <div className="flex flex-col items-end space-y-2">
                     {/* Delete Button - Only for platform tweets */}
                     {tweet.source !== 'external' && tweet.status !== 'deleted' && (
                       <button
                         onClick={() => setDeleteModal({ open: true, tweet })}
                         disabled={deletingTweets.has(tweet.id)}
-                        className="flex items-center px-2 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        className="flex items-center gap-2 px-3 py-2 text-red-600 hover:text-white hover:bg-red-600 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer border border-red-200 hover:border-red-600 font-medium shadow-sm hover:shadow-md"
                         title={`Delete tweet from Twitter (kept as deleted for ${retentionInfo.days} days)`}
                       >
                         {deletingTweets.has(tweet.id) ? (
@@ -646,28 +750,16 @@ const History = () => {
                         ) : (
                           <Trash2 className="h-4 w-4" />
                         )}
-                        <span className="ml-1 text-xs">Delete</span>
+                        <span className="text-xs font-semibold">Delete</span>
                       </button>
                     )}
 
                     {/* External Tweet Info */}
                     {tweet.source === 'external' && (
-                      <div className="text-xs text-gray-500 bg-gray-50 px-2 py-1 rounded">
-                        From Twitter
+                      <div className="text-xs text-gray-600 bg-gray-100 px-3 py-2 rounded-lg font-medium border border-gray-200">
+                        Posted via Twitter
                       </div>
                     )}
-
-                    {/* Badges */}
-                    <div className="flex flex-col space-y-1">
-                      {tweet.scheduled_for && (
-                        <span className="badge badge-warning">Scheduled</span>
-                      )}
-                      {tweet.ai_generated === true && (
-  <span className="badge badge-info">AI Generated</span>
-)}
-
-
-                    </div>
                   </div>
                 </div>
               </div>

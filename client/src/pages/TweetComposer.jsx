@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
+import { Sparkles, Wand2 } from 'lucide-react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
   TwitterAccountInfo,
@@ -75,12 +76,14 @@ const TweetComposer = () => {
     isThread,
     setIsThread,
     showAIPrompt,
+    setShowAIPrompt,
     aiPrompt,
     setAiPrompt,
     aiStyle,
     setAiStyle,
     isGenerating,
     showImagePrompt,
+    setShowImagePrompt,
     imagePrompt,
     setImagePrompt,
     imageStyle,
@@ -208,15 +211,30 @@ const TweetComposer = () => {
                   onRemoveTweet={handleRemoveTweet}
                 />
 
+                {/* AI Action Buttons - Always visible */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handleAIButtonClick}
+                    className={`btn btn-sm ${showAIPrompt ? 'btn-primary' : 'btn-secondary'}`}
+                  >
+                    <Sparkles className="h-4 w-4 mr-1" />
+                    {showAIPrompt ? 'Cancel AI' : 'AI Generate'}
+                  </button>
+                  
+                  <button
+                    onClick={handleImageButtonClick}
+                    className={`btn btn-sm ${showImagePrompt ? 'btn-primary' : 'btn-secondary'}`}
+                  >
+                    <Wand2 className="h-4 w-4 mr-1" />
+                    {showImagePrompt ? 'Cancel' : 'AI Image'}
+                  </button>
+                </div>
+
                 <TweetContentEditor
                   content={content}
                   setContent={setContent}
                   isThread={isThread}
                   characterCount={characterCount}
-                  onAIButtonClick={handleAIButtonClick}
-                  onImageButtonClick={handleImageButtonClick}
-                  showAIPrompt={showAIPrompt}
-                  showImagePrompt={showImagePrompt}
                 />
               </div>
 
@@ -373,6 +391,7 @@ const TweetComposer = () => {
                   onKeyDown={e => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
+                      e.stopPropagation();
                       if (!linkedinConnected) return;
                       setPostToLinkedin(prev => !prev);
                     }

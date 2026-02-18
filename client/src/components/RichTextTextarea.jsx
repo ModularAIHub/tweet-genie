@@ -130,6 +130,7 @@ const RichTextTextarea = ({
         <button
           type="button"
           onClick={() => replaceSelection(toggleBold)}
+          onMouseDown={(e) => e.preventDefault()}
           disabled={disabled}
           className="rounded p-1.5 text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
           title="Bold selected text"
@@ -139,6 +140,7 @@ const RichTextTextarea = ({
         <button
           type="button"
           onClick={() => replaceSelection(toggleItalic)}
+          onMouseDown={(e) => e.preventDefault()}
           disabled={disabled}
           className="rounded p-1.5 text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
           title="Italic selected text"
@@ -148,6 +150,7 @@ const RichTextTextarea = ({
         <button
           type="button"
           onClick={() => replaceSelection(toggleUnderline)}
+          onMouseDown={(e) => e.preventDefault()}
           disabled={disabled}
           className="rounded p-1.5 text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
           title="Underline selected text"

@@ -401,9 +401,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
               await pool.query(
                 `INSERT INTO tweets (
                   user_id, account_id, author_id, tweet_id, content, 
-                  media_urls, credits_used, 
+                  media_urls, credits_used, is_thread, thread_count,
                   impressions, likes, retweets, replies, status, source
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0, 'posted', 'platform')`,
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, 0, 0, 'posted', 'platform')`,
                 [
                   userId,
                   accountId,
@@ -411,7 +411,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                   threadResponse.data.id,
                   threadTweetText,
                   JSON.stringify(threadTweetMediaUrls),
-                  0
+                  0,
+                  true,  // is_thread
+                  thread.length  // thread_count
                 ]
               );
             } catch (error) {
@@ -456,9 +458,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       const { rows } = await pool.query(
         `INSERT INTO tweets (
           user_id, account_id, author_id, tweet_id, content, 
-          media_urls, thread_tweets, credits_used, 
+          media_urls, thread_tweets, credits_used, is_thread, thread_count,
           impressions, likes, retweets, replies, status, source
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, 0, 'posted', 'platform')
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, 0, 0, 'posted', 'platform')
         RETURNING *`,
         [
           userId,
@@ -468,7 +470,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           mainContent,
           JSON.stringify(thread && thread.length > 0 && threadMedia && threadMedia[0] ? threadMedia[0] : (media || [])),
           JSON.stringify(threadTweets),
-          0
+          0,
+          thread && thread.length > 0,  // is_thread
+          thread && thread.length > 0 ? thread.length : 1  // thread_count
         ]
       );
 

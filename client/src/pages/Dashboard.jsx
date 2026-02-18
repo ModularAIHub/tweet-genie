@@ -12,6 +12,9 @@ import {
   Repeat2,
   Twitter,
   UserX,
+  Zap,
+  Target,
+  Layers,
 } from 'lucide-react';
 import { analytics as analyticsAPI, tweets, credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
 import { useAccount } from '../contexts/AccountContext';
@@ -348,6 +351,25 @@ const Dashboard = () => {
     },
   ];
 
+  const powerFeatures = [
+    {
+      name: 'Bulk Generation',
+      description: 'Generate multiple tweets at once with AI',
+      benefits: ['Save time with batch creation', 'Maintain consistent voice', 'Plan weeks of content in minutes'],
+      href: '/bulk-generation',
+      icon: Layers,
+      color: 'from-orange-500 to-red-600',
+    },
+    {
+      name: 'Strategy Builder',
+      description: 'Create data-driven content strategies',
+      benefits: ['AI-powered content planning', 'Audience targeting insights', 'Optimize posting schedule'],
+      href: '/strategy-builder',
+      icon: Target,
+      color: 'from-indigo-500 to-purple-600',
+    },
+  ];
+
   return (
     <>
       <TeamRedirectHandler />
@@ -448,73 +470,55 @@ const Dashboard = () => {
           })}
         </div>
 
-        {/* Recent Tweets */}
-        <div className="card">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-semibold text-gray-900">Recent Tweets</h3>
-            <Link
-              to="/compose"
-              className="text-primary-600 hover:text-primary-700 text-sm font-medium"
-            >
-              View all
-            </Link>
+        {/* Power Features */}
+        <div>
+          <div className="flex items-center mb-6">
+            <Zap className="h-6 w-6 text-yellow-500 mr-2" />
+            <h2 className="text-2xl font-bold text-gray-900">Power Features</h2>
           </div>
-
-          {recentTweets.length > 0 ? (
-            <div className="space-y-4">
-              {recentTweets.map((tweet) => (
-                <div
-                  key={tweet.id}
-                  className="flex items-start space-x-4 p-4 bg-gray-50 rounded-lg"
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {powerFeatures.map((feature) => {
+              const Icon = feature.icon;
+              return (
+                <Link
+                  key={feature.name}
+                  to={feature.href}
+                  className="card hover:shadow-xl transition-all duration-300 cursor-pointer group overflow-hidden relative"
                 >
-                  <div className="flex-shrink-0">
-                    <div className="h-10 w-10 bg-twitter-500 rounded-full flex items-center justify-center">
-                      <Twitter className="h-5 w-5 text-white" />
+                  <div className={`absolute inset-0 bg-gradient-to-br ${feature.color} opacity-0 group-hover:opacity-5 transition-opacity`}></div>
+                  <div className="relative">
+                    <div className="flex items-start space-x-4">
+                      <div className={`p-3 rounded-xl bg-gradient-to-br ${feature.color} group-hover:scale-110 transition-transform shadow-lg`}>
+                        <Icon className="h-7 w-7 text-white" />
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">
+                          {feature.name}
+                        </h3>
+                        <p className="text-sm text-gray-600 mb-4">
+                          {feature.description}
+                        </p>
+                        <div className="space-y-2">
+                          {feature.benefits.map((benefit, idx) => (
+                            <div key={idx} className="flex items-start text-sm">
+                              <span className="text-green-500 mr-2 mt-0.5">✓</span>
+                              <span className="text-gray-700">{benefit}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 flex items-center text-sm font-medium text-primary-600 group-hover:text-primary-700">
+                      <span>Get Started</span>
+                      <svg className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
                     </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center space-x-2">
-                      <p className="text-sm font-medium text-gray-900">
-                        @{tweet.username}
-                      </p>
-                      <span className={`badge ${
-                        tweet.status === 'posted' ? 'badge-success' :
-                        tweet.status === 'scheduled' ? 'badge-info' :
-                        'badge-warning'
-                      }`}>
-                        {tweet.status}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-gray-700 line-clamp-2">
-                      {tweet.content}
-                    </p>
-                    <div className="mt-2 flex items-center space-x-4 text-sm text-gray-500">
-                      <span className="flex items-center">
-                        <Heart className="h-4 w-4 mr-1" />
-                        {tweet.likes || 0}
-                      </span>
-                      <span className="flex items-center">
-                        <Repeat2 className="h-4 w-4 mr-1" />
-                        {tweet.retweets || 0}
-                      </span>
-                      <span className="flex items-center">
-                        <MessageCircle className="h-4 w-4 mr-1" />
-                        {tweet.replies || 0}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-8">
-              <Edit3 className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-600">No tweets yet</p>
-              <p className="text-sm text-gray-500 mt-2">
-                Start creating content to see your tweets here
-              </p>
-            </div>
-          )}
+                </Link>
+              );
+            })}
+          </div>
         </div>
       </div>
     </>

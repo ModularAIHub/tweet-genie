@@ -16,18 +16,25 @@ const ThreadComposer = ({
 }) => {
   return (
     <div className="space-y-4">
-      {/* Thread Toggle */}
-      <label className="flex items-center">
-        <input
-          type="checkbox"
-          checked={isThread}
-          onChange={(e) => onThreadToggle(e.target.checked)}
-          className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-        />
-        <span className="ml-2 text-sm font-medium text-gray-700">
-          Create thread
-        </span>
-      </label>
+      {/* Thread Toggle with better styling */}
+      <div className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl border border-blue-200">
+        <label className="flex items-center cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isThread}
+            onChange={(e) => onThreadToggle(e.target.checked)}
+            className="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          />
+          <span className="ml-3 text-base font-semibold text-gray-800">
+            🧵 Create Thread
+          </span>
+        </label>
+        {isThread && (
+          <span className="text-xs text-blue-600 bg-blue-100 px-3 py-1 rounded-full font-medium">
+            {threadTweets.filter(t => t !== '---').length} tweets
+          </span>
+        )}
+      </div>
 
       {/* Thread Tweets */}
       {isThread && (
@@ -53,14 +60,14 @@ const ThreadComposer = ({
               </button>
             </div>
           )}
-          
+
           {threadTweets.map((tweet, index) => {
             // Check if this is a separator tweet
             const isSeparator = tweet === '---';
-            
+
             // Calculate the tweet number (excluding separators)
             const tweetNumber = threadTweets.slice(0, index + 1).filter(t => t !== '---').length;
-            
+
             return (
               <div key={index} className="flex items-start space-x-2">
                 {isSeparator ? (
@@ -84,15 +91,16 @@ const ThreadComposer = ({
                     <div className="flex-shrink-0 w-6 h-6 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-xs font-medium">
                       {tweetNumber}
                     </div>
-                    <div className="flex-1">
+                    <div className="flex-1" onKeyDown={(e) => e.stopPropagation()}>
                       <RichTextTextarea
                         value={decodeHTMLEntities(tweet)}
                         onChange={(nextValue) => onThreadTweetChange(index, nextValue)}
                         placeholder={`Tweet ${tweetNumber}...`}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                        rows={3}
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none text-base leading-relaxed"
+                        rows={4}
+                        style={{ minHeight: '120px' }}
                       />
-                      
+
                       {/* Image Upload for this thread tweet */}
                       <div className="mt-2 flex items-center space-x-2">
                         <label className="cursor-pointer flex items-center text-sm text-blue-600 hover:text-blue-800">
@@ -157,7 +165,7 @@ const ThreadComposer = ({
               </div>
             );
           })}
-          
+
           {threadTweets.length < 10 && (
             <button
               onClick={onAddTweet}
