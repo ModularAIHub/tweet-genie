@@ -221,6 +221,23 @@ app.get('/api/csrf-token', (req, res) => {
   }
 });
 
+// Internal debug endpoint: report presence of important env vars (no secrets returned)
+app.get('/internal/debug/env', (req, res) => {
+  try {
+    const linkedinGenieUrlPresent = !!process.env.LINKEDIN_GENIE_URL;
+    const internalApiKeyPresent = !!process.env.INTERNAL_API_KEY;
+
+    return res.json({
+      success: true,
+      linkedinGenieUrlPresent,
+      internalApiKeyPresent,
+    });
+  } catch (err) {
+    logger.error('Internal debug env error', { error: err?.message || String(err) });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', secureAuthRoutes);

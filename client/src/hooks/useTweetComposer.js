@@ -182,7 +182,8 @@ export const useTweetComposer = () => {
       }
 
       try {
-        const personalRes = await twitter.getStatus({ timeout: 8000 });
+        // Use default api timeout (30s) instead of a shorter per-call override
+        const personalRes = await twitter.getStatus();
         personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
         mergedAccounts = [...personalAccounts];
 
@@ -196,7 +197,7 @@ export const useTweetComposer = () => {
       }
 
       try {
-        const teamRes = await twitter.getTeamAccounts({ timeout: 6000 });
+        const teamRes = await twitter.getTeamAccounts();
         const responseTeamId = teamRes?.data?.team_id || teamRes?.data?.teamId || null;
         const rawTeamAccounts = Array.isArray(teamRes?.data?.accounts) ? teamRes.data.accounts : [];
         const teamAccounts = rawTeamAccounts.map((account) => ({
