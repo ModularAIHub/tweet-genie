@@ -224,7 +224,18 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
       logger.warn('[LinkedIn Cross-post] Timeout reached', { timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS, userId });
       return 'timeout';
     }
-    logger.error('[LinkedIn Cross-post] Request error', { error: err?.message || String(err) });
+    const errInfo = {
+      name: err?.name || 'Error',
+      message: err?.message || String(err),
+    };
+    try {
+      if (err?.stack && typeof err.stack === 'string') {
+        errInfo.stack = err.stack.split('\n').slice(0, 6).join('\n');
+      }
+    } catch (e) {
+      // ignore stack formatting errors
+    }
+    logger.error('[LinkedIn Cross-post] Request error', errInfo);
     return 'failed';
   }
 }
