@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
@@ -19,18 +19,49 @@ const TweetComposer = () => {
   const [imageModal, setImageModal] = useState({ open: false, src: null });
   const [apiKeyMode, setApiKeyMode] = useState('platform');
   const [hasAppliedStrategyPrompt, setHasAppliedStrategyPrompt] = useState(false);
+  const [postToLinkedin, setPostToLinkedin] = useState(false);
+  const [linkedinConnected, setLinkedinConnected] = useState(null);
+  const _modalDialogRef = useRef(null);
+  const _modalCloseRef = useRef(null);
 
-  // Fetch BYOK/platform mode on mount
+  // Fetch BYOK/platform mode + LinkedIn status on mount
   useEffect(() => {
     let mounted = true;
+
     fetchApiKeyPreference().then(mode => {
       if (mounted) setApiKeyMode(mode);
     });
+
+    // Check LinkedIn connection — hits Tweet Genie's own backend (same origin, no CORS)
+    // which does a direct DB lookup on linkedin_auth table
+    (async () => {
+      try {
+        const res = await fetch('/api/linkedin/status', { credentials: 'include' });
+        if (!mounted) return;
+
+        const data = await res.json().catch(() => ({ connected: false }));
+        setLinkedinConnected(data.connected === true);
+      } catch (err) {
+        console.error('Failed to fetch LinkedIn status:', err);
+        if (mounted) setLinkedinConnected(false);
+      }
+    })();
+
     return () => { mounted = false; };
   }, []);
 
+  // Focus the modal's close button when modal opens for keyboard users
+  useEffect(() => {
+    if (imageModal.open) {
+      // delay to ensure element is in DOM
+      setTimeout(() => {
+        _modalCloseRef.current?.focus();
+        _modalDialogRef.current?.focus();
+      }, 0);
+    }
+  }, [imageModal.open]);
+
   const {
-    // State
     content,
     setContent,
     isPosting,
@@ -60,8 +91,6 @@ const TweetComposer = () => {
     scheduledTweets,
     isLoadingScheduled,
     characterCount,
-    
-    // Handlers
     handleImageUpload,
     handleImageRemove,
     handlePost,
@@ -79,7 +108,7 @@ const TweetComposer = () => {
     fetchScheduledTweets
   } = useTweetComposer();
 
-  // Check for prompt from Strategy Builder (route state first, then localStorage fallback)
+  // Check for prompt from Strategy Builder
   useEffect(() => {
     if (hasAppliedStrategyPrompt) return;
 
@@ -98,7 +127,6 @@ const TweetComposer = () => {
           promptText = '';
         }
       }
-
       if (!promptText) {
         const storedPrompt = localStorage.getItem('composerPrompt');
         promptText = storedPrompt ? String(storedPrompt) : '';
@@ -109,19 +137,14 @@ const TweetComposer = () => {
       setAiPrompt(promptText);
       localStorage.removeItem('composerPrompt');
       localStorage.removeItem('composerPromptPayload');
-
-      // Auto-open AI prompt panel
       setTimeout(() => {
-        if (!showAIPrompt) {
-          handleAIButtonClick();
-        }
+        if (!showAIPrompt) handleAIButtonClick();
       }, 80);
     }
 
     setHasAppliedStrategyPrompt(true);
   }, [hasAppliedStrategyPrompt, location, setAiPrompt, handleAIButtonClick, showAIPrompt]);
 
-  // Show loading state while checking Twitter account
   if (isLoadingTwitterAccounts && (!twitterAccounts || twitterAccounts.length === 0)) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -133,7 +156,6 @@ const TweetComposer = () => {
     );
   }
 
-  // Show connect message if no Twitter account is connected
   if (!twitterAccounts || twitterAccounts.length === 0) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -158,22 +180,21 @@ const TweetComposer = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* BYOK/platform mode indicator - always visible at top */}
+      {/* BYOK/platform mode indicator */}
       <div className="w-full flex justify-center pt-4 pb-2">
         <span className="inline-block px-4 py-2 rounded-full text-sm font-semibold bg-blue-100 text-blue-700 shadow">
           {apiKeyMode === 'byok' ? 'Using Your Own API Key (BYOK)' : 'Using Platform API Key'}
         </span>
       </div>
+
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Main Content */}
+
+          {/* ── Main Composer (2/3 width) ── */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Twitter Account Info */}
             <TwitterAccountInfo twitterAccounts={twitterAccounts} />
 
-            {/* Tweet Composer */}
             <div className="card">
-              {/* Thread Toggle and Content Editor */}
               <div className="space-y-4">
                 <ThreadComposer
                   isThread={isThread}
@@ -186,7 +207,7 @@ const TweetComposer = () => {
                   onAddTweet={handleAddTweet}
                   onRemoveTweet={handleRemoveTweet}
                 />
-                
+
                 <TweetContentEditor
                   content={content}
                   setContent={setContent}
@@ -199,7 +220,6 @@ const TweetComposer = () => {
                 />
               </div>
 
-              {/* AI Content Generator */}
               <AIContentGenerator
                 showAIPrompt={showAIPrompt}
                 aiPrompt={aiPrompt}
@@ -211,7 +231,6 @@ const TweetComposer = () => {
                 onCancel={() => setShowAIPrompt(false)}
               />
 
-              {/* AI Image Generator */}
               <AIImageGenerator
                 showImagePrompt={showImagePrompt}
                 imagePrompt={imagePrompt}
@@ -223,7 +242,6 @@ const TweetComposer = () => {
                 onCancel={() => setShowImagePrompt(false)}
               />
 
-              {/* Image Uploader */}
               <div className="mb-4">
                 <ImageUploader
                   selectedImages={selectedImages}
@@ -232,18 +250,37 @@ const TweetComposer = () => {
                   isUploadingImages={isUploadingImages}
                   onImagePreview={img => setImageModal({ open: true, src: img.preview || img.url })}
                 />
-  {/* Image Modal for full preview */}
-  {imageModal.open && (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70" onClick={() => setImageModal({ open: false, src: null })}>
-      <div className="relative max-w-3xl w-full flex flex-col items-center" onClick={e => e.stopPropagation()}>
-        <img src={imageModal.src} alt="Full preview" className="max-h-[80vh] max-w-full rounded shadow-lg border-4 border-white" />
-        <button className="mt-4 px-6 py-2 bg-white text-black rounded shadow font-semibold" onClick={() => setImageModal({ open: false, src: null })}>Close</button>
-      </div>
-    </div>
-  )}
+                {imageModal.open && (
+                  <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70"
+                    onClick={() => setImageModal({ open: false, src: null })}
+                  >
+                    <div
+                      ref={_modalDialogRef}
+                      className="relative max-w-3xl w-full flex flex-col items-center"
+                      onClick={e => e.stopPropagation()}
+                      role="dialog"
+                      aria-modal="true"
+                      tabIndex={-1}
+                      onKeyDown={e => { if (e.key === 'Escape') setImageModal({ open: false, src: null }); }}
+                    >
+                      <img
+                        src={imageModal.src}
+                        alt="Full preview"
+                        className="max-h-[80vh] max-w-full rounded shadow-lg border-4 border-white"
+                      />
+                      <button
+                        ref={_modalCloseRef}
+                        className="mt-4 px-6 py-2 bg-white text-black rounded shadow font-semibold"
+                        onClick={() => setImageModal({ open: false, src: null })}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Tweet Actions */}
               <TweetActions
                 isThread={isThread}
                 content={content}
@@ -251,14 +288,146 @@ const TweetComposer = () => {
                 selectedImages={selectedImages}
                 isPosting={isPosting}
                 isScheduling={isScheduling}
-                onPost={handlePost}
+                postToLinkedin={postToLinkedin}
+                onPost={() => handlePost(postToLinkedin)}
                 onSchedule={handleSchedule}
               />
             </div>
           </div>
 
-          {/* Sidebar intentionally left empty: Scheduled Tweets panel removed (see dedicated scheduling page) */}
-          <div className="space-y-6"></div>
+          {/* ── Sidebar (1/3 width) ── */}
+          <div className="space-y-6">
+
+            {/* Post To card */}
+            <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5">
+
+              {/* Section label */}
+              <p style={{
+                fontSize: '11px',
+                fontWeight: 600,
+                letterSpacing: '0.09em',
+                textTransform: 'uppercase',
+                color: '#9ca3af',
+                marginBottom: '16px',
+              }}>
+                Post to
+              </p>
+
+              {/* LinkedIn row */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px',
+                background: '#f9fafb',
+                border: `1px solid ${linkedinConnected === false ? '#fecaca' : '#e5e7eb'}`,
+                borderRadius: '10px',
+                padding: '10px 14px',
+                marginBottom: '12px',
+              }}>
+                {/* Icon + name */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                  <div style={{
+                    height: '36px',
+                    width: '36px',
+                    flexShrink: 0,
+                    borderRadius: '7px',
+                    background: '#0A66C2',
+                    color: 'white',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 700,
+                    fontSize: '16px',
+                    userSelect: 'none',
+                  }}>
+                    in
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>
+                      LinkedIn
+                    </div>
+                    <div style={{
+                      fontSize: '11px',
+                      color: linkedinConnected === false ? '#ef4444' : '#9ca3af',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {linkedinConnected === null
+                        ? 'Checking...'
+                        : linkedinConnected
+                          ? 'Connected'
+                          : 'Not connected'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Toggle — disabled + greyed out when not connected. Use a button with ARIA for keyboard access */}
+                <button
+                  aria-label="Post to LinkedIn"
+                  role="switch"
+                  aria-checked={!!(postToLinkedin && linkedinConnected)}
+                  aria-disabled={linkedinConnected === false}
+                  onClick={() => { if (!linkedinConnected) return; setPostToLinkedin(prev => !prev); }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      if (!linkedinConnected) return;
+                      setPostToLinkedin(prev => !prev);
+                    }
+                  }}
+                  title={!linkedinConnected ? 'Connect LinkedIn in settings first' : ''}
+                  style={{
+                    position: 'relative',
+                    width: '44px',
+                    height: '24px',
+                    borderRadius: '999px',
+                    background: !linkedinConnected
+                      ? '#e5e7eb'
+                      : postToLinkedin ? '#2563eb' : '#d1d5db',
+                    cursor: linkedinConnected ? 'pointer' : 'not-allowed',
+                    flexShrink: 0,
+                    transition: 'background 0.2s ease',
+                    opacity: linkedinConnected === null ? 0.5 : 1,
+                    border: 'none',
+                    padding: 0,
+                  }}
+                >
+                  <div style={{
+                    position: 'absolute',
+                    top: '3px',
+                    left: postToLinkedin && linkedinConnected ? '23px' : '3px',
+                    width: '18px',
+                    height: '18px',
+                    borderRadius: '50%',
+                    background: 'white',
+                    boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+                    transition: 'left 0.2s ease',
+                  }} />
+                </button>
+              </div>
+
+              {/* Status hint */}
+              <p style={{
+                fontSize: '11px',
+                textAlign: 'center',
+                color: linkedinConnected === false
+                  ? '#ef4444'
+                  : postToLinkedin ? '#2563eb' : '#9ca3af',
+                transition: 'color 0.2s',
+              }}>
+                {linkedinConnected === null
+                  ? 'Checking LinkedIn...'
+                  : linkedinConnected === false
+                    ? <>Not connected</>
+                    : postToLinkedin
+                      ? '✓ Will also post to LinkedIn'
+                      : 'Toggle to cross-post'}
+              </p>
+            </div>
+
+          </div>
         </div>
       </div>
     </div>

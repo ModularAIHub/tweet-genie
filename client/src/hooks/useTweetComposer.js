@@ -96,31 +96,26 @@ export const useTweetComposer = () => {
 
   // Sanitized setters with proper space preservation
   const setContent = (value) => {
-    // Only trim start/end and limit length, preserve all internal spaces
     const cleaned = value.length > 500 ? value.substring(0, 500) : value;
     setContentState(cleaned);
   };
 
   const setAiPrompt = (value) => {
-    // Only trim start/end and limit length, preserve all internal spaces
     const cleaned = value.length > 1000 ? value.substring(0, 1000) : value;
     setAiPromptState(cleaned);
   };
 
   const setImagePrompt = (value) => {
-    // Only trim start/end and limit length, preserve all internal spaces
     const cleaned = value.length > 1000 ? value.substring(0, 1000) : value;
     setImagePromptState(cleaned);
   };
 
   const setThreadTweets = (tweets) => {
-    // Only limit length, preserve all internal spaces
     const cleanedTweets = tweets.map(tweet => 
       tweet === '---' ? tweet : (tweet.length > 300 ? tweet.substring(0, 300) : tweet)
     );
     setThreadTweetsState(cleanedTweets);
     
-    // Ensure threadImages array matches threadTweets length
     setThreadImages(prev => {
       const newImages = [...prev];
       while (newImages.length < cleanedTweets.length) {
@@ -140,7 +135,6 @@ export const useTweetComposer = () => {
           URL.revokeObjectURL(img.preview);
         }
       });
-      // Clean up thread images
       threadImages.forEach(tweetImages => {
         tweetImages.forEach(img => {
           if (img.preview && img.preview.startsWith('blob:')) {
@@ -211,7 +205,6 @@ export const useTweetComposer = () => {
         }));
         mergedAccounts = [...personalAccounts, ...teamAccounts];
       } catch (teamError) {
-        // Team endpoint is optional; fall back to personal accounts only.
         console.warn('Team Twitter accounts unavailable:', teamError?.response?.status || teamError?.message || teamError);
         mergedAccounts = [...personalAccounts];
       }
@@ -240,7 +233,7 @@ export const useTweetComposer = () => {
       setScheduledTweets(Array.isArray(tweets) ? tweets : []);
     } catch (error) {
       console.error('Error fetching scheduled tweets:', error);
-      setScheduledTweets([]); // Set empty array on error
+      setScheduledTweets([]);
     } finally {
       setIsLoadingScheduled(false);
     }
@@ -260,7 +253,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-  validation.warnings.forEach(warning => toast.error(warning));
+        validation.warnings.forEach(warning => toast.error(warning));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
@@ -300,10 +293,10 @@ export const useTweetComposer = () => {
     setSelectedImages(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handlePost = async () => {
+  // ── FIXED: now accepts postToLinkedin as a parameter ──
+  const handlePost = async (postToLinkedin = false) => {
     // Validate content before posting
     if (isThread) {
-      // Only validate, do NOT HTML-encode or sanitize to entities, preserve raw Unicode
       const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
       for (let i = 0; i < validTweets.length; i++) {
         const validation = validateTweetContent(validTweets[i]);
@@ -314,7 +307,6 @@ export const useTweetComposer = () => {
         if (validation.warnings.length > 0) {
           validation.warnings.forEach(warning => toast.error(`Tweet ${i + 1}: ${warning}`));
         }
-        // DO NOT overwrite validTweets[i] with sanitizedContent (which is HTML-encoded)
       }
       if (validTweets.length === 0 && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -337,7 +329,7 @@ export const useTweetComposer = () => {
 
     setIsPosting(true);
     try {
-      // Upload main tweet images to Twitter and get media IDs
+      // Upload main tweet images
       let mediaIds = [];
       if (selectedImages.length > 0) {
         const mediaFiles = [];
@@ -359,7 +351,7 @@ export const useTweetComposer = () => {
         }
       }
 
-      // For threads, upload images for each tweet in the thread
+      // For threads, upload images for each tweet
       let threadMedia = [];
       if (isThread) {
         for (let i = 0; i < threadTweets.length; i++) {
@@ -395,12 +387,12 @@ export const useTweetComposer = () => {
 
       if (isThread) {
         const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
-        // threadMedia is an array of arrays of media IDs, one per tweet
-        // Send only raw Unicode, do NOT HTML-encode or sanitize to entities
         await tweets.create({
           thread: validTweets,
           threadMedia,
-          media: mediaIds.length > 0 ? mediaIds : undefined
+          media: mediaIds.length > 0 ? mediaIds : undefined,
+          // Only include postToLinkedin in the request if it's true
+          ...(postToLinkedin && { postToLinkedin: true }),
         });
         toast.success(`Thread with ${validTweets.length} tweets posted successfully!`);
         setThreadTweets(['']);
@@ -409,12 +401,15 @@ export const useTweetComposer = () => {
       } else {
         await tweets.create({
           content: content.trim(),
-          media: mediaIds.length > 0 ? mediaIds : undefined
+          media: mediaIds.length > 0 ? mediaIds : undefined,
+          // Only include postToLinkedin in the request if it's true
+          ...(postToLinkedin && { postToLinkedin: true }),
         });
         toast.success('Tweet posted successfully!');
         setContent('');
       }
 
+      // Cleanup previews
       selectedImages.forEach(img => {
         if (img.preview && img.preview.startsWith('blob:')) {
           URL.revokeObjectURL(img.preview);
@@ -422,7 +417,6 @@ export const useTweetComposer = () => {
       });
       setSelectedImages([]);
 
-      // Clean up thread images
       threadImages.forEach(tweetImages => {
         tweetImages.forEach(img => {
           if (img.preview && img.preview.startsWith('blob:')) {
@@ -467,7 +461,6 @@ export const useTweetComposer = () => {
   // Accepts a date string and timezone as arguments
   const handleSchedule = async (dateString, timezone) => {
     if (isThread) {
-      // Validate thread content
       const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
       if (validTweets.length === 0) {
         toast.error('Please enter some content for the thread');
@@ -488,7 +481,6 @@ export const useTweetComposer = () => {
       let mediaIds = [];
       let threadMedia = [];
       if (isThread) {
-        // Upload images for each tweet in the thread
         for (let i = 0; i < threadTweets.length; i++) {
           const tweet = threadTweets[i];
           if (tweet.trim().length > 0 && tweet !== '---') {
@@ -519,7 +511,6 @@ export const useTweetComposer = () => {
           }
         }
       } else {
-        // Single tweet: upload main images
         if (selectedImages.length > 0) {
           const mediaFiles = [];
           for (const img of selectedImages) {
@@ -543,7 +534,6 @@ export const useTweetComposer = () => {
 
       if (isThread) {
         const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
-        // threadMedia is an array of arrays of media IDs, one per tweet
         await scheduling.create({
           thread: validTweets,
           threadMedia,
@@ -585,7 +575,7 @@ export const useTweetComposer = () => {
   const handleAIGenerate = async () => {
     let sanitizedPrompt = sanitizeUserInput(aiPrompt.trim(), { 
       maxLength: 1000,
-      encodeHTML: false // Don't HTML-encode prompts
+      encodeHTML: false
     });
 
     if (!sanitizedPrompt) {
@@ -593,7 +583,6 @@ export const useTweetComposer = () => {
       return;
     }
 
-    // If not thread mode, force prompt to request a single tweet under 280 chars
     let aiRequestPrompt = sanitizedPrompt;
     let aiRequestIsThread = isThread;
     if (!isThread) {
@@ -612,7 +601,6 @@ export const useTweetComposer = () => {
 
     setIsGenerating(true);
     try {
-      // Send the prompt to the backend, always include isThread
       const response = await ai.generate({
         prompt: aiRequestPrompt,
         style: aiStyle,
@@ -620,7 +608,6 @@ export const useTweetComposer = () => {
       });
 
       if (response.data && response.data.content) {
-        // Sanitize AI response
         const sanitizedContent = sanitizeAIContent(response.data.content, {
           maxLength: 5000,
           preserveFormatting: true
@@ -633,15 +620,10 @@ export const useTweetComposer = () => {
 
         if (isThread) {
           const content = sanitizedContent;
-          console.log('AI Response for thread:', content);
-          // Split the content by --- separators or fallback to smart splitting
           const aiTweets = splitIntoTweets(content);
-          console.log('Final thread tweets:', aiTweets);
           setThreadTweets(aiTweets.length > 0 ? aiTweets : [content]);
         } else {
-          // Always treat as single tweet, even if AI returns separators
           let tweet = sanitizedContent.replace(/---/g, '').replace(/^["']+|["']+$/g, '').trim();
-          // Limit to 280 characters (Twitter limit)
           if (tweet.length > 280) tweet = tweet.substring(0, 280);
           setContent(tweet);
         }
@@ -649,7 +631,6 @@ export const useTweetComposer = () => {
         setShowAIPrompt(false);
         setAiPrompt('');
 
-        // Show credits used information if available
         if (response.data.creditsUsed && response.data.threadCount) {
           toast.success(`Content generated successfully! Used ${response.data.creditsUsed} credits for ${response.data.threadCount} thread(s).`);
         } else {
@@ -661,7 +642,6 @@ export const useTweetComposer = () => {
     } catch (error) {
       console.error('AI generation error:', error);
 
-      // Handle specific credit errors
       if (error.response?.status === 402) {
         const errorData = error.response.data;
         const threadCount = Number(errorData.threadCount || errorData.estimatedThreads || 1);
@@ -681,29 +661,20 @@ export const useTweetComposer = () => {
     }
   };
 
-  // Helper function to split content into tweets
   const splitIntoTweets = (content) => {
-    // First, check if content has the --- separators from AI
     if (content.includes('---')) {
-      console.log('Found --- separators, splitting by them');
       const tweets = content.split('---')
         .map(tweet => tweet.trim())
         .filter(tweet => tweet.length > 0);
-      
-      console.log('Split tweets by ---:', tweets);
       return tweets;
     }
     
-    // Fallback to original splitting logic if no --- separators
-    // Try to split by natural breaks first (double newlines, numbered points, etc.)
     let sections = content.split(/\n\n+/).filter(s => s.trim().length > 0);
     
-    // If no natural breaks, split by single newlines
     if (sections.length === 1) {
       sections = content.split(/\n/).filter(s => s.trim().length > 0);
     }
     
-    // If still one section, split by sentences but keep the sentence endings
     if (sections.length === 1) {
       sections = content.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0);
     }
@@ -711,18 +682,15 @@ export const useTweetComposer = () => {
     const tweets = [];
     let currentTweet = '';
     
-    sections.forEach((section, index) => {
+    sections.forEach((section) => {
       const trimmed = section.trim();
       
-      // If section is already too long, it needs to be split further
       if (trimmed.length > 280) {
-        // Add current tweet if it has content
         if (currentTweet.trim()) {
           tweets.push(currentTweet.trim());
           currentTweet = '';
         }
         
-        // Split long section into multiple tweets
         const words = trimmed.split(' ');
         words.forEach(word => {
           if (currentTweet.length + word.length + 1 <= 280) {
@@ -733,35 +701,24 @@ export const useTweetComposer = () => {
           }
         });
       } else {
-        // Check if we can add this section to current tweet
         const separator = currentTweet && !currentTweet.endsWith('.') && !currentTweet.endsWith('!') && !currentTweet.endsWith('?') ? '. ' : (currentTweet ? ' ' : '');
         
         if (currentTweet.length + separator.length + trimmed.length <= 280) {
           currentTweet += separator + trimmed;
         } else {
-          // Start new tweet
           if (currentTweet.trim()) tweets.push(currentTweet.trim());
           currentTweet = trimmed;
         }
       }
     });
     
-    // IMPORTANT: Always add the last tweet if it has content
     if (currentTweet.trim()) {
       tweets.push(currentTweet.trim());
     }
     
-    // If no tweets were created, return the original content as a single tweet
     if (tweets.length === 0 && content.trim()) {
       tweets.push(content.trim().substring(0, 280));
     }
-    
-    console.log('Split content into tweets:', {
-      originalLength: content.length,
-      sectionsCount: sections.length,
-      tweetsGenerated: tweets.length,
-      tweets: tweets.map(t => t.substring(0, 50) + '...')
-    });
     
     return tweets;
   };
@@ -775,7 +732,7 @@ export const useTweetComposer = () => {
     }
 
     if (sanitizedPrompt.includes('[FILTERED]')) {
-  toast.error('Some content was filtered from your prompt for safety reasons');
+      toast.error('Some content was filtered from your prompt for safety reasons');
     }
 
     setIsGeneratingImage(true);
@@ -837,10 +794,9 @@ export const useTweetComposer = () => {
 
   // Thread handlers
   const handleThreadTweetChange = (index, value) => {
-    // Don't HTML-encode tweets (they're plain text, not HTML)
     const sanitizedValue = value === '---' ? value : sanitizeUserInput(value, { 
       maxLength: 300,
-      encodeHTML: false // Keep apostrophes as ', not &#x27;
+      encodeHTML: false
     });
     const newTweets = [...threadTweets];
     newTweets[index] = sanitizedValue;
@@ -860,7 +816,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-  validation.warnings.forEach(warning => toast.error(warning));
+        validation.warnings.forEach(warning => toast.error(warning));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
@@ -878,7 +834,6 @@ export const useTweetComposer = () => {
       validFiles.push(file);
     }
 
-    // Check if adding these images would exceed the limit for this thread tweet
     const currentImagesForThread = threadImages[threadIndex] || [];
     if (currentImagesForThread.length + validFiles.length > 4) {
       toast.error('Maximum 4 images allowed per tweet');
@@ -900,7 +855,6 @@ export const useTweetComposer = () => {
       return updated;
     });
 
-    // Clear the input
     event.target.value = '';
   };
 
@@ -926,7 +880,6 @@ export const useTweetComposer = () => {
 
   const handleRemoveTweet = (index) => {
     if (threadTweets.length > 1) {
-      // Clean up any images for this thread tweet
       if (threadImages[index]) {
         threadImages[index].forEach(img => {
           if (img.preview && img.preview.startsWith('blob:')) {
@@ -939,7 +892,6 @@ export const useTweetComposer = () => {
     }
   };
 
-  // Button handlers
   const handleAIButtonClick = () => {
     setShowAIPrompt(!showAIPrompt);
     if (showImagePrompt) setShowImagePrompt(false);

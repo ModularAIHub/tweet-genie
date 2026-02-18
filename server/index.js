@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 // import cron from 'node-cron';
+import { logger } from './utils/logger.js';
 
 // Route imports
 import authRoutes from './routes/auth.js';
@@ -299,8 +300,6 @@ app.use((err, req, res, next) => {
 // Honeybadger error handler (must be after all routes/middleware)
 app.use(Honeybadger.errorHandler);
 
-import { logger } from './utils/logger.js';
-
 app.listen(PORT, async () => {
   logger.info(`Tweet Genie server running on port ${PORT}`);
   // Diagnostic: check configured LinkedIn Genie URL to detect frontend misconfiguration
@@ -317,13 +316,7 @@ app.listen(PORT, async () => {
           logger.warn('LinkedIn status check failed (no response)', { url: checkUrl });
         } else {
           const ct = resp.headers.get('content-type') || '';
-          let looksLikeHtml = false;
-          try {
-            const body = await resp.text();
-            looksLikeHtml = ct.includes('text/html') || String(body).trim().toUpperCase().startsWith('<!DOCTYPE HTML');
-          } catch (e) {
-            // ignore body parsing errors
-          }
+          const looksLikeHtml = ct.includes('text/html') || ct.includes('application/xhtml+xml');
 
           if (looksLikeHtml) {
             logger.warn('LINKEDIN_GENIE_URL appears to be pointing at a frontend (HTML) rather than the API', { url: checkUrl, contentType: ct });
