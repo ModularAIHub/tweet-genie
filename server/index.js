@@ -2,6 +2,7 @@ import express from 'express';
 import Honeybadger from '@honeybadger-io/js';
 import cors from 'cors';
 import helmet from 'helmet';
+import fetch from 'node-fetch';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -15,6 +16,7 @@ import ssoRoutes from './routes/sso.js';
 import twitterRoutes from './routes/twitter.js';
 import tweetsRoutes from './routes/tweets.js';
 import schedulingRoutes from './routes/scheduling.js';
+import linkedinStatusRoutes from './routes/linkedinStatus.js';
 import analyticsRoutes from './routes/analytics.js';
 import dashboardRoutes from './routes/dashboard.js';
 import creditsRoutes from './routes/credits.js';
@@ -51,7 +53,7 @@ dotenv.config({ path: path.resolve(__dirname, './.env') });
 
 // Honeybadger configuration
 Honeybadger.configure({
-  apiKey: 'hbp_A8vjKimYh8OnyV8J3djwKrpqc4OniI3a4MJg', // Replace with your real key
+  apiKey: process.env.HONEYBADGER_API_KEY || process.env.HONEYBADGER_KEY || '',
   environment: process.env.NODE_ENV || 'development',
 });
 
@@ -85,19 +87,19 @@ const START_DELETED_TWEET_RETENTION_WORKER =
 
 const requestLog = (...args) => {
   if (REQUEST_DEBUG) {
-    console.log(...args);
+    logger.debug(...args);
   }
 };
 
 const corsLog = (...args) => {
   if (CORS_DEBUG) {
-    console.log(...args);
+    logger.debug(...args);
   }
 };
 
 const corsWarn = (...args) => {
   if (CORS_DEBUG) {
-    console.warn(...args);
+    logger.warn(...args);
   }
 };
 
@@ -213,7 +215,7 @@ app.get('/api/csrf-token', (req, res) => {
       message: 'CSRF protection not implemented in Tweet Genie',
     });
   } catch (error) {
-    console.error('CSRF token error:', error);
+    logger.error('CSRF token error', { error });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -255,6 +257,7 @@ app.use(
 app.use('/api/pro-team', proTeamRoutes); // <-- Register proTeam routes here
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);
+app.use('/api/linkedin', authenticateToken, linkedinStatusRoutes);
 app.use('/api/analytics', authenticateToken, analyticsRoutes);
 app.use('/api/dashboard', authenticateToken, dashboardRoutes);
 app.use('/api/credits', authenticateToken, creditsRoutes);
@@ -296,46 +299,108 @@ app.use((err, req, res, next) => {
 // Honeybadger error handler (must be after all routes/middleware)
 app.use(Honeybadger.errorHandler);
 
+import { logger } from './utils/logger.js';
+
 app.listen(PORT, async () => {
-  console.log(`Tweet Genie server running on port ${PORT}`);
+  logger.info(`Tweet Genie server running on port ${PORT}`);
+  // Diagnostic: check configured LinkedIn Genie URL to detect frontend misconfiguration
+  try {
+    const linkedinBase = process.env.LINKEDIN_GENIE_URL;
+    if (linkedinBase) {
+      const checkUrl = `${linkedinBase.replace(/\/$/, '')}/api/linkedin/status`;
+      const controller = new AbortController();
+      const timeoutMs = 3000;
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const resp = await fetch(checkUrl, { method: 'GET', headers: { Accept: 'application/json' }, signal: controller.signal });
+        if (!resp) {
+          logger.warn('LinkedIn status check failed (no response)', { url: checkUrl });
+        } else {
+          const ct = resp.headers.get('content-type') || '';
+          let looksLikeHtml = false;
+          try {
+            const body = await resp.text();
+            looksLikeHtml = ct.includes('text/html') || String(body).trim().toUpperCase().startsWith('<!DOCTYPE HTML');
+          } catch (e) {
+            // ignore body parsing errors
+          }
+
+          if (looksLikeHtml) {
+            logger.warn('LINKEDIN_GENIE_URL appears to be pointing at a frontend (HTML) rather than the API', { url: checkUrl, contentType: ct });
+          } else {
+            logger.info('LinkedIn Genie status endpoint reachable', { url: checkUrl, contentType: ct });
+          }
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          logger.warn('LinkedIn status check timed out', { url: checkUrl, timeoutMs });
+        } else {
+          logger.warn('Error while checking LINKEDIN_GENIE_URL', { error: err?.message || String(err) });
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } else {
+      logger.warn('LINKEDIN_GENIE_URL not configured');
+    }
+  } catch (err) {
+    logger.warn('Error while checking LINKEDIN_GENIE_URL', { error: err?.message || err });
+  }
   if (!BACKGROUND_WORKERS_ENABLED) {
-    console.log('[Startup] Background workers disabled by BACKGROUND_WORKERS_ENABLED=false');
+    logger.info('Background workers disabled by BACKGROUND_WORKERS_ENABLED=false');
     return;
   }
 
   if (START_ANALYTICS_WORKER) {
     startAnalyticsAutoSyncWorker();
-    console.log('[Startup] Analytics auto sync status:', getAnalyticsAutoSyncStatus());
+    const analyticsStatus = getAnalyticsAutoSyncStatus();
+    logger.info('Analytics auto sync worker started', {
+      enabled: !!analyticsStatus.enabled,
+      running: !!analyticsStatus.running,
+      intervalMs: analyticsStatus.intervalMs
+    });
   } else {
-    console.log('[Startup] Analytics auto sync worker disabled.');
+    logger.info('Analytics auto sync worker disabled.');
   }
 
   if (START_AUTOPILOT_WORKER) {
     startAutopilotWorker();
-    console.log('[Startup] Autopilot worker status:', getAutopilotWorkerStatus());
+    const autopilotStatus = getAutopilotWorkerStatus();
+    logger.info('Autopilot worker started', { enabled: !!autopilotStatus });
   } else {
-    console.log('[Startup] Autopilot worker disabled.');
+    logger.info('Autopilot worker disabled.');
   }
 
   if (START_DB_SCHEDULER_WORKER) {
     try {
       await startDbScheduledTweetWorker();
-      console.log('[Startup] DB scheduled tweet worker status:', getDbScheduledTweetWorkerStatus());
+      const dbStatus = getDbScheduledTweetWorkerStatus();
+      logger.info('DB scheduled tweet worker started', {
+        enabled: !!dbStatus.enabled,
+        started: !!dbStatus.started,
+        batchSize: dbStatus.batchSize,
+        pollIntervalMs: dbStatus.pollIntervalMs
+      });
     } catch (error) {
-      console.error('[Startup] DB scheduler initialization error:', error?.message || error);
+      logger.error('DB scheduler initialization error', { error: error?.message || error });
     }
   } else {
-    console.log('[Startup] DB scheduled tweet worker disabled.');
+    logger.info('DB scheduled tweet worker disabled.');
   }
 
   if (START_DELETED_TWEET_RETENTION_WORKER) {
     try {
       startDeletedTweetRetentionWorker();
-      console.log('[Startup] Deleted tweet retention worker status:', getDeletedTweetRetentionWorkerStatus());
+      const delStatus = getDeletedTweetRetentionWorkerStatus();
+      logger.info('Deleted tweet retention worker started', {
+        enabled: !!delStatus.enabled,
+        retentionDays: delStatus.days || delStatus.retentionDays || null,
+        intervalMs: delStatus.intervalMs
+      });
     } catch (error) {
-      console.error('[Startup] Deleted tweet retention worker initialization error:', error?.message || error);
+      logger.error('Deleted tweet retention worker initialization error', { error: error?.message || error });
     }
   } else {
-    console.log('[Startup] Deleted tweet retention worker disabled.');
+    logger.info('Deleted tweet retention worker disabled.');
   }
 });

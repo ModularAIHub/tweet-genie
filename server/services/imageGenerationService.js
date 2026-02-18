@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../utils/logger.js';
 
 // Simple rate limiter
 const rateLimits = new Map();
@@ -40,9 +41,9 @@ class ImageGenerationService {
       this.googleAI = new GoogleGenAI({
         apiKey: this.googleApiKey
       });
-      console.log('✅ Gemini image generation service initialized');
+      logger.info('Gemini image generation service initialized');
     } else {
-      console.error('❌ Google AI API key not configured - image generation unavailable');
+      logger.error('Google AI API key not configured - image generation unavailable');
       this.googleAI = null;
     }
   }
@@ -91,9 +92,9 @@ class ImageGenerationService {
     }
 
     try {
-      console.log('Generating image with Gemini 2.0 Flash...');
+      logger.info('Generating image with Gemini 2.0 Flash...');
       const result = await this.generateWithGemini(sanitizedPrompt, style, size);
-      console.log('✅ Image generated successfully with Gemini');
+      logger.info('Image generated successfully with Gemini');
       return {
         imageBuffer: result.imageBuffer,
         filename: result.filename,
@@ -101,7 +102,7 @@ class ImageGenerationService {
         success: true
       };
     } catch (error) {
-      console.error('❌ Gemini image generation failed:', error.message);
+      logger.error('Gemini image generation failed', { error: error.message });
       
       // Provide helpful error messages
       if (error.message.includes('quota') || error.message.includes('RESOURCE_EXHAUSTED')) {
@@ -118,7 +119,7 @@ class ImageGenerationService {
 
   async generateWithGemini(prompt, style, size = '1024x1024') {
     try {
-      console.log('Generating image with Gemini 2.0 Flash Image Preview...');
+      logger.info('Generating image with Gemini 2.0 Flash Image Preview...');
       
       // Use softened prompt to avoid safety filters
       const enhancedPrompt = this.enhancePromptForGemini(prompt, style);
@@ -139,20 +140,25 @@ class ImageGenerationService {
       // Check for safety blocks
       if (response.candidates && response.candidates[0]?.finishReason === 'SAFETY') {
         const safetyRatings = response.candidates[0].safetyRatings || [];
-        console.error('Content blocked by safety filters:', safetyRatings);
+        logger.error('Content blocked by safety filters', { safetyRatings });
         throw new Error('Content was blocked by safety filters. Try using more artistic language in your prompt.');
       }
 
       // Check if we have candidates and content
       if (!response.candidates || !response.candidates[0] || !response.candidates[0].content || !response.candidates[0].content.parts) {
-        console.error('Invalid Gemini response structure:', JSON.stringify(response, null, 2));
+        logger.error('Invalid Gemini response structure', {
+          hasCandidates: !!response.candidates,
+          candidateCount: response.candidates?.length ?? 0,
+          hasContent: !!response.candidates?.[0]?.content,
+          partsCount: response.candidates?.[0]?.content?.parts?.length ?? 0
+        });
         throw new Error('No valid response from Gemini Flash');
       }
 
       // Look for image data in the response parts
       for (const part of response.candidates[0].content.parts) {
         if (part.text) {
-          console.log('Gemini Flash response text:', part.text);
+          logger.debug('Gemini Flash response text', { text: part.text });
         } else if (part.inlineData) {
           const imageData = part.inlineData.data;
           const imageBuffer = Buffer.from(imageData, 'base64');
@@ -164,7 +170,7 @@ class ImageGenerationService {
           
           const filename = `gemini-generated-${uuidv4()}.png`;
           
-          console.log(`✅ Image generated successfully: ${filename}, Size: ${(imageBuffer.length / 1024).toFixed(2)} KB`);
+          logger.info('Image generated', { filename, sizeKB: (imageBuffer.length / 1024).toFixed(2) });
           
           return {
             imageBuffer,
@@ -175,11 +181,17 @@ class ImageGenerationService {
       }
 
       // If we get here, no image was found
-      console.error('No image data in Gemini response. Response:', JSON.stringify(response, null, 2));
+      const _parts = response.candidates?.[0]?.content?.parts ?? [];
+      const _partTypes = _parts.map(p => (p?.text ? 'text' : p?.inlineData ? 'inlineData' : 'unknown'));
+      logger.error('No image data in Gemini response', {
+        candidateCount: response.candidates?.length ?? 0,
+        partsCount: _parts.length,
+        partTypes: _partTypes
+      });
       throw new Error('No image data found in Gemini Flash response. The model may not support image generation or the prompt was rejected.');
       
     } catch (error) {
-      console.error('Gemini Flash image generation error:', error.message);
+      logger.error('Gemini Flash image generation error', { error: error.message });
       throw error;
     }
   }
@@ -209,7 +221,7 @@ Style: ${styleAddition}, highly detailed character design, sharp focus, artistic
       enhancedPrompt = `Digital character portrait: ${originalPrompt}. ${styleAddition}, detailed, sharp focus.`;
     }
     
-    console.log('Enhanced prompt for Gemini:', enhancedPrompt);
+    logger.debug('Enhanced prompt for Gemini', { enhancedPrompt });
     return enhancedPrompt;
   }
 
@@ -235,7 +247,7 @@ Style: ${styleAddition}, highly detailed character design, sharp focus, artistic
       const base64String = imageBuffer.toString('base64');
       const dataUrl = `data:${mimetype};base64,${base64String}`;
       
-      console.log('✅ Converted to base64 - Size:', (imageBuffer.length / 1024).toFixed(2), 'KB');
+      logger.debug('Converted to base64', { sizeKB: (imageBuffer.length / 1024).toFixed(2) });
       
       return dataUrl;
     } catch (error) {

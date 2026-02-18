@@ -1,11 +1,31 @@
+import express from 'express';
 const router = express.Router();
+import { TwitterApi } from 'twitter-api-v2';
+import fetch from 'node-fetch';
+import pool from '../config/database.js';
+import { validateRequest } from '../middleware/validation.js';
+import { validateTwitterConnection } from '../middleware/auth.js';
+import { tweetSchema, aiGenerateSchema } from '../middleware/validation.js';
+import { creditService } from '../services/creditService.js';
+import { aiService } from '../services/aiService.js';
+import { mediaService } from '../services/mediaService.js';
+import { logger } from '../utils/logger.js';
+import {
+  DELETED_TWEET_RETENTION_DAYS,
+  ensureTweetDeletionRetentionSchema,
+  getTweetDeletionRetentionWindow,
+  getTweetDeletionVisibilityClause,
+  markTweetDeleted,
+  purgeExpiredDeletedTweets,
+} from '../services/tweetRetentionService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 import { buildReconnectRequiredPayload, buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
+
 
 // Bulk save generated tweets/threads as drafts
 router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
   try {
-    const { items } = req.body; // [{ text, isThread, threadParts, images }]
+    const { items } = req.body;
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
     
@@ -13,13 +33,11 @@ router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
       return res.status(400).json({ error: 'No items to save' });
     }
     
-    // Only set account_id for team accounts
     const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
     const authorId = twitterAccount.twitter_user_id || null;
     
     const saved = [];
     for (const item of items) {
-      // Save as draft (status = 'draft')
       const { text, isThread, threadParts } = item;
       const { rows } = await pool.query(
         `INSERT INTO tweets (user_id, account_id, author_id, content, is_thread, thread_parts, status, created_at)
@@ -31,27 +49,11 @@ router.post('/bulk-save', validateTwitterConnection, async (req, res) => {
     }
     res.json({ success: true, saved });
   } catch (error) {
-    console.error('Bulk save error:', error);
+    logger.error('Bulk save error', { error });
     res.status(500).json({ error: 'Failed to save generated content' });
   }
 });
-import express from 'express';
-import { TwitterApi } from 'twitter-api-v2';
-import pool from '../config/database.js';
-import { validateRequest } from '../middleware/validation.js';
-import { validateTwitterConnection } from '../middleware/auth.js';
-import { tweetSchema, aiGenerateSchema } from '../middleware/validation.js';
-import { creditService } from '../services/creditService.js';
-import { aiService } from '../services/aiService.js';
-import { mediaService } from '../services/mediaService.js';
-import {
-  DELETED_TWEET_RETENTION_DAYS,
-  ensureTweetDeletionRetentionSchema,
-  getTweetDeletionRetentionWindow,
-  getTweetDeletionVisibilityClause,
-  markTweetDeleted,
-  purgeExpiredDeletedTweets,
-} from '../services/tweetRetentionService.js';
+
 
 const THREAD_POST_DELAY_MS = Number.parseInt(process.env.THREAD_POST_DELAY_MS || '900', 10);
 const THREAD_POST_DELAY_JITTER_MS = Number.parseInt(process.env.THREAD_POST_DELAY_JITTER_MS || '300', 10);
@@ -59,6 +61,9 @@ const THREAD_LARGE_SIZE_THRESHOLD = Number.parseInt(process.env.THREAD_LARGE_SIZ
 const TWITTER_RATE_LIMIT_MAX_RETRIES = Number.parseInt(process.env.TWITTER_RATE_LIMIT_MAX_RETRIES || '2', 10);
 const TWITTER_RATE_LIMIT_WAIT_MS = Number.parseInt(process.env.TWITTER_RATE_LIMIT_WAIT_MS || '60000', 10);
 const TWITTER_RATE_LIMIT_MAX_WAIT_MS = Number.parseInt(process.env.TWITTER_RATE_LIMIT_MAX_WAIT_MS || '300000', 10);
+
+// Timeout for cross-post requests to LinkedIn Genie (ms)
+const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
 
 function getThreadPostDelayMs() {
   const baseDelay = Number.isFinite(THREAD_POST_DELAY_MS) ? Math.max(0, THREAD_POST_DELAY_MS) : 900;
@@ -144,7 +149,7 @@ async function withRateLimitRetry(operation, { label, retries = TWITTER_RATE_LIM
       }
 
       const waitMs = getRateLimitWaitMs(error, fallbackWaitMs);
-      console.warn(`[TwitterRateLimit][${label || 'tweet'}] 429 on attempt ${attempt + 1}/${maxRetries + 1}. Waiting ${waitMs}ms before retry.`);
+      logger.warn(`[TwitterRateLimit][${label || 'tweet'}] 429 on attempt ${attempt + 1}/${maxRetries + 1}. Waiting ${waitMs}ms before retry.`);
       await wait(waitMs);
     }
   }
@@ -168,47 +173,88 @@ function getAdaptiveThreadDelayMs({ index, totalParts, mediaCount = 0 }) {
   return Math.min(delayMs, TWITTER_RATE_LIMIT_MAX_WAIT_MS);
 }
 
+// ── LinkedIn cross-post helper ────────────────────────────────────────────────
+async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
+  const linkedinGenieUrl = process.env.LINKEDIN_GENIE_URL;
+  const internalApiKey = process.env.INTERNAL_API_KEY;
 
+  if (!linkedinGenieUrl || !internalApiKey) {
+    logger.warn('LinkedIn Cross-post skipped: missing LINKEDIN_GENIE_URL or INTERNAL_API_KEY');
+    return 'skipped';
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), LINKEDIN_CROSSPOST_TIMEOUT_MS);
+
+    const liRes = await fetch(`${linkedinGenieUrl}/api/internal/cross-post`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-api-key': internalApiKey,
+        'x-internal-caller': 'tweet-genie',
+        'x-platform-user-id': String(userId),
+      },
+      body: JSON.stringify({ content, tweetUrl }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    const liBody = await liRes.json().catch(() => ({}));
+
+    if (liRes.status === 404 && liBody.code === 'LINKEDIN_NOT_CONNECTED') {
+      logger.warn('LinkedIn Cross-post: user has no LinkedIn account connected', { userId });
+      return 'not_connected';
+    }
+
+    if (!liRes.ok) {
+      logger.warn('[LinkedIn Cross-post] Failed', { status: liRes.status, body: liBody });
+      return 'failed';
+    }
+
+    logger.info('[LinkedIn Cross-post] Success', { userId });
+    return 'posted';
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      logger.warn('[LinkedIn Cross-post] Timeout reached', { timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS, userId });
+      return 'timeout';
+    }
+    logger.error('[LinkedIn Cross-post] Request error', { error: err?.message || String(err) });
+    return 'failed';
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Post a tweet
 router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async (req, res) => {
   try {
-    const { content, media, thread, threadMedia } = req.body;
+    const { content, media, thread, threadMedia, postToLinkedin } = req.body;
     const userId = req.user.id;
     const twitterAccount = req.twitterAccount;
 
-    console.log('[POST /tweets] Tweet request:', { 
+    logger.info('[POST /tweets] Tweet request', { 
       userId, 
       accountId: twitterAccount?.id,
       hasContent: !!content,
       hasThread: !!thread,
       hasMedia: !!media,
-      threadLength: thread?.length
+      threadLength: thread?.length,
+      postToLinkedin: !!postToLinkedin,
     });
 
-    // Tweet posting is FREE - no credit calculation needed
+    logger.debug('Tweet posting is free - no credits deducted');
 
-    // Tweet posting is now FREE - no credit deduction
-    console.log('Tweet posting is free - no credits deducted');
-
-    // Create Twitter client with OAuth 2.0
-    console.log('Creating Twitter client with access token:', {
-      hasToken: !!twitterAccount.access_token,
-      tokenLength: twitterAccount.access_token?.length,
-      tokenPreview: twitterAccount.access_token?.substring(0, 20) + '...'
-    });
-    
     const twitterClient = new TwitterApi(twitterAccount.access_token);
     let tweetResponse;
-    let threadTweets = []; // Declare here so it's accessible in catch block
+    let threadTweets = [];
 
     try {
       // Handle media upload if present
       let mediaIds = [];
       if (media && media.length > 0) {
-        console.log('Media detected, attempting upload...');
+        logger.info('Media detected, attempting upload');
         
-        // Check if we have OAuth 1.0a tokens for media upload
         if (!twitterAccount.oauth1_access_token || !twitterAccount.oauth1_access_token_secret) {
           throw {
             code: 'OAUTH1_REQUIRED',
@@ -226,57 +272,10 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           () => mediaService.uploadMedia(media, twitterClient, oauth1Tokens),
           { label: 'single-media-upload' }
         );
-        console.log('Media upload completed, IDs:', mediaIds);
+        logger.info('Media upload completed', { mediaIds });
       }
 
-      // If we have a thread, post the first tweet from the thread as the main tweet
       if (thread && thread.length > 0) {
-        // BROKEN SQL BLOCK BELOW (commented out):
-        /*
-        // Team mode: show all tweets for the selected team account (any team member)
-        queryParams.push(selectedAccountId);
-        countParams.push(selectedAccountId);
-
-        let whereClause = `WHERE t.account_id::TEXT = $1::TEXT`;
-        if (status) {
-          whereClause += ` AND t.status = $2`;
-          queryParams.push(status);
-          countParams.push(status);
-        }
-
-        sqlQuery = `
-          SELECT t.*, 
-                  ta.twitter_username as username, 
-                  ta.twitter_display_name as display_name,
-                  CASE 
-                    WHEN t.source = 'external' THEN t.external_created_at
-                    ELSE t.created_at
-                  END as display_created_at
-          FROM tweets t
-          LEFT JOIN team_accounts ta ON t.account_id::TEXT = ta.id::TEXT
-          ${whereClause}
-          ORDER BY 
-            CASE 
-              WHEN t.source = 'external' THEN t.external_created_at
-              ELSE t.created_at
-            END DESC
-          LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
-        `;
-
-        countQuery = `
-          SELECT COUNT(*) FROM tweets t
-          ${whereClause}
-        `;
-
-        queryParams.push(parsedLimit, parsedOffset);
-        console.log({
-          textLength: firstTweetData.text?.length,
-          hasMedia: !!firstTweetData.media,
-          mediaIds: firstTweetMediaIds
-        });
-        */
-
-        // Prepare first tweet data for thread
         let firstTweetMediaIds = [];
         if (threadMedia && threadMedia[0] && threadMedia[0].length > 0) {
           if (!twitterAccount.oauth1_access_token || !twitterAccount.oauth1_access_token_secret) {
@@ -303,13 +302,11 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           () => twitterClient.v2.tweet(firstTweetData),
           { label: 'thread-main-post' }
         );
-        console.log('First thread tweet posted successfully:', {
+        logger.info('First thread tweet posted', {
           tweetId: tweetResponse.data?.id,
-          text: tweetResponse.data?.text?.substring(0, 50) + '...'
+          textPreview: tweetResponse.data?.text ? `${tweetResponse.data.text.substring(0, 50)}...` : '[no text]'
         });
 
-        // Post remaining thread tweets in BACKGROUND (non-blocking)
-        // User gets immediate response, tweets continue posting
         const postRemainingTweets = async () => {
           let previousTweetId = tweetResponse.data.id;
 
@@ -318,23 +315,21 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
               const mediaCountForTweet = Array.isArray(threadMedia?.[i]) ? threadMedia[i].length : 0;
               const shouldThrottle = i > 1 || thread.length > THREAD_LARGE_SIZE_THRESHOLD || mediaCountForTweet > 0;
 
-              // Keep small threads fast, but pace larger/media-heavy threads to avoid 429.
               if (shouldThrottle) {
                 const delayMs = getAdaptiveThreadDelayMs({
                   index: i,
                   totalParts: thread.length,
                   mediaCount: mediaCountForTweet,
                 });
-                console.log(`[Background] Waiting ${delayMs}ms before posting tweet ${i + 1}/${thread.length}...`);
+                logger.debug('Background waiting before posting tweet', { delayMs, index: i + 1, total: thread.length });
                 await wait(delayMs);
               }
 
               const threadTweetText = thread[i];
               let threadMediaIds = [];
               
-              // Check if we have specific media for this thread tweet
               if (threadMedia && threadMedia[i] && threadMedia[i].length > 0) {
-                console.log(`[Background] Uploading media for thread tweet ${i + 1}...`);
+                logger.debug('Background uploading media for thread tweet', { index: i + 1 });
                 const oauth1Tokens = {
                   accessToken: twitterAccount.oauth1_access_token,
                   accessTokenSecret: twitterAccount.oauth1_access_token_secret
@@ -343,7 +338,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                   () => mediaService.uploadMedia(threadMedia[i], twitterClient, oauth1Tokens),
                   { label: `thread-media-upload-${i + 1}` }
                 );
-                console.log(`[Background] Media upload completed for thread tweet ${i + 1}, IDs:`, threadMediaIds);
+                logger.debug('Background media upload completed', { index: i + 1, threadMediaIds });
               }
 
               const threadTweetData = {
@@ -352,13 +347,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 ...(threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
               };
 
-              console.log(`[Background] Posting thread tweet ${i + 1}/${thread.length}:`, {
-                text: threadTweetText.substring(0, 50) + '...',
-                hasMedia: threadMediaIds.length > 0,
-                mediaCount: threadMediaIds.length,
-                replyingTo: previousTweetId
-              });
-
               const threadResponse = await withRateLimitRetry(
                 () => twitterClient.v2.tweet(threadTweetData),
                 { label: `thread-reply-post-${i + 1}` }
@@ -366,9 +354,8 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
               threadTweets.push(threadResponse.data);
               previousTweetId = threadResponse.data.id;
               
-              console.log(`✅ [Background] Thread tweet ${i + 1}/${thread.length} posted successfully:`, threadResponse.data.id);
+              logger.info('Background thread tweet posted', { index: i + 1, tweetId: threadResponse.data.id });
               
-              // Store each thread tweet in database as it's posted
               const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
               const authorId = twitterAccount.twitter_user_id || null;
               const threadTweetMediaUrls = threadMedia && threadMedia[i] ? threadMedia[i] : [];
@@ -390,61 +377,45 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 ]
               );
             } catch (error) {
-              console.error(`[Background] Failed to post thread tweet ${i + 1}:`, error.message);
+              logger.error('Background failed to post thread tweet', { index: i + 1, error: error.message });
               if (isRateLimitedError(error)) {
                 const waitMs = getRateLimitWaitMs(error);
                 const waitSeconds = Math.ceil(waitMs / 1000);
-                console.error(`[Background] Rate limit hit while posting thread tweet ${i + 1}. Stopping remaining posts to avoid hammering Twitter. Retry after ~${waitSeconds}s.`);
+                logger.error('Background rate limit hit, stopping', { waitSeconds });
                 break;
               }
-              // Continue for non-rate-limit errors
             }
           }
           
-          console.log(`✅ [Background] Thread posting complete! Posted ${threadTweets.length + 1}/${thread.length} tweets`);
+          logger.info('Background thread posting complete', { posted: threadTweets.length + 1, total: thread.length });
         };
 
-        // Start background posting (fire and forget)
         postRemainingTweets().catch(err => {
-          console.error('❌ [Background] Thread posting error:', err);
+          logger.error('Background thread posting error', { error: err });
         });
 
-        // Don't wait for remaining tweets - return immediately after first tweet
       } else {
-        // Regular single tweet
-        // Post main tweet
-        console.log('Preparing single tweet data...');
+        logger.debug('Preparing single tweet data');
         const tweetData = {
           text: decodeHTMLEntities(content),
           ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
         };
-        
-        console.log('Posting single tweet to Twitter API...', {
-          hasText: !!tweetData.text,
-          textLength: tweetData.text?.length,
-          hasMedia: !!tweetData.media,
-          mediaIds: mediaIds
-        });
 
         tweetResponse = await withRateLimitRetry(
           () => twitterClient.v2.tweet(tweetData),
           { label: 'single-post' }
         );
-        console.log('Single tweet posted successfully:', {
+        logger.info('Single tweet posted', {
           tweetId: tweetResponse.data?.id,
-          text: tweetResponse.data?.text?.substring(0, 50) + '...'
+          textPreview: tweetResponse.data?.text ? `${tweetResponse.data.text.substring(0, 50)}...` : '[no text]'
         });
       }
 
-      // Store tweet(s) in database
+      // Store tweet in database
       const mainContent = thread && thread.length > 0 ? thread[0] : content;
-      
-      // Only set account_id for team accounts (isTeamAccount = true)
-      // Personal accounts (isTeamAccount = false or undefined) will have NULL account_id
       const accountId = twitterAccount.isTeamAccount ? twitterAccount.id : null;
       const authorId = twitterAccount.twitter_user_id || null;
       
-      // Insert main tweet
       const { rows } = await pool.query(
         `INSERT INTO tweets (
           user_id, account_id, author_id, tweet_id, content, 
@@ -454,19 +425,41 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         RETURNING *`,
         [
           userId,
-          accountId,  // NULL for personal accounts, integer ID for team accounts
+          accountId,
           authorId,
           tweetResponse.data.id,
           mainContent,
           JSON.stringify(thread && thread.length > 0 && threadMedia && threadMedia[0] ? threadMedia[0] : (media || [])),
           JSON.stringify(threadTweets),
-          0  // No credits used for posting
+          0
         ]
       );
-      
-      // Note: For threads, only the first tweet is inserted here
-      // Remaining tweets are inserted by background process as they post
-      // This is intentional - no need to update this section
+
+      // ── LinkedIn cross-post (fire and forget after Twitter success) ──────────
+      let linkedinStatus = null;
+      if (postToLinkedin === true) {
+        const postContent = thread && thread.length > 0
+          ? thread.join('\n\n')
+          : content;
+
+        // Fire-and-forget: don't await cross-post so we don't delay the tweet response
+        (async () => {
+          try {
+            const status = await crossPostToLinkedIn({
+              userId,
+              content: postContent,
+              tweetUrl: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
+            });
+            logger.info('Background LinkedIn cross-post completed', { userId, status });
+          } catch (err) {
+            logger.warn('Background LinkedIn cross-post error', { userId, error: err?.message || String(err) });
+          }
+        })();
+
+        // indicate pending to client immediately
+        linkedinStatus = 'pending';
+      }
+      // ─────────────────────────────────────────────────────────────────────────
 
       res.json({
         success: true,
@@ -475,35 +468,37 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           tweet_id: tweetResponse.data.id,
           content: mainContent,
           url: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
-          credits_used: 0,  // No credits charged for posting
+          credits_used: 0,
           thread_count: thread ? thread.length : 1,
-          thread_status: thread && thread.length > 1 ? 'First tweet posted, remaining tweets posting in background...' : 'Posted'
-        }
+          thread_status: thread && thread.length > 1
+            ? 'First tweet posted, remaining tweets posting in background...'
+            : 'Posted',
+        },
+        // null = toggle was off
+        // 'posted' = cross-posted successfully
+        // 'not_connected' = no LinkedIn account linked
+        // 'failed' = LinkedIn API error (tweet still posted fine)
+        // 'skipped' = env vars missing
+        linkedin: linkedinStatus,
       });
 
     } catch (twitterError) {
-      // Note: No credit refund needed since posting is free
-      console.log('Twitter API error occurred - no credits to refund since posting is free');
+      logger.warn('Twitter API error occurred - no credits to refund');
       
-      // Check if it's a rate limit error (429)
       const isRateLimitError = isRateLimitedError(twitterError);
       const is401Error = isUnauthorizedError(twitterError);
-      
-      // Check if it's a 403 (permissions) error
       const is403Error = twitterError.code === 403 || 
                         twitterError.message?.includes('403') ||
                         twitterError.toString().includes('403');
       
       if (isRateLimitError) {
-        console.log('✅ Rate limit detected - Twitter API returned 429');
+        logger.warn('Rate limit detected - Twitter API returned 429');
         
-        // Calculate retry time
         const retryAfterMs = getRateLimitWaitMs(twitterError);
         const retryAfterMinutes = Math.max(1, Math.ceil(retryAfterMs / 60000));
         const resetTime = new Date(Date.now() + retryAfterMs);
         
-        // Safely check threadTweets length (it might not be defined if error happens in non-thread code)
-        const postedCount = (threadTweets?.length || 0) + 1; // +1 for the first tweet
+        const postedCount = (threadTweets?.length || 0) + 1;
         const hasPartialSuccess = threadTweets && threadTweets.length > 0;
         
         return res.status(429).json({
@@ -517,25 +512,18 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           totalTweets: thread?.length || 1
         });
       } else if (is401Error) {
-        console.log('Twitter API returned 401 Unauthorized', {
-          accountId: twitterAccount?.id,
-          isTeamAccount: twitterAccount?.isTeamAccount,
-          hasRefreshToken: !!twitterAccount?.refresh_token,
-        });
         throw {
           code: 'TWITTER_AUTH_EXPIRED',
           message: 'Twitter session expired or revoked. Please reconnect your account.',
           details: twitterError.message
         };
       } else if (is403Error) {
-        console.log('🔐 Permissions error detected - Twitter API returned 403');
         throw {
           code: 'TWITTER_PERMISSIONS_ERROR',
           message: 'Twitter permissions expired. Please reconnect your account.',
           details: twitterError.message
         };
       } else {
-        console.log('❌ Other Twitter API error:', twitterError.message);
         throw {
           code: 'TWITTER_API_ERROR',
           message: 'Failed to post tweet',
@@ -545,9 +533,8 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
     }
 
   } catch (error) {
-    console.error('Post tweet error:', error);
+    logger.error('Post tweet error', { error });
     
-    // Handle specific error types
     if (error.code === 'TWITTER_PERMISSIONS_ERROR') {
       return res.status(403).json({ 
         error: error.message,
@@ -582,7 +569,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       });
     }
     
-    // Generic server error
     res.status(500).json({ error: 'Failed to post tweet' });
   }
 });
@@ -593,14 +579,10 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
     const { prompt, provider, style, hashtags, mentions, max_tweets } = req.body;
     const userId = req.user.id;
 
-    // Calculate credit cost for AI text generation
-    const creditCost = 1.2; // 1.2 credits per AI text generation request
+    const creditCost = 1.2;
 
-    // Get JWT token AFTER authentication middleware (which may have refreshed it)
-    // Check if middleware set a new token in response headers first
     let userToken = null;
     
-    // Try to extract token from Set-Cookie header if it was refreshed
     const setCookieHeader = res.getHeaders()['set-cookie'];
     if (setCookieHeader) {
       const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
@@ -609,21 +591,19 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
       );
       if (accessTokenCookie) {
         userToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
-        console.log('Using refreshed token from response header for AI generation');
+        logger.debug('Using refreshed token from response header for AI generation');
       }
     }
     
-    // Fallback to request cookies or Authorization header
     if (!userToken) {
       userToken = req.cookies?.accessToken;
       if (!userToken) {
         const authHeader = req.headers['authorization'];
         userToken = authHeader && authHeader.split(' ')[1];
       }
-      console.log('Using token from request for AI generation');
+      logger.debug('Using token from request for AI generation');
     }
 
-    // Check and deduct credits
     const creditCheck = await creditService.checkAndDeductCredits(userId, 'ai_generation', creditCost, userToken);
     if (!creditCheck.success) {
       return res.status(402).json({ 
@@ -634,7 +614,6 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
     }
 
     try {
-      // Generate content using AI service
       const generatedTweets = await aiService.generateTweets({
         prompt,
         provider,
@@ -645,7 +624,6 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
         userId
       });
 
-      // Store generation record
       await pool.query(
         `INSERT INTO ai_generations (
           user_id, prompt, provider, generated_content, 
@@ -667,23 +645,22 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
       });
 
     } catch (aiError) {
-      // Refund credits on AI service failure
-      console.log('Attempting to refund credits due to AI generation error...');
+      logger.info('Attempting to refund credits due to AI generation error');
       try {
         await creditService.refundCredits(userId, 'ai_generation_failed', creditCost, userToken);
       } catch (refundError) {
-        console.log('Refund failed (non-critical):', refundError.message);
+        logger.warn('Refund failed (non-critical)', { error: refundError.message });
       }
       throw aiError;
     }
 
   } catch (error) {
-    console.error('AI generation error:', error);
+    logger.error('AI generation error', { error });
     res.status(500).json({ error: 'Failed to generate AI content' });
   }
 });
 
-// Get user's tweets - alias as /history for backwards compatibility
+// Get user's tweets
 router.get(['/history', '/'], async (req, res) => {
   let sqlQuery = '';
   let countQuery = '';
@@ -771,12 +748,9 @@ router.get(['/history', '/'], async (req, res) => {
         LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
       `;
 
-      countQuery = `
-        SELECT COUNT(*) FROM tweets t
-        ${whereClause}
-      `;
-
+      countQuery = `SELECT COUNT(*) FROM tweets t ${whereClause}`;
       queryParams.push(safeLimit, parsedOffset);
+
     } else {
       queryParams = [userId];
       countParams = [userId];
@@ -825,11 +799,7 @@ router.get(['/history', '/'], async (req, res) => {
         LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
       `;
 
-      countQuery = `
-        SELECT COUNT(*) FROM tweets t
-        ${whereClause}
-      `;
-
+      countQuery = `SELECT COUNT(*) FROM tweets t ${whereClause}`;
       queryParams.push(safeLimit, parsedOffset);
     }
 
@@ -849,16 +819,11 @@ router.get(['/history', '/'], async (req, res) => {
       }
     });
 
-    console.log(`[GET /tweets/history] Successfully returned ${rows.length} tweets`);
+    logger.info('Returned tweets history', { count: rows.length });
 
   } catch (error) {
-    console.error('[GET /tweets/history] Error:', error);
-    console.error('[GET /tweets/history] Error stack:', error.stack);
-    console.error('[GET /tweets/history] Error code:', error.code);
-    console.error('[GET /tweets/history] SQL query was:', sqlQuery);
-    console.error('[GET /tweets/history] Query params were:', queryParams);
+    logger.error('GET /tweets/history error', { error });
     
-    // Check for database connection errors
     if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT') {
       return res.status(503).json({ 
         error: 'Database connection failed', 
@@ -882,7 +847,6 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
     const { tweetId } = req.params;
     const userId = req.user.id;
 
-    // Get tweet details for user
     let { rows } = await pool.query(
       'SELECT * FROM tweets WHERE id = $1 AND user_id = $2',
       [tweetId, userId]
@@ -890,7 +854,6 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
 
     let tweet = rows[0];
 
-    // If not found, check if it's a team tweet the user has access to
     if (!tweet) {
       const teamTweetResult = await pool.query(`
         SELECT t.* FROM tweets t
@@ -906,14 +869,11 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
 
     await ensureTweetDeletionRetentionSchema();
 
-    // Create Twitter client with OAuth 2.0
     const twitterClient = new TwitterApi(req.twitterAccount.access_token);
 
     try {
-      // Delete from Twitter
       await twitterClient.v2.deleteTweet(tweet.tweet_id);
 
-      // Keep in history as deleted for retention window.
       const deletedRow = await markTweetDeleted(tweetId);
       const retention = getTweetDeletionRetentionWindow();
       const deletedAt = deletedRow?.deleted_at || new Date().toISOString();
@@ -931,7 +891,7 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
       });
 
     } catch (twitterError) {
-      console.error('Twitter delete error:', twitterError);
+      logger.error('Twitter delete error', { error: twitterError });
 
       if (isTwitterNotFoundError(twitterError)) {
         const deletedRow = await markTweetDeleted(tweetId);
@@ -955,7 +915,7 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Delete tweet error:', error);
+    logger.error('Delete tweet error', { error });
     res.status(500).json({ error: 'Failed to delete tweet' });
   }
 });

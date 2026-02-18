@@ -1,11 +1,15 @@
 import Joi from 'joi';
+import { logger } from '../utils/logger.js';
 
 export const validateRequest = (schema) => {
   return (req, res, next) => {
-    console.log('[validateRequest] Incoming body:', JSON.stringify(req.body));
+    // Avoid logging full request bodies in production — enable DEBUG to log
+    if (process.env.DEBUG_REQUEST_BODY === 'true') {
+      logger.debug('[validateRequest] Incoming body', { body: req.body });
+    }
     const { error } = schema.validate(req.body);
     if (error) {
-      console.error('[validateRequest] Validation error:', error.details.map(detail => detail.message));
+      logger.error('validateRequest validation error', { details: error.details.map(detail => detail.message) });
       return res.status(400).json({
         error: 'Validation error',
         details: error.details.map(detail => detail.message)
@@ -22,6 +26,8 @@ export const tweetSchema = Joi.object({
     then: Joi.optional(),
     otherwise: Joi.required()
   }),
+  // Allow frontend to pass a postToLinkedin boolean flag
+  postToLinkedin: Joi.boolean().optional(),
   media: Joi.array().items(Joi.string()).max(4).optional(),
   scheduled_for: Joi.date().greater('now').optional(),
   thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
@@ -43,6 +49,8 @@ export const aiGenerateSchema = Joi.object({
 // Schedule validation (accepts content/media for single, or thread/threadMedia for thread)
 export const scheduleSchema = Joi.object({
   content: Joi.string().allow('').max(280).optional(),
+  // Allow scheduling requests to include postToLinkedin
+  postToLinkedin: Joi.boolean().optional(),
   media: Joi.array().items(Joi.string()).max(4).optional().allow(null),
   thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
   threadMedia: Joi.array().items(

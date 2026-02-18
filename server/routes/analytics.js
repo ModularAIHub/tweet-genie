@@ -991,6 +991,8 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
         batchLookup = await twitterClient.v2.tweets(tweetIds, {
           'tweet.fields': ['public_metrics', 'created_at'],
         });
+        // Debug: Log Twitter API response for this batch
+        console.log('[SYNC DEBUG] Twitter API response for tweetIds:', tweetIds, JSON.stringify(batchLookup, null, 2));
       } catch (batchError) {
         if (isRateLimitError(batchError)) {
           const { resetTimestamp, waitMinutes } = getRateLimitResetInfo(batchError);
@@ -1109,6 +1111,26 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
             continue;
           }
 
+          // Debug: Log before DB update
+          console.log('[SYNC DEBUG] Updating DB for tweet', tweetId, {
+            dbId: tweet.id,
+            current: {
+              impressions: currentImpressions,
+              likes: currentLikes,
+              retweets: currentRetweets,
+              replies: currentReplies,
+              quotes: currentQuotes,
+              bookmarks: currentBookmarks,
+            },
+            next: {
+              impressions: nextImpressions,
+              likes: nextLikes,
+              retweets: nextRetweets,
+              replies: nextReplies,
+              quotes: nextQuotes,
+              bookmarks: nextBookmarks,
+            }
+          });
           await pool.query(
             `UPDATE tweets SET
               impressions = $1,
@@ -1303,9 +1325,11 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
       syncStatus: syncKey ? await getSyncStatusPayload(syncKey) : null,
     });
   } finally {
-    if (syncUserId && shouldInvalidateAnalyticsCache) {
+    // Always clear analytics cache after sync, regardless of shouldInvalidateAnalyticsCache
+    if (syncUserId) {
       try {
         await clearAnalyticsCachedPayload({ userId: syncUserId, accountId: syncAccountId });
+        console.log('[SYNC DEBUG] Cleared analytics cache for', syncUserId, syncAccountId);
       } catch (cacheError) {
         console.warn('[analytics/sync] failed to invalidate precompute cache', cacheError?.message || cacheError);
       }
