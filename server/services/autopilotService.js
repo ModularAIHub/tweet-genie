@@ -85,7 +85,7 @@ Task: ${prompt.prompt_text}
 
 Generate engaging tweet content that aligns with the strategy. Keep it concise, valuable, and authentic. Output only the tweet content, no explanations.`;
 
-    const result = await aiService.generateStrategyContent(fullPrompt, 'professional');
+    const result = await aiService.generateStrategyContent(fullPrompt, 'professional', null, strategy?.user_id || null);
     
     return result.content;
   } catch (error) {

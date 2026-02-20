@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import axios from 'axios';
+import pool from '../config/database.js';
 
 // Simple rate limiter - inline
 const rateLimits = new Map();
@@ -29,6 +30,87 @@ function checkRateLimit(userId) {
   
   userLimit.count++;
   return { allowed: true };
+}
+
+const PLAN_TYPE_ALIASES = new Map([
+  ['premium', 'pro'],
+  ['business', 'pro'],
+]);
+const PLAN_CACHE_TTL_MS = Number(process.env.AI_PLAN_CACHE_TTL_MS || 30 * 1000);
+const planTypeCache = new Map();
+
+const normalizePlanType = (planType) => {
+  const normalized = String(planType || 'free').trim().toLowerCase();
+  return PLAN_TYPE_ALIASES.get(normalized) || normalized;
+};
+
+const getProviderPriority = ({ preference, planType }) => {
+  // Keep BYOK users on quality-first routing since platform token cost is not impacted.
+  if (preference === 'byok') {
+    return ['perplexity', 'google', 'openai'];
+  }
+
+  const normalizedPlan = normalizePlanType(planType);
+  if (normalizedPlan === 'pro' || normalizedPlan === 'enterprise') {
+    // Pro/Enterprise: prioritize higher-quality generation via Perplexity.
+    return ['perplexity', 'google', 'openai'];
+  }
+
+  // Free/unknown platform plans start with Gemini to control cost.
+  return ['google', 'perplexity', 'openai'];
+};
+
+async function resolvePlanType(userId, explicitPlanType = null) {
+  if (explicitPlanType) {
+    return normalizePlanType(explicitPlanType);
+  }
+
+  if (!userId) {
+    return 'free';
+  }
+
+  const now = Date.now();
+  const cached = planTypeCache.get(userId);
+  if (cached && cached.expiresAt > now) {
+    return cached.planType;
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(
+         (
+           SELECT t.plan_type
+           FROM team_members tm
+           JOIN teams t ON t.id = tm.team_id
+           WHERE tm.user_id = $1
+             AND tm.status = 'active'
+           ORDER BY CASE
+             WHEN t.plan_type = 'enterprise' THEN 3
+             WHEN t.plan_type = 'pro' THEN 2
+             WHEN t.plan_type = 'free' THEN 1
+             ELSE 0
+           END DESC
+           LIMIT 1
+         ),
+         u.plan_type,
+         'free'
+       ) AS plan_type
+       FROM users u
+       WHERE u.id = $1
+       LIMIT 1`,
+      [userId]
+    );
+
+    const resolved = normalizePlanType(rows[0]?.plan_type || 'free');
+    planTypeCache.set(userId, {
+      planType: resolved,
+      expiresAt: now + PLAN_CACHE_TTL_MS,
+    });
+    return resolved;
+  } catch (error) {
+    console.warn(`[AI Routing] Failed to resolve plan for user ${userId}, defaulting to free:`, error.message);
+    return 'free';
+  }
 }
 
 // Helper to fetch user preference and keys from new-platform
@@ -103,7 +185,7 @@ class AIService {
     return trimmed;
   }
 
-  async generateContent(prompt, style = 'casual', maxRetries = 3, userToken = null, userId = null) {
+  async generateContent(prompt, style = 'casual', maxRetries = 3, userToken = null, userId = null, planType = null) {
     // FIXED: Validate and sanitize input
     const sanitizedPrompt = this.validatePrompt(prompt);
     
@@ -140,32 +222,63 @@ class AIService {
       }
     }
 
-    // Build providers array (Priority: Perplexity > Google > OpenAI)
-    const providers = [];
-    
-    // 1. Perplexity (Primary for regular content)
-    let perplexityKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'perplexity')?.apiKey) : this.perplexityApiKey;
+    const resolvedPlanType = await resolvePlanType(userId, planType);
+    const providerPriority = getProviderPriority({ preference, planType: resolvedPlanType });
+    const providerCandidates = {};
+    const keyType = preference === 'byok' ? 'BYOK' : 'platform';
+
+    // 1. Perplexity
+    const perplexityKey =
+      preference === 'byok'
+        ? userKeys.find((k) => k.provider === 'perplexity')?.apiKey
+        : this.perplexityApiKey;
     if (perplexityKey) {
-      providers.push({ name: 'perplexity', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey) });
+      providerCandidates.perplexity = {
+        name: 'perplexity',
+        keyType,
+        method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey),
+      };
     }
-    
-    // 2. Google Gemini (Fallback)
-    let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
+
+    // 2. Google Gemini
+    const googleKey =
+      preference === 'byok'
+        ? userKeys.find((k) => k.provider === 'gemini')?.apiKey
+        : this.googleApiKey;
     if (googleKey) {
-      providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
+      providerCandidates.google = {
+        name: 'google',
+        keyType,
+        method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey),
+      };
     }
-    
-    // 3. OpenAI (Final fallback)
-    let openaiKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'openai')?.apiKey) : process.env.OPENAI_API_KEY;
+
+    // 3. OpenAI
+    const openaiKey =
+      preference === 'byok'
+        ? userKeys.find((k) => k.provider === 'openai')?.apiKey
+        : process.env.OPENAI_API_KEY;
     if (openaiKey) {
-      providers.push({ name: 'openai', keyType: preference === 'byok' ? 'BYOOK' : 'platform', method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey) });
+      providerCandidates.openai = {
+        name: 'openai',
+        keyType,
+        method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey),
+      };
     }
+
+    const providers = providerPriority
+      .map((providerName) => providerCandidates[providerName])
+      .filter(Boolean);
 
     if (providers.length === 0) {
       throw new Error('No AI providers configured');
     }
 
-    console.log(`Available AI providers: ${providers.map(p => p.name).join(', ')}`);
+    console.log(
+      `[AI Routing] plan=${resolvedPlanType} preference=${preference} order=${providers
+        .map((p) => p.name)
+        .join(' > ')}`
+    );
 
     let lastError = null;
     const authFailures = [];
@@ -226,8 +339,8 @@ class AIService {
     throw new Error(`All AI providers failed. Last error: ${lastError?.message || 'Unknown error'}`);
   }
 
-  // Strategy Builder specific generation (prioritizes Gemini for better structured outputs)
-  async generateStrategyContent(prompt, style = 'professional', userToken = null, userId = null) {
+  // Strategy Builder specific generation with plan-aware provider routing.
+  async generateStrategyContent(prompt, style = 'professional', userToken = null, userId = null, planType = null) {
     const sanitizedPrompt = this.validatePrompt(prompt);
     
     if (userId) {
@@ -251,33 +364,60 @@ class AIService {
       }
     }
 
-    // Build providers array (Priority: Perplexity > Google > OpenAI for Strategy Builder)
-    // Using Perplexity first since it's faster and Google quota is currently exceeded
-    const providers = [];
-    
-    // 1. Perplexity (PRIMARY - fast and reliable)
-    let perplexityKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'perplexity')?.apiKey) : this.perplexityApiKey;
+    const resolvedPlanType = await resolvePlanType(userId, planType);
+    const providerPriority = getProviderPriority({ preference, planType: resolvedPlanType });
+    const providerCandidates = {};
+    const keyType = preference === 'byok' ? 'BYOK' : 'platform';
+
+    const perplexityKey =
+      preference === 'byok'
+        ? userKeys.find((k) => k.provider === 'perplexity')?.apiKey
+        : this.perplexityApiKey;
     if (perplexityKey) {
-      providers.push({ name: 'perplexity', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey) });
+      providerCandidates.perplexity = {
+        name: 'perplexity',
+        keyType,
+        method: (p, s, c) => this.generateWithPerplexity(p, s, c, perplexityKey),
+      };
     }
-    
-    // 2. Google Gemini (Fallback - currently quota exceeded)
-    let googleKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'gemini')?.apiKey) : this.googleApiKey;
+
+    const googleKey =
+      preference === 'byok'
+        ? userKeys.find((k) => k.provider === 'gemini')?.apiKey
+        : this.googleApiKey;
     if (googleKey) {
-      providers.push({ name: 'google', keyType: preference === 'byok' ? 'BYOK' : 'platform', method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey) });
+      providerCandidates.google = {
+        name: 'google',
+        keyType,
+        method: (p, s, c) => this.generateWithGoogle(p, s, c, googleKey),
+      };
     }
-    
-    // 3. OpenAI (Final fallback)
-    let openaiKey = preference === 'byok' ? (userKeys.find(k => k.provider === 'openai')?.apiKey) : process.env.OPENAI_API_KEY;
+
+    const openaiKey =
+      preference === 'byok'
+        ? userKeys.find((k) => k.provider === 'openai')?.apiKey
+        : process.env.OPENAI_API_KEY;
     if (openaiKey) {
-      providers.push({ name: 'openai', keyType: preference === 'byok' ? 'BYOOK' : 'platform', method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey) });
+      providerCandidates.openai = {
+        name: 'openai',
+        keyType,
+        method: (p, s, c) => this.generateWithOpenAI(p, s, c, openaiKey),
+      };
     }
+
+    const providers = providerPriority
+      .map((providerName) => providerCandidates[providerName])
+      .filter(Boolean);
 
     if (providers.length === 0) {
       throw new Error('No AI providers configured');
     }
 
-    console.log(`[Strategy Builder] Available AI providers: ${providers.map(p => p.name).join(', ')}`);
+    console.log(
+      `[Strategy Builder Routing] plan=${resolvedPlanType} preference=${preference} order=${providers
+        .map((p) => p.name)
+        .join(' > ')}`
+    );
 
     let lastError = null;
     const authFailures = [];
@@ -719,13 +859,14 @@ Generate tweet content for: ${prompt}`;
     return content;
   }
 
-  async generateMultipleOptions(prompt, style = 'casual', count = 3) {
+  async generateMultipleOptions(prompt, style = 'casual', count = 3, context = {}) {
+    const { userToken = null, userId = null, planType = null } = context || {};
     const results = [];
     const errors = [];
 
     for (let i = 0; i < count; i++) {
       try {
-        const result = await this.generateContent(prompt, style);
+        const result = await this.generateContent(prompt, style, 3, userToken, userId, planType);
         results.push(result);
       } catch (error) {
         errors.push(error.message);
@@ -742,10 +883,20 @@ Generate tweet content for: ${prompt}`;
   }
 
   async generateTweets(params) {
-    const { prompt, provider, style, hashtags, mentions, max_tweets, userId } = params;
+    const {
+      prompt,
+      provider,
+      style,
+      hashtags,
+      mentions,
+      max_tweets,
+      userId,
+      userToken = null,
+      planType = null,
+    } = params;
 
     try {
-      const result = await this.generateContent(prompt, style);
+      const result = await this.generateContent(prompt, style, 3, userToken || null, userId || null, planType || null);
       return [result.content];
     } catch (error) {
       console.error('AI generation failed:', error);
@@ -813,7 +964,14 @@ Generate tweet content for: ${prompt}`;
       aiPrompt = `${prompt}\nGenerate a Twitter thread (3-5 tweets, separated by ---).`;
     }
     
-    const result = await this.generateContent(aiPrompt, style);
+    const result = await this.generateContent(
+      aiPrompt,
+      style,
+      3,
+      options.userToken || null,
+      options.userId || null,
+      options.planType || null
+    );
     
     if (options.isThread) {
       const threadParts = result.content.split(/---+/).map(t => t.trim()).filter(Boolean);

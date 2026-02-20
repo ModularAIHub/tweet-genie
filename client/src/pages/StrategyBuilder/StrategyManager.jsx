@@ -131,7 +131,7 @@ export default function StrategyManager({ onStrategiesChanged, autoCreate = fals
   };
 
   const handleCreateNew = () => {
-    window.location.href = '/strategy-builder?new=true';
+    window.location.href = '/strategy?new=true';
   };
 
   const handleOpenCreateForm = () => {

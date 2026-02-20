@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useAccount } from '../contexts/AccountContext';
 import { credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
+import { hasProPlanAccess } from '../utils/planAccess';
 import AccountSwitcher from './AccountSwitcher';
 import TwitterTokenStatus from './TwitterTokenStatusV2';
 import { isPageVisible } from '../utils/requestCache';
@@ -17,6 +18,7 @@ import {
   X,
   ChevronDown,
   CreditCard,
+  Lock,
   History,
   Sparkles,
 } from 'lucide-react';
@@ -31,17 +33,19 @@ const Layout = ({ children }) => {
   const [creditSource, setCreditSource] = useState('personal');
   const [loadingCredits, setLoadingCredits] = useState(true);
   const hasLoadedCreditsRef = useRef(false);
+  const hasProAccess = hasProPlanAccess(user);
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Compose', href: '/compose', icon: Edit3 },
-    { name: 'Strategy Builder', href: '/strategy', icon: Sparkles, badge: 'New' },
-    { name: 'Bulk Generation', href: '/bulk-generation', icon: BarChart3 },
+    { name: 'Strategy Builder', href: '/strategy', icon: Sparkles, badge: 'New', proOnly: true },
+    { name: 'Bulk Generation', href: '/bulk-generation', icon: BarChart3, proOnly: true },
     { name: 'Scheduling', href: '/scheduling', icon: Calendar },
     { name: 'History', href: '/history', icon: History },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
+  const visibleNavigation = navigation;
 
   const isActive = (href) => location.pathname === href;
 
@@ -144,8 +148,9 @@ const Layout = ({ children }) => {
 
         <nav className="flex-1 mt-6 px-4 overflow-y-auto">
           <ul className="space-y-2">
-            {navigation.map((item) => {
+            {visibleNavigation.map((item) => {
               const Icon = item.icon;
+              const isProLocked = Boolean(item.proOnly && !hasProAccess);
               return (
                 <li key={item.name}>
                   <Link
@@ -161,11 +166,25 @@ const Layout = ({ children }) => {
                       <Icon className="mr-3 h-5 w-5" />
                       {item.name}
                     </div>
-                    {item.badge && (
-                      <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-full">
-                        {item.badge}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {item.badge && (
+                        <span className="px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-full">
+                          {item.badge}
+                        </span>
+                      )}
+                      {item.proOnly && (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                            isProLocked
+                              ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                              : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                          }`}
+                        >
+                          {isProLocked && <Lock className="h-3 w-3" />}
+                          Pro
+                        </span>
+                      )}
+                    </div>
                   </Link>
                 </li>
               );

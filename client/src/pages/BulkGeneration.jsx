@@ -6,7 +6,11 @@ import { Switch } from '@headlessui/react';
 import { ai, tweets, scheduling } from '../utils/api';
 import dayjs from 'dayjs';
 import moment from 'moment-timezone';
+import { Lock } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import { hasProPlanAccess } from '../utils/planAccess';
+import { getSuiteGenieProUpgradeUrl } from '../utils/upgradeUrl';
 
 const BULK_GENERATION_SEED_KEY = 'bulkGenerationSeed';
 const MAX_BULK_PROMPTS = 30;
@@ -15,6 +19,9 @@ const RECOMMENDED_SCHEDULING_WINDOW_DAYS = 14;
 const PROMPT_LIMIT_WARNING = `Only the first ${MAX_BULK_PROMPTS} prompts will be used.`;
 
 const BulkGeneration = () => {
+  const { user } = useAuth();
+  const hasProAccess = hasProPlanAccess(user);
+  const upgradeUrl = getSuiteGenieProUpgradeUrl();
   const location = useLocation();
   const hasAppliedSeedRef = useRef(false);
   const outputSectionRef = useRef(null);
@@ -549,6 +556,37 @@ const handleGenerate = async () => {
   const handleImageChange = (draftId, files) => {
     setImagesMap(prev => ({ ...prev, [draftId]: Array.from(files) }));
   };
+
+  if (!hasProAccess) {
+    return (
+      <div className="max-w-5xl mx-auto py-8 px-4 min-h-[70vh] space-y-6">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6">
+          <div className="flex items-start gap-3">
+            <Lock className="h-6 w-6 text-amber-700 mt-0.5" />
+            <div>
+              <h1 className="text-2xl font-bold text-amber-900">Bulk Generation is a Pro feature</h1>
+              <p className="mt-2 text-sm text-amber-800">
+                You can access this page on Free, but generating bulk tweets and threads requires Pro.
+                Upgrade to unlock up to {MAX_BULK_PROMPTS} prompts per run, scheduling, and faster content planning.
+              </p>
+              <a href={upgradeUrl} className="btn btn-primary mt-4 inline-flex items-center">
+                Upgrade to Pro
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-200 bg-white p-6">
+          <h2 className="text-lg font-semibold text-gray-900">What you will unlock</h2>
+          <ul className="mt-3 text-sm text-gray-700 space-y-2">
+            <li>Generate tweets and threads from multiple prompts in one run.</li>
+            <li>Schedule generated content in bulk with posting cadence control.</li>
+            <li>Reuse prompts from Strategy Builder to plan content faster.</li>
+          </ul>
+        </div>
+      </div>
+    );
+  }
 
 
   return (

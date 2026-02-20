@@ -1,6 +1,7 @@
 import express from 'express';
 import { imageGenerationService } from '../services/imageGenerationService.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { resolveRequestPlanType } from '../middleware/planAccess.js';
 import { creditService } from '../services/creditService.js';
 
 const router = express.Router();
@@ -10,6 +11,14 @@ const handleImageGeneration = async (req, res) => {
   try {
     const { prompt, style = 'natural' } = req.body;
     const userId = req.user.id;
+    const userPlanType = await resolveRequestPlanType(req);
+
+    if (userPlanType === 'free') {
+      return res.status(403).json({
+        success: false,
+        error: 'Image generation is available on Pro and above only. Upgrade your plan to continue.'
+      });
+    }
 
     console.log('Image generation request received:');
     console.log('- Raw body:', JSON.stringify(req.body));

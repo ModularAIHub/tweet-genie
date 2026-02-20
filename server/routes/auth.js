@@ -2,6 +2,7 @@ import express from 'express';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import { authenticateToken } from '../middleware/auth.js';
+import { resolveRequestPlanType } from '../middleware/planAccess.js';
 import { setAuthCookies, clearAuthCookies } from '../utils/cookieUtils.js';
 
 const router = express.Router();
@@ -138,10 +139,26 @@ router.post('/callback', async (req, res) => {
 });
 
 // Validate authentication and attempt refresh if needed
-router.get('/validate', authenticateToken, (req, res) => {
+router.get('/validate', authenticateToken, async (req, res) => {
+  const resolvedPlanType = await resolveRequestPlanType(req);
+  const baseUser =
+    req.user?.user && typeof req.user.user === 'object'
+      ? { ...req.user.user }
+      : { ...(req.user || {}) };
+
+  const normalizedUser = {
+    ...baseUser,
+    id: baseUser.id || req.user?.id || req.user?.userId || null,
+    userId: baseUser.userId || req.user?.userId || req.user?.id || null,
+    email: baseUser.email || req.user?.email || null,
+    name: baseUser.name || req.user?.name || '',
+    plan_type: resolvedPlanType,
+    planType: resolvedPlanType,
+  };
+
   res.json({
     success: true,
-    user: req.user
+    user: normalizedUser
   });
 });
 

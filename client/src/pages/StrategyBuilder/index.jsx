@@ -10,12 +10,16 @@ import {
   Plus,
   AlertCircle,
   Wand2,
+  Lock,
   X,
 } from 'lucide-react';
 import ChatInterface from './ChatInterface';
 import StrategyOverview from './StrategyOverview';
 import PromptLibrary from './PromptLibrary';
 import { strategy as strategyApi } from '../../utils/api';
+import { useAuth } from '../../contexts/AuthContext';
+import { hasProPlanAccess } from '../../utils/planAccess';
+import { getSuiteGenieProUpgradeUrl } from '../../utils/upgradeUrl';
 
 const isReconnectRequiredError = (error) =>
   error?.response?.data?.code === 'TWITTER_RECONNECT_REQUIRED' ||
@@ -37,6 +41,9 @@ const STRATEGY_TEMPLATES = [
 ];
 
 const StrategyBuilder = () => {
+  const { user } = useAuth();
+  const hasProAccess = hasProPlanAccess(user);
+  const upgradeUrl = getSuiteGenieProUpgradeUrl();
   const [currentView, setCurrentView] = useState('chat');
   const [strategy, setStrategy] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -141,8 +148,13 @@ const StrategyBuilder = () => {
   };
 
   useEffect(() => {
+    if (!hasProAccess) {
+      setLoading(false);
+      return;
+    }
+
     loadStrategy();
-  }, []);
+  }, [hasProAccess]);
 
   const loadStrategy = async () => {
     try {
@@ -399,6 +411,36 @@ const StrategyBuilder = () => {
       visible: strategy !== null,
     },
   ].filter((tab) => tab.visible);
+
+  if (!hasProAccess) {
+    return (
+      <div className="min-h-[70vh] max-w-4xl mx-auto px-4 py-8 space-y-6">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6">
+          <div className="flex items-start gap-3">
+            <Lock className="h-6 w-6 text-amber-700 mt-0.5" />
+            <div>
+              <h1 className="text-2xl font-bold text-amber-900">Strategy Builder is a Pro feature</h1>
+              <p className="mt-2 text-sm text-amber-800">
+                The page is visible on Free, but creating and managing AI strategy workflows requires Pro.
+              </p>
+              <a href={upgradeUrl} className="btn btn-primary mt-4 inline-flex items-center">
+                Upgrade to Pro
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-gray-200 bg-white p-6">
+          <h2 className="text-lg font-semibold text-gray-900">What you will unlock</h2>
+          <ul className="mt-3 text-sm text-gray-700 space-y-2">
+            <li>Guided AI setup for audience, goals, and strategy direction.</li>
+            <li>Prompt library generation tied to your strategy profile.</li>
+            <li>One-click handoff into Bulk Generation for faster execution.</li>
+          </ul>
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

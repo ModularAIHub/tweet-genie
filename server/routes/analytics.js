@@ -2,6 +2,7 @@ import express from 'express';
 import pool from '../config/database.js';
 import { TwitterApi } from 'twitter-api-v2';
 import { authenticateToken, validateTwitterConnection } from '../middleware/auth.js';
+import { hasProPlanAccess, resolveRequestPlanType, requireProPlan } from '../middleware/planAccess.js';
 import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import { markTweetDeleted } from '../services/tweetRetentionService.js';
 
@@ -16,6 +17,9 @@ const ANALYTICS_PRECOMPUTE_TTL_MS = Number(process.env.ANALYTICS_PRECOMPUTE_TTL_
 const ANALYTICS_DEBUG = process.env.ANALYTICS_DEBUG === 'true';
 const ANALYTICS_CACHE_SCHEMA_VERSION = 'v2';
 const TWEET_ANALYTICS_COLUMNS = ['impressions', 'likes', 'retweets', 'replies', 'quote_count', 'bookmark_count'];
+const FREE_ANALYTICS_DAYS = 7;
+const FREE_TOP_POSTS_LIMIT = 5;
+const PRO_TOP_POSTS_LIMIT = 20;
 
 const getSyncKey = (userId, accountId) => `${userId}:${accountId || 'personal'}`;
 let analyticsSyncStateReady = false;
@@ -377,7 +381,11 @@ router.get('/overview', authenticateToken, async (req, res) => {
     const selectedAccountId = req.headers['x-selected-account-id'];
     const requestTeamId = req.headers['x-team-id'] || null;
     const parsedDays = Number.parseInt(req.query.days, 10);
-    const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 50;
+    const requestedDays = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 30;
+    const planType = await resolveRequestPlanType(req);
+    const isProPlan = hasProPlanAccess(planType);
+    const days = isProPlan ? requestedDays : FREE_ANALYTICS_DAYS;
+    const topPostsLimit = isProPlan ? PRO_TOP_POSTS_LIMIT : FREE_TOP_POSTS_LIMIT;
     const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
 
     if (!twitterScope.connected && twitterScope.mode === 'personal') {
@@ -402,12 +410,20 @@ router.get('/overview', authenticateToken, async (req, res) => {
       });
     }
 
-    analyticsInfo('Analytics overview fetch', { userId, selectedAccountId, days, mode: twitterScope.mode });
+    analyticsInfo('Analytics overview fetch', {
+      userId,
+      selectedAccountId,
+      days,
+      mode: twitterScope.mode,
+      planType,
+      isProPlan,
+    });
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
+    const overviewEndpointKey = isProPlan ? 'overview_pro' : 'overview_free';
     const overviewCacheKey = buildAnalyticsCacheKey({
-      endpoint: 'overview',
+      endpoint: overviewEndpointKey,
       userId,
       days,
       scope: twitterScope,
@@ -472,37 +488,40 @@ router.get('/overview', authenticateToken, async (req, res) => {
     );
     const { rows: tweetMetrics } = await pool.query(tweetMetricsStatement.sql, tweetMetricsStatement.params);
 
-    // Get daily metrics for chart
-    const dailyMetricsStatement = buildScopedStatement(
-      `SELECT
-        DATE(${ANALYTICS_EVENT_TS_SQL}) as date,
-        COUNT(*) as tweets_count,
-        COUNT(CASE WHEN source = 'platform' THEN 1 END) as platform_tweets,
-        COUNT(CASE WHEN source = 'external' THEN 1 END) as external_tweets,
-        COALESCE(SUM(impressions), 0) as impressions,
-        COALESCE(SUM(likes), 0) as likes,
-        COALESCE(SUM(retweets), 0) as retweets,
-        COALESCE(SUM(replies), 0) as replies,
-        COALESCE(SUM(quote_count), 0) as quotes,
-        COALESCE(SUM(bookmark_count), 0) as bookmarks,
-        COALESCE(SUM(${ANALYTICS_ENGAGEMENT_SQL}), 0) as total_engagement,
-        CASE WHEN COALESCE(SUM(impressions), 0) > 0 THEN
-          ROUND((COALESCE(SUM(${ANALYTICS_ENGAGEMENT_SQL}), 0)::DECIMAL / COALESCE(SUM(impressions), 1)::DECIMAL) * 100, 2)
-        ELSE 0 END as engagement_rate,
-        COALESCE(AVG(impressions), 0) as avg_impressions_per_tweet,
-        COALESCE(AVG(likes), 0) as avg_likes_per_tweet
-       FROM tweets
-       WHERE user_id = $1
-       AND ${ANALYTICS_EVENT_TS_SQL} >= $2
-       AND status = 'posted'
-       GROUP BY DATE(${ANALYTICS_EVENT_TS_SQL})
-       ORDER BY date DESC
-       LIMIT $3`,
-      [userId, startDate, days]
-    );
-    const { rows: dailyMetrics } = await pool.query(dailyMetricsStatement.sql, dailyMetricsStatement.params);
+    let dailyMetrics = [];
+    if (isProPlan) {
+      const dailyMetricsStatement = buildScopedStatement(
+        `SELECT
+          DATE(${ANALYTICS_EVENT_TS_SQL}) as date,
+          COUNT(*) as tweets_count,
+          COUNT(CASE WHEN source = 'platform' THEN 1 END) as platform_tweets,
+          COUNT(CASE WHEN source = 'external' THEN 1 END) as external_tweets,
+          COALESCE(SUM(impressions), 0) as impressions,
+          COALESCE(SUM(likes), 0) as likes,
+          COALESCE(SUM(retweets), 0) as retweets,
+          COALESCE(SUM(replies), 0) as replies,
+          COALESCE(SUM(quote_count), 0) as quotes,
+          COALESCE(SUM(bookmark_count), 0) as bookmarks,
+          COALESCE(SUM(${ANALYTICS_ENGAGEMENT_SQL}), 0) as total_engagement,
+          CASE WHEN COALESCE(SUM(impressions), 0) > 0 THEN
+            ROUND((COALESCE(SUM(${ANALYTICS_ENGAGEMENT_SQL}), 0)::DECIMAL / COALESCE(SUM(impressions), 1)::DECIMAL) * 100, 2)
+          ELSE 0 END as engagement_rate,
+          COALESCE(AVG(impressions), 0) as avg_impressions_per_tweet,
+          COALESCE(AVG(likes), 0) as avg_likes_per_tweet
+         FROM tweets
+         WHERE user_id = $1
+         AND ${ANALYTICS_EVENT_TS_SQL} >= $2
+         AND status = 'posted'
+         GROUP BY DATE(${ANALYTICS_EVENT_TS_SQL})
+         ORDER BY date DESC
+         LIMIT $3`,
+        [userId, startDate, days]
+      );
+      const dailyMetricsResult = await pool.query(dailyMetricsStatement.sql, dailyMetricsStatement.params);
+      dailyMetrics = dailyMetricsResult.rows || [];
+    }
 
-    // Get all tweets for analytics (not just top performing)
+    // Get top posts for current timeframe
     const tweetsStatement = buildScopedStatement(
       `SELECT
         id, tweet_id, content,
@@ -523,86 +542,138 @@ router.get('/overview', authenticateToken, async (req, res) => {
        WHERE user_id = $1
        AND ${ANALYTICS_EVENT_TS_SQL} >= $2
        AND status = 'posted'
-       ORDER BY created_at DESC`,
-      [userId, startDate]
+       ORDER BY engagement_score DESC, created_at DESC
+       LIMIT $3`,
+      [userId, startDate, topPostsLimit]
     );
     const { rows: tweets } = await pool.query(tweetsStatement.sql, tweetsStatement.params);
 
-    // Get hourly engagement patterns
-    const hourlyEngagementStatement = buildScopedStatement(
-      `SELECT
-        EXTRACT(HOUR FROM ${ANALYTICS_EVENT_TS_SQL}) as hour,
-        COUNT(*) as tweets_count,
-        COALESCE(AVG(impressions), 0) as avg_impressions,
-        COALESCE(AVG(likes), 0) as avg_likes,
-        COALESCE(AVG(retweets), 0) as avg_retweets,
-        COALESCE(AVG(replies), 0) as avg_replies,
-        COALESCE(AVG(${ANALYTICS_ENGAGEMENT_SQL}), 0) as avg_engagement
-       FROM tweets
-       WHERE user_id = $1 AND ${ANALYTICS_EVENT_TS_SQL} >= $2 AND status = 'posted'
-       GROUP BY EXTRACT(HOUR FROM ${ANALYTICS_EVENT_TS_SQL})
-       ORDER BY avg_engagement DESC`,
-      [userId, startDate]
-    );
-    const { rows: hourlyEngagement } = await pool.query(hourlyEngagementStatement.sql, hourlyEngagementStatement.params);
+    let hourlyEngagement = [];
+    let contentTypeMetrics = [];
+    let previousMetrics = [];
 
-    // Get content type performance
-    const contentTypeStatement = buildScopedStatement(
-      `SELECT
-        ${THREAD_BUCKET_SQL} as content_type,
-        COUNT(*) as tweets_count,
-        COALESCE(AVG(impressions), 0) as avg_impressions,
-        COALESCE(AVG(likes), 0) as avg_likes,
-        COALESCE(AVG(retweets), 0) as avg_retweets,
-        COALESCE(AVG(replies), 0) as avg_replies,
-        COALESCE(AVG(${ANALYTICS_ENGAGEMENT_SQL}), 0) as avg_total_engagement
-       FROM tweets
-       WHERE user_id = $1 AND ${ANALYTICS_EVENT_TS_SQL} >= $2 AND status = 'posted' AND content IS NOT NULL
-       GROUP BY ${THREAD_BUCKET_SQL}`,
-      [userId, startDate]
-    );
-    const { rows: contentTypeMetrics } = await pool.query(contentTypeStatement.sql, contentTypeStatement.params);
+    if (isProPlan) {
+      // Get hourly engagement patterns
+      const hourlyEngagementStatement = buildScopedStatement(
+        `SELECT
+          EXTRACT(HOUR FROM ${ANALYTICS_EVENT_TS_SQL}) as hour,
+          COUNT(*) as tweets_count,
+          COALESCE(AVG(impressions), 0) as avg_impressions,
+          COALESCE(AVG(likes), 0) as avg_likes,
+          COALESCE(AVG(retweets), 0) as avg_retweets,
+          COALESCE(AVG(replies), 0) as avg_replies,
+          COALESCE(AVG(${ANALYTICS_ENGAGEMENT_SQL}), 0) as avg_engagement
+         FROM tweets
+         WHERE user_id = $1 AND ${ANALYTICS_EVENT_TS_SQL} >= $2 AND status = 'posted'
+         GROUP BY EXTRACT(HOUR FROM ${ANALYTICS_EVENT_TS_SQL})
+         ORDER BY avg_engagement DESC`,
+        [userId, startDate]
+      );
+      const hourlyEngagementResult = await pool.query(hourlyEngagementStatement.sql, hourlyEngagementStatement.params);
+      hourlyEngagement = hourlyEngagementResult.rows || [];
 
-    // Get growth metrics (compare with previous period)
-    const previousStartDate = new Date(startDate);
-    previousStartDate.setDate(previousStartDate.getDate() - days);
+      // Get content type performance
+      const contentTypeStatement = buildScopedStatement(
+        `SELECT
+          ${THREAD_BUCKET_SQL} as content_type,
+          COUNT(*) as tweets_count,
+          COALESCE(AVG(impressions), 0) as avg_impressions,
+          COALESCE(AVG(likes), 0) as avg_likes,
+          COALESCE(AVG(retweets), 0) as avg_retweets,
+          COALESCE(AVG(replies), 0) as avg_replies,
+          COALESCE(AVG(${ANALYTICS_ENGAGEMENT_SQL}), 0) as avg_total_engagement
+         FROM tweets
+         WHERE user_id = $1 AND ${ANALYTICS_EVENT_TS_SQL} >= $2 AND status = 'posted' AND content IS NOT NULL
+         GROUP BY ${THREAD_BUCKET_SQL}`,
+        [userId, startDate]
+      );
+      const contentTypeResult = await pool.query(contentTypeStatement.sql, contentTypeStatement.params);
+      contentTypeMetrics = contentTypeResult.rows || [];
 
-    const previousMetricsStatement = buildScopedStatement(
-      `SELECT
-        COUNT(*) as prev_total_tweets,
-        COALESCE(SUM(impressions), 0) as prev_total_impressions,
-        COALESCE(SUM(likes), 0) as prev_total_likes,
-        COALESCE(SUM(retweets), 0) as prev_total_retweets,
-        COALESCE(SUM(replies), 0) as prev_total_replies,
-        COALESCE(SUM(quote_count), 0) as prev_total_quotes,
-        COALESCE(SUM(bookmark_count), 0) as prev_total_bookmarks,
-        COALESCE(SUM(${ANALYTICS_ENGAGEMENT_SQL}), 0) as prev_total_engagement
-       FROM tweets
-       WHERE user_id = $1 AND ${ANALYTICS_EVENT_TS_SQL} >= $2 AND ${ANALYTICS_EVENT_TS_SQL} < $3 AND status = 'posted'`,
-      [userId, previousStartDate, startDate]
-    );
-    const { rows: previousMetrics } = await pool.query(previousMetricsStatement.sql, previousMetricsStatement.params);
+      // Get growth metrics (compare with previous period)
+      const previousStartDate = new Date(startDate);
+      previousStartDate.setDate(previousStartDate.getDate() - days);
+
+      const previousMetricsStatement = buildScopedStatement(
+        `SELECT
+          COUNT(*) as prev_total_tweets,
+          COALESCE(SUM(impressions), 0) as prev_total_impressions,
+          COALESCE(SUM(likes), 0) as prev_total_likes,
+          COALESCE(SUM(retweets), 0) as prev_total_retweets,
+          COALESCE(SUM(replies), 0) as prev_total_replies,
+          COALESCE(SUM(quote_count), 0) as prev_total_quotes,
+          COALESCE(SUM(bookmark_count), 0) as prev_total_bookmarks,
+          COALESCE(SUM(${ANALYTICS_ENGAGEMENT_SQL}), 0) as prev_total_engagement
+         FROM tweets
+         WHERE user_id = $1 AND ${ANALYTICS_EVENT_TS_SQL} >= $2 AND ${ANALYTICS_EVENT_TS_SQL} < $3 AND status = 'posted'`,
+        [userId, previousStartDate, startDate]
+      );
+      const previousMetricsResult = await pool.query(previousMetricsStatement.sql, previousMetricsStatement.params);
+      previousMetrics = previousMetricsResult.rows || [];
+    }
 
     analyticsInfo('Analytics overview data fetched successfully');
 
-    const responsePayload = {
-      disconnected: false,
-      overview: tweetMetrics[0] || {},
-      daily_metrics: dailyMetrics || [],
-      tweets: tweets || [],
-      hourly_engagement: hourlyEngagement || [],
-      content_type_metrics: contentTypeMetrics || [],
-      growth: {
-        current: tweetMetrics[0] || {},
-        previous: previousMetrics[0] || {},
-      },
+    const overviewRow = tweetMetrics[0] || {};
+    const freeOverview = {
+      total_tweets: Number(overviewRow.total_tweets || 0),
+      total_likes: Number(overviewRow.total_likes || 0),
+      total_replies: Number(overviewRow.total_replies || 0),
+      total_retweets: Number(overviewRow.total_retweets || 0),
     };
+
+    const responsePayload = isProPlan
+      ? {
+          disconnected: false,
+          overview: overviewRow,
+          daily_metrics: dailyMetrics,
+          tweets: tweets || [],
+          hourly_engagement: hourlyEngagement,
+          content_type_metrics: contentTypeMetrics,
+          growth: {
+            current: overviewRow,
+            previous: previousMetrics[0] || {},
+          },
+          plan: {
+            planType,
+            pro: true,
+            days,
+            topPostsLimit,
+          },
+        }
+      : {
+          disconnected: false,
+          overview: freeOverview,
+          daily_metrics: [],
+          tweets: tweets || [],
+          hourly_engagement: [],
+          content_type_metrics: [],
+          growth: {
+            current: {},
+            previous: {},
+          },
+          plan: {
+            planType,
+            pro: false,
+            days: FREE_ANALYTICS_DAYS,
+            topPostsLimit: FREE_TOP_POSTS_LIMIT,
+            lockedFeatures: [
+              'daily_trends',
+              'engagement_breakdown',
+              'ai_insights',
+              'content_strategy',
+              'optimal_timing',
+              'recommendations',
+              'sync_latest',
+            ],
+          },
+        };
 
     await setAnalyticsCachedPayload({
       cacheKey: overviewCacheKey,
       userId,
       accountId: normalizeScopeAccountId(twitterScope),
-      endpoint: 'overview',
+      endpoint: overviewEndpointKey,
       days,
       payload: responsePayload,
     });
@@ -621,6 +692,8 @@ router.get('/overview', authenticateToken, async (req, res) => {
 router.get('/sync-status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const planType = await resolveRequestPlanType(req);
+    const isProPlan = hasProPlanAccess(planType);
     const selectedAccountId = req.headers['x-selected-account-id'];
     const requestTeamId = req.headers['x-team-id'] || null;
     const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: requestTeamId });
@@ -631,7 +704,12 @@ router.get('/sync-status', authenticateToken, async (req, res) => {
     return res.json({
       success: true,
       disconnected: !twitterScope.connected && twitterScope.mode === 'personal',
-      syncStatus,
+      syncStatus: isProPlan ? syncStatus : null,
+      plan: {
+        planType,
+        pro: isProPlan,
+        syncLocked: !isProPlan,
+      },
     });
   } catch (error) {
     console.error('Sync status error:', error);
@@ -645,7 +723,7 @@ router.get('/sync-status', authenticateToken, async (req, res) => {
 
 // Sync analytics from Twitter (SEPARATE ROUTE)
 // Enhanced Sync Analytics Route with Proper Rate Limiting
-router.post('/sync', validateTwitterConnection, async (req, res) => {
+router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, async (req, res) => {
   let updatedCount = 0;
   let errorCount = 0;
   const updatedTweetIds = new Set();
@@ -1350,7 +1428,7 @@ router.post('/sync', validateTwitterConnection, async (req, res) => {
 });
 
 // Force refresh metrics for a single tweet card (debug/verification)
-router.post('/tweets/:tweetId/refresh', validateTwitterConnection, async (req, res) => {
+router.post('/tweets/:tweetId/refresh', requireProPlan('Tweet metric refresh'), validateTwitterConnection, async (req, res) => {
   try {
     await ensureTweetAnalyticsColumns();
 
@@ -1542,7 +1620,7 @@ router.get('/debug-tokens', validateTwitterConnection, async (req, res) => {
 });
 
 // Get detailed engagement insights
-router.get('/engagement', authenticateToken, async (req, res) => {
+router.get('/engagement', authenticateToken, requireProPlan('Advanced analytics'), async (req, res) => {
   try {
     await ensureTweetAnalyticsColumns();
 
@@ -1734,7 +1812,7 @@ router.get('/engagement', authenticateToken, async (req, res) => {
 });
 
 // Get follower and reach analytics
-router.get('/audience', authenticateToken, async (req, res) => {
+router.get('/audience', authenticateToken, requireProPlan('Advanced analytics'), async (req, res) => {
   try {
     await ensureTweetAnalyticsColumns();
 

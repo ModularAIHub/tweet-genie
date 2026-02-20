@@ -20,6 +20,7 @@ import {
 } from '../services/tweetRetentionService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 import { buildReconnectRequiredPayload, buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
+import { resolveRequestPlanType } from '../middleware/planAccess.js';
 
 
 // Bulk save generated tweets/threads as drafts
@@ -651,6 +652,7 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
     }
 
     try {
+      const resolvedPlanType = await resolveRequestPlanType(req);
       const generatedTweets = await aiService.generateTweets({
         prompt,
         provider,
@@ -658,7 +660,9 @@ router.post('/ai-generate', validateRequest(aiGenerateSchema), async (req, res) 
         hashtags,
         mentions,
         max_tweets,
-        userId
+        userId,
+        userToken,
+        planType: resolvedPlanType
       });
 
       await pool.query(

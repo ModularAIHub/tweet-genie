@@ -2,6 +2,22 @@ import pool from '../config/database.js';
 import { aiService } from './aiService.js';
 
 class StrategyService {
+  constructor() {
+    this.productScope = 'tweet-genie';
+  }
+
+  withProductScope(metadata = {}) {
+    const baseMetadata =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? metadata
+        : {};
+
+    return {
+      ...baseMetadata,
+      product: this.productScope,
+    };
+  }
+
   stripMarkdownCodeFences(value = '') {
     return String(value)
       .replace(/^```json\s*/i, '')
@@ -674,12 +690,12 @@ class StrategyService {
   }
 
   buildStrategyMetadata(existingMetadata = {}, source = 'manual_edit') {
-    return {
+    return this.withProductScope({
       ...(existingMetadata && typeof existingMetadata === 'object' && !Array.isArray(existingMetadata) ? existingMetadata : {}),
       prompts_stale: true,
       prompts_stale_at: new Date().toISOString(),
       last_strategy_update_source: source,
-    };
+    });
   }
 
   appendWithDuplicateTracking(existingItems = [], incomingItems = [], limit = 20, maxItemLength = 80) {
@@ -743,8 +759,9 @@ class StrategyService {
            topics = $2,
            metadata = $3
        WHERE id = $4
+         AND COALESCE(metadata->>'product', 'tweet-genie') = $5
        RETURNING *`,
-      [appendGoals.merged, appendTopics.merged, updatedMetadata, strategyId]
+      [appendGoals.merged, appendTopics.merged, updatedMetadata, strategyId, this.productScope]
     );
 
     return {
@@ -766,9 +783,10 @@ class StrategyService {
     const { rows } = await pool.query(
       `SELECT * FROM user_strategies 
        WHERE user_id = $1 AND (team_id = $2 OR (team_id IS NULL AND $2 IS NULL))
+       AND COALESCE(metadata->>'product', 'tweet-genie') = $3
        AND status IN ('draft', 'active')
        ORDER BY created_at DESC LIMIT 1`,
-      [userId, teamId]
+      [userId, teamId, this.productScope]
     );
 
     if (rows.length > 0) {
@@ -777,10 +795,10 @@ class StrategyService {
 
     // Create new draft strategy
     const { rows: newRows } = await pool.query(
-      `INSERT INTO user_strategies (user_id, team_id, status)
-       VALUES ($1, $2, 'draft')
+      `INSERT INTO user_strategies (user_id, team_id, status, metadata)
+       VALUES ($1, $2, 'draft', $3)
        RETURNING *`,
-      [userId, teamId]
+      [userId, teamId, this.withProductScope({})]
     );
 
     return newRows[0];
@@ -798,11 +816,13 @@ class StrategyService {
       metadata = {},
     } = data;
 
+    const scopedMetadata = this.withProductScope(metadata);
+
     const { rows } = await pool.query(
       `INSERT INTO user_strategies (user_id, team_id, niche, target_audience, posting_frequency, content_goals, topics, status, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [userId, teamId, niche, target_audience, posting_frequency, content_goals, topics, status, metadata]
+      [userId, teamId, niche, target_audience, posting_frequency, content_goals, topics, status, scopedMetadata]
     );
 
     return rows[0];
@@ -859,11 +879,11 @@ class StrategyService {
     };
 
     // Get strategy
-    const { rows } = await pool.query(
-      `SELECT * FROM user_strategies WHERE id = $1`,
-      [strategyId]
-    );
-    const strategy = rows[0];
+    const strategy = await this.getStrategy(strategyId);
+
+    if (!strategy) {
+      throw new Error('Strategy not found');
+    }
 
     const normalizedUserMessage = String(userMessage || '').trim().toLowerCase();
     const quickSetupRequested =
@@ -1023,8 +1043,9 @@ class StrategyService {
         // Special handling for requesting new topic suggestions
         if (currentStepData.key === 'topics' && wantsSuggestions) {
           const { rows: strategyRows } = await pool.query(
-            `SELECT niche, target_audience, content_goals FROM user_strategies WHERE id = $1`,
-            [strategyId]
+            `SELECT niche, target_audience, content_goals FROM user_strategies WHERE id = $1
+             AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
+            [strategyId, this.productScope]
           );
           const currentStrategy = strategyRows[0];
           
@@ -1039,7 +1060,7 @@ Suggest 5-7 specific, actionable content topics for this niche. Make them concre
 Format: Just list topics separated by commas, no formatting.`;
 
               console.log('User requested topic suggestions for:', currentStrategy.niche);
-              const result = await aiService.generateStrategyContent(topicPrompt, 'professional');
+              const result = await aiService.generateStrategyContent(topicPrompt, 'professional', null, userId);
               console.log('Generated topics result:', result);
               
               // Extract content from result object  
@@ -1101,10 +1122,10 @@ Format: Just list topics separated by commas, no formatting.`;
         }
 
         const updateQuery = currentStepData.isArray
-          ? `UPDATE user_strategies SET ${updateField} = $1 WHERE id = $2`
-          : `UPDATE user_strategies SET ${updateField} = $1 WHERE id = $2`;
+          ? `UPDATE user_strategies SET ${updateField} = $1 WHERE id = $2 AND COALESCE(metadata->>'product', 'tweet-genie') = $3`
+          : `UPDATE user_strategies SET ${updateField} = $1 WHERE id = $2 AND COALESCE(metadata->>'product', 'tweet-genie') = $3`;
         
-        await pool.query(updateQuery, [value, strategyId]);
+        await pool.query(updateQuery, [value, strategyId, this.productScope]);
       }
 
       // Ask next question
@@ -1114,8 +1135,9 @@ Format: Just list topics separated by commas, no formatting.`;
         // For topics step, ALWAYS generate personalized suggestions based on niche
         if (steps[currentStep].key === 'topics') {
           const { rows: strategyRows } = await pool.query(
-            `SELECT niche, target_audience, content_goals FROM user_strategies WHERE id = $1`,
-            [strategyId]
+            `SELECT niche, target_audience, content_goals FROM user_strategies WHERE id = $1
+             AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
+            [strategyId, this.productScope]
           );
           const currentStrategy = strategyRows[0];
           
@@ -1132,7 +1154,7 @@ Format: Just list topics separated by commas, no formatting.`;
 Suggest 5-7 specific, actionable content topics for this niche. Make them concrete and relevant.
 Format: Just list topics separated by commas, no formatting.`;
 
-              const result = await aiService.generateStrategyContent(topicPrompt, 'professional');
+              const result = await aiService.generateStrategyContent(topicPrompt, 'professional', null, userId);
               const elapsed = Date.now() - startTime;
               console.log(`✅ [Step 6] Topics generated in ${elapsed}ms with ${result.provider}`);
               
@@ -1161,8 +1183,9 @@ Format: Just list topics separated by commas, no formatting.`;
       } else {
         // Generate summary
         const { rows: strategyRows } = await pool.query(
-          `SELECT * FROM user_strategies WHERE id = $1`,
-          [strategyId]
+          `SELECT * FROM user_strategies WHERE id = $1
+           AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
+          [strategyId, this.productScope]
         );
         const updatedStrategy = strategyRows[0];
 
@@ -1180,8 +1203,9 @@ Format: Just list topics separated by commas, no formatting.`;
         
         // Mark strategy as active
         await pool.query(
-          `UPDATE user_strategies SET status = 'active' WHERE id = $1`,
-          [strategyId]
+          `UPDATE user_strategies SET status = 'active' WHERE id = $1
+           AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
+          [strategyId, this.productScope]
         );
         
         isComplete = true;
@@ -1341,8 +1365,9 @@ Format: Just list topics separated by commas, no formatting.`;
            status = 'active',
            metadata = $5
        WHERE id = $6
+         AND COALESCE(metadata->>'product', 'tweet-genie') = $7
        RETURNING *`,
-      [mergedGoals, mergedTopics, finalPostingFrequency, finalToneStyle, updatedMetadata, strategyId]
+      [mergedGoals, mergedTopics, finalPostingFrequency, finalToneStyle, updatedMetadata, strategyId, this.productScope]
     );
 
     return rows[0];
@@ -1474,8 +1499,9 @@ Format: Just list topics separated by commas, no formatting.`;
       };
 
       await pool.query(
-        `UPDATE user_strategies SET metadata = $1 WHERE id = $2`,
-        [refreshedMetadata, strategyId]
+        `UPDATE user_strategies SET metadata = $1 WHERE id = $2
+         AND COALESCE(metadata->>'product', 'tweet-genie') = $3`,
+        [this.withProductScope(refreshedMetadata), strategyId, this.productScope]
       );
 
       return {
@@ -1492,8 +1518,9 @@ Format: Just list topics separated by commas, no formatting.`;
   // Get strategy by ID
   async getStrategy(strategyId) {
     const { rows } = await pool.query(
-      `SELECT * FROM user_strategies WHERE id = $1`,
-      [strategyId]
+      `SELECT * FROM user_strategies WHERE id = $1
+       AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
+      [strategyId, this.productScope]
     );
     return rows[0] || null;
   }
@@ -1503,8 +1530,9 @@ Format: Just list topics separated by commas, no formatting.`;
     const { rows } = await pool.query(
       `SELECT * FROM user_strategies 
        WHERE user_id = $1 AND (team_id = $2 OR (team_id IS NULL AND $2 IS NULL))
+       AND COALESCE(metadata->>'product', 'tweet-genie') = $3
        ORDER BY created_at DESC`,
-      [userId, teamId]
+      [userId, teamId, this.productScope]
     );
     return rows;
   }
@@ -1597,8 +1625,11 @@ Format: Just list topics separated by commas, no formatting.`;
     const values = [strategyId, ...fields.map(f => nextUpdates[f])];
 
     const { rows } = await pool.query(
-      `UPDATE user_strategies SET ${setClause} WHERE id = $1 RETURNING *`,
-      values
+      `UPDATE user_strategies SET ${setClause}
+       WHERE id = $1
+         AND COALESCE(metadata->>'product', 'tweet-genie') = $${values.length + 1}
+       RETURNING *`,
+      [...values, this.productScope]
     );
 
     return rows[0];
@@ -1619,8 +1650,10 @@ Format: Just list topics separated by commas, no formatting.`;
   // Delete strategy
   async deleteStrategy(strategyId, userId) {
     await pool.query(
-      `DELETE FROM user_strategies WHERE id = $1 AND user_id = $2`,
-      [strategyId, userId]
+      `DELETE FROM user_strategies
+       WHERE id = $1 AND user_id = $2
+         AND COALESCE(metadata->>'product', 'tweet-genie') = $3`,
+      [strategyId, userId, this.productScope]
     );
   }
 }

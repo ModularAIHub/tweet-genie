@@ -59,6 +59,7 @@ function App() {
                         <Route path="/history" element={<History />} />
                         <Route path="/analytics" element={<Analytics />} />
                         <Route path="/strategy" element={<StrategyBuilder />} />
+                        <Route path="/strategy-builder" element={<Navigate to="/strategy" replace />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/features" element={<Features />} />
                         <Route path="/pricing" element={<Pricing />} />

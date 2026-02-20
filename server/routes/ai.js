@@ -1,6 +1,7 @@
 import express from 'express';
 import { aiService } from '../services/aiService.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { requireProPlan, resolveRequestPlanType } from '../middleware/planAccess.js';
 import { creditService } from '../services/creditService.js';
 import { TeamCreditService } from '../services/teamCreditService.js';
 import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/sanitization.js';
@@ -13,7 +14,7 @@ const MAX_BULK_PROMPTS = 30;
 // Scheduling service import (assume exists, adjust import if needed)
 import { scheduledTweetService } from '../services/scheduledTweetService.js';
 
-router.post('/bulk-generate', authenticateToken, async (req, res) => {
+router.post('/bulk-generate', authenticateToken, requireProPlan('Bulk generation'), async (req, res) => {
   try {
     const { prompts, options, schedule = false, scheduleOptions = {} } = req.body;
     if (!Array.isArray(prompts) || prompts.length === 0) {
@@ -28,6 +29,9 @@ router.post('/bulk-generate', authenticateToken, async (req, res) => {
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
+    const authHeader = req.headers['authorization'];
+    const token = req.cookies?.accessToken || (authHeader && authHeader.split(' ')[1]) || null;
+    const resolvedPlanType = await resolveRequestPlanType(req);
 
     // Synchronously generate content for each prompt
     const results = [];
@@ -36,7 +40,14 @@ router.post('/bulk-generate', authenticateToken, async (req, res) => {
       const prompt = prompts[i];
       const opt = options && options[i] ? options[i] : {};
       try {
-        const result = await aiService.generateContent(prompt, opt.style || 'casual');
+        const result = await aiService.generateContent(
+          prompt,
+          opt.style || 'casual',
+          3,
+          token,
+          userId,
+          resolvedPlanType
+        );
         results.push({ success: true, result });
         // If scheduling is requested, schedule the tweet/thread
         if (schedule) {
@@ -128,6 +139,7 @@ router.post('/generate', authenticateToken, async (req, res) => {
       const authHeader = req.headers['authorization'];
       token = authHeader && authHeader.split(' ')[1];
     }
+    const resolvedPlanType = await resolveRequestPlanType(req);
     
     // Use TeamCreditService for context-aware credit deduction
     const creditCheck = await TeamCreditService.checkCredits(req.user.id, teamId, estimatedCreditsNeeded);
@@ -166,7 +178,16 @@ router.post('/generate', authenticateToken, async (req, res) => {
     // First generate the content to analyze thread count
     let result;
     try {
-      result = await aiService.generateContent(sanitizedPrompt, style, 3, req.cookies?.accessToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) || null, req.user.id);
+      result = await aiService.generateContent(
+        sanitizedPrompt,
+        style,
+        3,
+        req.cookies?.accessToken ||
+          (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) ||
+          null,
+        req.user.id,
+        resolvedPlanType
+      );
     } catch (aiError) {
       // Refund credits if AI generation fails
       console.error('AI generation failed, refunding credits:', estimatedCreditsNeeded);
@@ -339,6 +360,7 @@ router.post('/generate-options', authenticateToken, async (req, res) => {
       const authHeader = req.headers['authorization'];
       token = authHeader && authHeader.split(' ')[1];
     }
+    const resolvedPlanType = await resolveRequestPlanType(req);
     
     const creditCheck = await creditService.checkAndDeductCredits(req.user.id, 'ai_text_generation_multiple', creditsRequired, token);
     if (!creditCheck.success) {
@@ -352,7 +374,11 @@ router.post('/generate-options', authenticateToken, async (req, res) => {
 
     console.log(`AI multiple options request: "${sanitizedPrompt}" with style: ${style}, count: ${count}`);
 
-    const result = await aiService.generateMultipleOptions(sanitizedPrompt, style, count);
+    const result = await aiService.generateMultipleOptions(sanitizedPrompt, style, count, {
+      userToken: token,
+      userId: req.user.id,
+      planType: resolvedPlanType,
+    });
 
     // Use AI-generated options directly (no post-sanitization to prevent [FILTERED])
     const sanitizedOptions = result.options;

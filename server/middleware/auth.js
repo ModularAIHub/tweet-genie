@@ -213,6 +213,34 @@ const getOrCreateInflight = (inflightMap, key, factory) => {
   return promise;
 };
 
+const normalizePlatformUserPayload = (payload) => {
+  if (!payload || typeof payload !== 'object') {
+    return {};
+  }
+
+  if (payload.user && typeof payload.user === 'object') {
+    return payload.user;
+  }
+
+  return payload;
+};
+
+const buildJwtFallbackUser = (decoded, overrides = {}) => {
+  const fallbackPlanType = decoded?.planType || decoded?.plan_type || null;
+  const fallbackCredits = Number(decoded?.creditsRemaining || decoded?.credits_remaining || 0);
+
+  return {
+    id: decoded?.userId || null,
+    email: decoded?.email || '',
+    name: decoded?.name || '',
+    plan_type: fallbackPlanType,
+    planType: fallbackPlanType,
+    credits_remaining: fallbackCredits,
+    creditsRemaining: fallbackCredits,
+    ...overrides,
+  };
+};
+
 const normalizeTeamMembership = (membership = {}) => ({
   teamId: membership.teamId || membership.team_id,
   role: membership.role || 'member',
@@ -311,11 +339,7 @@ export const authenticateToken = async (req, res, next) => {
 
     if (hasFreshCacheEntry(platformCacheEntry, now)) {
       bumpPerf('platformCacheHit');
-      req.user = {
-        id: decoded.userId,
-        email: decoded.email,
-        ...platformCacheEntry.value,
-      };
+      req.user = buildJwtFallbackUser(decoded, platformCacheEntry.value);
       platformSource = 'cache';
     } else {
       bumpPerf('platformCacheMiss');
@@ -333,7 +357,7 @@ export const authenticateToken = async (req, res, next) => {
         recordPerfDuration('platformLookup', Date.now() - platformLookupStart);
         bumpPerf('platformNetworkSuccess');
 
-        const platformUser = response.data || {};
+        const platformUser = normalizePlatformUserPayload(response.data);
         setCacheEntry(
           platformUserCache,
           token,
@@ -342,11 +366,7 @@ export const authenticateToken = async (req, res, next) => {
           AUTH_PLATFORM_CACHE_MAX_ENTRIES
         );
 
-        req.user = {
-          id: decoded.userId,
-          email: decoded.email,
-          ...platformUser,
-        };
+        req.user = buildJwtFallbackUser(decoded, platformUser);
         platformSource = 'network';
       } catch (platformError) {
         recordPerfDuration('platformLookup', Date.now() - platformLookupStart);
@@ -364,28 +384,18 @@ export const authenticateToken = async (req, res, next) => {
 
         if (canUseStaleCache) {
           bumpPerf('platformStaleFallbackHit');
-          req.user = {
-            id: decoded.userId,
-            email: decoded.email,
-            ...platformCacheEntry.value,
-          };
+          req.user = buildJwtFallbackUser(decoded, platformCacheEntry.value);
           platformSource = 'stale-cache';
         } else if (isTimeout) {
           bumpPerf('platformTimeoutFallback');
-          req.user = {
-            id: decoded.userId,
-            email: decoded.email,
-            name: decoded.name || '',
+          req.user = buildJwtFallbackUser(decoded, {
             team_id: null,
             teamMemberships: [],
-          };
+          });
           platformSource = 'jwt-timeout-fallback';
         } else if (!isHtmlRequest(req)) {
           bumpPerf('platformApiFallback');
-          req.user = {
-            id: decoded.userId,
-            email: decoded.email,
-          };
+          req.user = buildJwtFallbackUser(decoded);
           platformSource = 'jwt-api-fallback';
         } else if (platformError.response?.status === 401 || platformError.response?.status === 403) {
           bumpPerf('platformAuthRedirects');
@@ -394,10 +404,7 @@ export const authenticateToken = async (req, res, next) => {
           return res.redirect(getPlatformLoginUrl(req));
         } else {
           bumpPerf('platformJwtFallback');
-          req.user = {
-            id: decoded.userId,
-            email: decoded.email,
-          };
+          req.user = buildJwtFallbackUser(decoded);
           platformSource = 'jwt-fallback';
         }
       }
@@ -734,4 +741,3 @@ export const validateTwitterConnection = async (req, res, next) => {
     res.status(500).json({ error: 'Failed to validate Twitter connection' });
   }
 };
-

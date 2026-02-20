@@ -2,8 +2,10 @@ import express from 'express';
 import { strategyService } from '../services/strategyService.js';
 import { creditService } from '../services/creditService.js';
 import { aiService } from '../services/aiService.js';
+import { requireProPlan } from '../middleware/planAccess.js';
 
 const router = express.Router();
+router.use(requireProPlan('Strategy Builder'));
 
 const stripMarkdownCodeFences = (value = '') =>
   String(value)

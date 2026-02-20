@@ -8,6 +8,7 @@ import {
   TrendingUp,
   Users,
   MessageCircle,
+  Lock,
   Heart,
   Repeat2,
   Twitter,
@@ -18,17 +19,20 @@ import {
 } from 'lucide-react';
 import { analytics as analyticsAPI, tweets, credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
 import { useAccount } from '../contexts/AccountContext';
+import { useAuth } from '../contexts/AuthContext';
+import { hasProPlanAccess } from '../utils/planAccess';
 import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import LoadingSpinner from '../components/LoadingSpinner';
-import toast from 'react-hot-toast';
 import TeamRedirectHandler from '../components/TeamRedirectHandler';
 import { isPageVisible } from '../utils/requestCache';
 
 const Dashboard = () => {
   // No auto-redirect. User must click Twitter button to start connection.
+  const { user } = useAuth();
   const { selectedAccount, accounts, loading: accountsLoading } = useAccount();
   const totalConnectedAccounts = accounts.length;
   const maxAccounts = 8;
+  const hasProAccess = hasProPlanAccess(user);
 
   const [loading, setLoading] = useState(true);
   const [analyticsData, setAnalyticsData] = useState(null);
@@ -359,16 +363,19 @@ const Dashboard = () => {
       href: '/bulk-generation',
       icon: Layers,
       color: 'from-orange-500 to-red-600',
+      proOnly: true,
     },
     {
       name: 'Strategy Builder',
       description: 'Create data-driven content strategies',
       benefits: ['AI-powered content planning', 'Audience targeting insights', 'Optimize posting schedule'],
-      href: '/strategy-builder',
+      href: '/strategy',
       icon: Target,
       color: 'from-indigo-500 to-purple-600',
+      proOnly: true,
     },
   ];
+  const visiblePowerFeatures = powerFeatures;
 
   return (
     <>
@@ -471,13 +478,14 @@ const Dashboard = () => {
         </div>
 
         {/* Power Features */}
+        {visiblePowerFeatures.length > 0 && (
         <div>
           <div className="flex items-center mb-6">
             <Zap className="h-6 w-6 text-yellow-500 mr-2" />
             <h2 className="text-2xl font-bold text-gray-900">Power Features</h2>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {powerFeatures.map((feature) => {
+            {visiblePowerFeatures.map((feature) => {
               const Icon = feature.icon;
               return (
                 <Link
@@ -486,14 +494,26 @@ const Dashboard = () => {
                   className="card hover:shadow-xl transition-all duration-300 cursor-pointer group overflow-hidden relative"
                 >
                   <div className={`absolute inset-0 bg-gradient-to-br ${feature.color} opacity-0 group-hover:opacity-5 transition-opacity`}></div>
-                  <div className="relative">
-                    <div className="flex items-start space-x-4">
-                      <div className={`p-3 rounded-xl bg-gradient-to-br ${feature.color} group-hover:scale-110 transition-transform shadow-lg`}>
-                        <Icon className="h-7 w-7 text-white" />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="text-xl font-bold text-gray-900 mb-2">
+                    <div className="relative">
+                      <div className="flex items-start space-x-4">
+                        <div className={`p-3 rounded-xl bg-gradient-to-br ${feature.color} group-hover:scale-110 transition-transform shadow-lg`}>
+                          <Icon className="h-7 w-7 text-white" />
+                        </div>
+                        <div className="flex-1">
+                        <h3 className="text-xl font-bold text-gray-900 mb-2 flex items-center gap-2">
                           {feature.name}
+                          {feature.proOnly && (
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full border ${
+                                hasProAccess
+                                  ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+                                  : 'bg-amber-100 text-amber-800 border-amber-200'
+                              }`}
+                            >
+                              {!hasProAccess && <Lock className="h-3 w-3" />}
+                              Pro
+                            </span>
+                          )}
                         </h3>
                         <p className="text-sm text-gray-600 mb-4">
                           {feature.description}
@@ -509,7 +529,7 @@ const Dashboard = () => {
                       </div>
                     </div>
                     <div className="mt-4 flex items-center text-sm font-medium text-primary-600 group-hover:text-primary-700">
-                      <span>Get Started</span>
+                      <span>{feature.proOnly && !hasProAccess ? 'View and Upgrade' : 'Get Started'}</span>
                       <svg className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
@@ -520,6 +540,7 @@ const Dashboard = () => {
             })}
           </div>
         </div>
+        )}
       </div>
     </>
   );

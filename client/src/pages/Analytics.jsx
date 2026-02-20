@@ -7,16 +7,22 @@ import {
   Brain,
   Clock,
   Eye,
+  Heart,
   Lightbulb,
+  Lock,
   MessageCircle,
   RefreshCw,
+  Repeat2,
   Target,
   TrendingUp,
   Users,
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import { useAccount } from '../contexts/AccountContext';
 import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import api, { analytics as analyticsAPI } from '../utils/api';
+import { hasProPlanAccess } from '../utils/planAccess';
+import { getSuiteGenieProUpgradeUrl } from '../utils/upgradeUrl';
 import toast from 'react-hot-toast';
 import {
   buildAiInsights,
@@ -41,7 +47,9 @@ const TimingTab = lazy(() => import('./analytics/TimingTab'));
 const AudienceTab = lazy(() => import('./analytics/AudienceTab'));
 const RecommendationsTab = lazy(() => import('./analytics/RecommendationsTab'));
 
-const DEFAULT_DAYS = 50;
+const DEFAULT_DAYS = 30;
+const FREE_DAYS = 7;
+const PRO_TIMEFRAME_OPTIONS = ['7', '30', '90', '365'];
 const CLIENT_AUTO_SYNC_ENABLED = String(
   import.meta.env.VITE_ANALYTICS_CLIENT_AUTO_SYNC_ENABLED || 'false'
 ).toLowerCase() === 'true';
@@ -53,6 +61,7 @@ const COOLDOWN_TICK_MS = Number(import.meta.env.VITE_ANALYTICS_COOLDOWN_TICK_MS 
 
 const initialAnalyticsState = {
   disconnected: false,
+  plan: null,
   overview: {},
   daily_metrics: [],
   tweets: [],
@@ -68,8 +77,18 @@ const initialAnalyticsState = {
 
 const parseDays = (value) => {
   const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAYS;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_DAYS;
+  }
+  return PRO_TIMEFRAME_OPTIONS.includes(String(parsed)) ? parsed : DEFAULT_DAYS;
 };
+
+const TIMEFRAME_OPTIONS = [
+  { value: '7', label: 'Last 7 days', proOnly: false },
+  { value: '30', label: 'Last 30 days', proOnly: true },
+  { value: '90', label: 'Last 90 days', proOnly: true },
+  { value: '365', label: 'Last 365 days', proOnly: true },
+];
 
 const normalizePayload = (payload) => payload?.data || payload || {};
 
@@ -91,23 +110,26 @@ const isReconnectRequiredError = (error) =>
   error?.response?.data?.reconnect === true;
 
 const Tabs = [
-  { id: 'overview', label: 'Overview', icon: BarChart3 },
-  { id: 'insights', label: 'AI Insights', icon: Brain },
-  { id: 'content', label: 'Content Strategy', icon: Lightbulb },
-  { id: 'timing', label: 'Optimal Timing', icon: Clock },
-  { id: 'audience', label: 'Audience', icon: Users },
-  { id: 'recommendations', label: 'Recommendations', icon: Target },
+  { id: 'overview', label: 'Overview', icon: BarChart3, proOnly: false },
+  { id: 'insights', label: 'AI Insights', icon: Brain, proOnly: true },
+  { id: 'content', label: 'Content Strategy', icon: Lightbulb, proOnly: true },
+  { id: 'timing', label: 'Optimal Timing', icon: Clock, proOnly: true },
+  { id: 'audience', label: 'Audience', icon: Users, proOnly: true },
+  { id: 'recommendations', label: 'Recommendations', icon: Target, proOnly: true },
 ];
 
 const Analytics = () => {
+  const { user } = useAuth();
   const { selectedAccount, accounts, loading: accountLoading } = useAccount();
   const accountAPI = useAccountAwareAPI();
   const isTeamUser = accounts.length > 0;
+  const upgradeUrl = getSuiteGenieProUpgradeUrl();
+  const hasUserProPlan = hasProPlanAccess(user);
 
   const [analyticsData, setAnalyticsData] = useState(initialAnalyticsState);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [timeframe, setTimeframe] = useState(String(DEFAULT_DAYS));
+  const [timeframe, setTimeframe] = useState(String(hasUserProPlan ? DEFAULT_DAYS : FREE_DAYS));
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [updatedTweetIds, setUpdatedTweetIds] = useState(new Set());
@@ -118,12 +140,24 @@ const Analytics = () => {
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [refreshingTweetIds, setRefreshingTweetIds] = useState(new Set());
   const syncInFlightRef = useRef(false);
+  const hasServerProPlan = analyticsData?.plan?.pro === true;
+  const isServerPlanResolved = analyticsData?.plan?.pro === true || analyticsData?.plan?.pro === false;
+  const isProPlan = hasUserProPlan || hasServerProPlan;
+
+  useEffect(() => {
+    if (isServerPlanResolved && !isProPlan && timeframe !== String(FREE_DAYS)) {
+      setTimeframe(String(FREE_DAYS));
+    }
+  }, [isServerPlanResolved, isProPlan, timeframe]);
 
   const fetchSyncStatus = async () => {
     try {
       const response = await api.get('/api/analytics/sync-status');
       if (typeof response.data?.disconnected === 'boolean') {
         setIsDisconnected(response.data.disconnected);
+      }
+      if (response.data?.plan) {
+        setAnalyticsData((prev) => ({ ...prev, plan: response.data.plan }));
       }
       if (response.data?.syncStatus) {
         setSyncStatus(response.data.syncStatus);
@@ -140,33 +174,65 @@ const Analytics = () => {
     }
 
     try {
-      const days = parseDays(timeframe);
+      const requestedDays = parseDays(timeframe);
       const useTeamScope = isTeamUser && !!selectedAccount;
+      const overviewPayload = useTeamScope
+        ? await normalizeTeamResponse(accountAPI.getAnalytics(`${requestedDays}d`))
+        : await analyticsAPI.getOverviewCached({ days: requestedDays }).then((res) => normalizePayload(res.data));
+      const backendPlan = overviewPayload?.plan || null;
+      const backendIsPro = backendPlan?.pro === true;
+      const effectiveIsPro = isProPlan || backendIsPro;
+      const disconnected = Boolean(overviewPayload?.disconnected);
+      const backendWarnings = Array.isArray(overviewPayload?.warnings) ? overviewPayload.warnings : [];
 
+      if (backendWarnings.length > 0) {
+        const warningSummary = Array.from(new Set(backendWarnings)).join(', ');
+        setError(`Analytics is using partial data for: ${warningSummary}.`);
+      }
+
+      if (!effectiveIsPro) {
+        setAnalyticsData({
+          disconnected,
+          plan:
+            backendPlan || {
+              planType: 'free',
+              pro: false,
+              days: FREE_DAYS,
+            },
+          overview: overviewPayload?.overview || {},
+          daily_metrics: [],
+          tweets: overviewPayload?.tweets || [],
+          hourly_engagement: [],
+          content_type_metrics: [],
+          growth: { current: {}, previous: {} },
+          engagement_patterns: [],
+          optimal_times: [],
+          content_insights: [],
+          reach_metrics: [],
+          engagement_distribution: [],
+        });
+        setIsDisconnected(disconnected);
+        return;
+      }
+
+      const days = requestedDays;
       const requests = useTeamScope
         ? [
-            normalizeTeamResponse(accountAPI.getAnalytics(`${days}d`)),
             normalizeTeamResponse(accountAPI.getEngagementAnalytics(`${days}d`)),
             normalizeTeamResponse(accountAPI.getAudienceAnalytics(`${days}d`)),
           ]
         : [
-            analyticsAPI.getOverviewCached({ days }).then((res) => normalizePayload(res.data)),
             analyticsAPI.getEngagementCached({ days }).then((res) => normalizePayload(res.data)),
             analyticsAPI.getAudienceCached({ days }).then((res) => normalizePayload(res.data)),
           ];
 
-      const [overviewResult, engagementResult, audienceResult] = await Promise.allSettled(requests);
-      const failures = [overviewResult, engagementResult, audienceResult].filter((entry) => entry.status === 'rejected');
-
-      if (failures.length === 3) {
-        throw failures[0].reason;
-      }
+      const [engagementResult, audienceResult] = await Promise.allSettled(requests);
+      const failures = [engagementResult, audienceResult].filter((entry) => entry.status === 'rejected');
 
       if (failures.length > 0) {
         setError('Some analytics sections are temporarily unavailable. Showing available data.');
       }
 
-      const overviewPayload = overviewResult.status === 'fulfilled' ? overviewResult.value : {};
       const engagementPayload =
         engagementResult.status === 'fulfilled'
           ? engagementResult.value
@@ -176,22 +242,28 @@ const Analytics = () => {
           ? audienceResult.value
           : { reach_metrics: [], engagement_distribution: [] };
 
-      const disconnected = Boolean(
+      const mergedDisconnected = Boolean(
         overviewPayload?.disconnected || engagementPayload?.disconnected || audiencePayload?.disconnected
       );
-      const backendWarnings = [
+      const mergedWarnings = [
         ...(Array.isArray(overviewPayload?.warnings) ? overviewPayload.warnings : []),
         ...(Array.isArray(engagementPayload?.warnings) ? engagementPayload.warnings : []),
         ...(Array.isArray(audiencePayload?.warnings) ? audiencePayload.warnings : []),
       ];
 
-      if (backendWarnings.length > 0) {
-        const warningSummary = Array.from(new Set(backendWarnings)).join(', ');
+      if (mergedWarnings.length > 0) {
+        const warningSummary = Array.from(new Set(mergedWarnings)).join(', ');
         setError(`Analytics is using partial data for: ${warningSummary}.`);
       }
 
       setAnalyticsData({
-        disconnected,
+        disconnected: mergedDisconnected,
+        plan:
+          backendPlan || {
+            planType: hasUserProPlan ? 'pro' : 'free',
+            pro: true,
+            days,
+          },
         overview: overviewPayload?.overview || {},
         daily_metrics: overviewPayload?.daily_metrics || [],
         tweets: overviewPayload?.tweets || [],
@@ -204,7 +276,7 @@ const Analytics = () => {
         reach_metrics: audiencePayload?.reach_metrics || [],
         engagement_distribution: audiencePayload?.engagement_distribution || [],
       });
-      setIsDisconnected(disconnected);
+      setIsDisconnected(mergedDisconnected);
     } catch (fetchError) {
       console.error('Failed to fetch analytics:', fetchError);
 
@@ -228,6 +300,14 @@ const Analytics = () => {
 
   const syncAnalytics = async ({ silent = false, auto = false } = {}) => {
     if (syncInFlightRef.current) {
+      return;
+    }
+
+    if (!isProPlan) {
+      if (!silent) {
+        setError('Sync Latest is available on Pro. Upgrade to enable real-time sync.');
+        toast.error('Sync Latest is available on Pro. Upgrade to continue.');
+      }
       return;
     }
 
@@ -388,6 +468,10 @@ const Analytics = () => {
   const forceRefreshTweetMetrics = async (tweetDbId) => {
     if (!tweetDbId) return;
     if (refreshingTweetIds.has(tweetDbId)) return;
+    if (!isProPlan) {
+      toast.error('Tweet metric refresh is available on Pro and above.');
+      return;
+    }
 
     if (isDisconnected) {
       setError('Twitter is disconnected. Please reconnect your account in Settings.');
@@ -434,13 +518,13 @@ const Analytics = () => {
     fetchAnalytics();
     fetchSyncStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeframe, selectedAccount?.id, isTeamUser, accountLoading]);
+  }, [timeframe, selectedAccount?.id, isTeamUser, accountLoading, isProPlan, hasUserProPlan]);
 
   useEffect(() => {
     setUpdatedTweetIds(new Set());
     setSkippedTweetIds(new Set());
     setSyncSummary(null);
-  }, [timeframe, selectedAccount?.id, isTeamUser]);
+  }, [timeframe, selectedAccount?.id, isTeamUser, isProPlan]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(Date.now()), COOLDOWN_TICK_MS);
@@ -473,10 +557,10 @@ const Analytics = () => {
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountLoading, isDisconnected, timeframe, selectedAccount?.id, isTeamUser]);
+  }, [accountLoading, isDisconnected, timeframe, selectedAccount?.id, isTeamUser, isProPlan]);
 
   useEffect(() => {
-    if (!CLIENT_AUTO_SYNC_ENABLED || accountLoading || isDisconnected) {
+    if (!CLIENT_AUTO_SYNC_ENABLED || accountLoading || isDisconnected || !isProPlan) {
       return;
     }
 
@@ -493,7 +577,7 @@ const Analytics = () => {
       clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountLoading, isDisconnected, timeframe, selectedAccount?.id, isTeamUser]);
+  }, [accountLoading, isDisconnected, timeframe, selectedAccount?.id, isTeamUser, isProPlan]);
 
   const overview = analyticsData.overview || {};
   const growth = analyticsData.growth || {};
@@ -505,7 +589,7 @@ const Analytics = () => {
   const optimalTimes = analyticsData.optimal_times || [];
   const reachMetrics = analyticsData.reach_metrics || [];
   const engagementDistribution = analyticsData.engagement_distribution || [];
-  const timeframeDays = parseDays(timeframe);
+  const timeframeDays = isProPlan ? parseDays(timeframe) : FREE_DAYS;
 
   const growthMetrics = useMemo(() => buildGrowthMetrics(overview, growth), [overview, growth]);
   const contentComparison = useMemo(() => buildContentComparison(contentTypeMetrics), [contentTypeMetrics]);
@@ -612,73 +696,127 @@ const Analytics = () => {
   }, [overview, growthMetrics, audienceSummary.noReachShare, timeframeDays]);
 
   const enhancedStats = useMemo(
-    () => [
-      {
-        name: 'Total Tweets',
-        value: toNumber(overview.total_tweets),
-        icon: MessageCircle,
-        color: 'text-blue-600',
-        bgColor: 'bg-blue-50',
-        growth: growthMetrics.tweets,
-        subtitle: 'Published tweets',
-      },
-      {
-        name: 'Total Impressions',
-        value: toNumber(overview.total_impressions),
-        icon: Eye,
-        color: 'text-green-600',
-        bgColor: 'bg-green-50',
-        growth: growthMetrics.impressions,
-        subtitle: 'Total reach',
-      },
-      {
-        name: 'Total Engagement',
-        value: toNumber(overview.total_engagement),
-        icon: Activity,
-        color: 'text-purple-600',
-        bgColor: 'bg-purple-50',
-        growth: growthMetrics.engagement,
-        subtitle: 'Likes + Retweets + Replies',
-      },
-      {
-        name: 'Engagement Rate',
-        value: `${toNumber(overview.engagement_rate).toFixed(1)}%`,
-        icon: Target,
-        color: 'text-orange-600',
-        bgColor: 'bg-orange-50',
-        growth: null,
-        subtitle: 'Average engagement rate',
-      },
-      {
-        name: 'Avg Impressions',
-        value: Math.round(toNumber(overview.avg_impressions)),
-        icon: TrendingUp,
-        color: 'text-indigo-600',
-        bgColor: 'bg-indigo-50',
-        growth: null,
-        subtitle: 'Per tweet',
-      },
-      {
-        name: 'Top Tweet Reach',
-        value: toNumber(overview.max_impressions),
-        icon: Award,
-        color: 'text-red-600',
-        bgColor: 'bg-red-50',
-        growth: null,
-        subtitle: 'Best performing tweet',
-      },
-    ],
-    [overview, growthMetrics]
+    () => {
+      if (!isProPlan) {
+        return [
+          {
+            name: 'Total Posts',
+            value: toNumber(overview.total_tweets),
+            icon: MessageCircle,
+            color: 'text-blue-600',
+            bgColor: 'bg-blue-50',
+            growth: null,
+            subtitle: 'Last 7 days',
+          },
+          {
+            name: 'Total Likes',
+            value: toNumber(overview.total_likes),
+            icon: Heart,
+            color: 'text-red-600',
+            bgColor: 'bg-red-50',
+            growth: null,
+            subtitle: 'Last 7 days',
+          },
+          {
+            name: 'Total Comments',
+            value: toNumber(overview.total_replies),
+            icon: Activity,
+            color: 'text-purple-600',
+            bgColor: 'bg-purple-50',
+            growth: null,
+            subtitle: 'Last 7 days',
+          },
+          {
+            name: 'Total Shares',
+            value: toNumber(overview.total_retweets),
+            icon: Repeat2,
+            color: 'text-green-600',
+            bgColor: 'bg-green-50',
+            growth: null,
+            subtitle: 'Last 7 days',
+          },
+        ];
+      }
+
+      return [
+        {
+          name: 'Total Tweets',
+          value: toNumber(overview.total_tweets),
+          icon: MessageCircle,
+          color: 'text-blue-600',
+          bgColor: 'bg-blue-50',
+          growth: growthMetrics.tweets,
+          subtitle: 'Published tweets',
+        },
+        {
+          name: 'Total Impressions',
+          value: toNumber(overview.total_impressions),
+          icon: Eye,
+          color: 'text-green-600',
+          bgColor: 'bg-green-50',
+          growth: growthMetrics.impressions,
+          subtitle: 'Total reach',
+        },
+        {
+          name: 'Total Engagement',
+          value: toNumber(overview.total_engagement),
+          icon: Activity,
+          color: 'text-purple-600',
+          bgColor: 'bg-purple-50',
+          growth: growthMetrics.engagement,
+          subtitle: 'Likes + Retweets + Replies',
+        },
+        {
+          name: 'Engagement Rate',
+          value: `${toNumber(overview.engagement_rate).toFixed(1)}%`,
+          icon: Target,
+          color: 'text-orange-600',
+          bgColor: 'bg-orange-50',
+          growth: null,
+          subtitle: 'Average engagement rate',
+        },
+        {
+          name: 'Avg Impressions',
+          value: Math.round(toNumber(overview.avg_impressions)),
+          icon: TrendingUp,
+          color: 'text-indigo-600',
+          bgColor: 'bg-indigo-50',
+          growth: null,
+          subtitle: 'Per tweet',
+        },
+        {
+          name: 'Top Tweet Reach',
+          value: toNumber(overview.max_impressions),
+          icon: Award,
+          color: 'text-red-600',
+          bgColor: 'bg-red-50',
+          growth: null,
+          subtitle: 'Best performing tweet',
+        },
+      ];
+    },
+    [overview, growthMetrics, isProPlan]
   );
 
   const nextAllowedAtMs = syncStatus?.nextAllowedAt ? new Date(syncStatus.nextAllowedAt).getTime() : 0;
   const cooldownRemainingMs = Math.max(0, nextAllowedAtMs - currentTime);
   const cooldownMinutes = Math.max(1, Math.ceil(cooldownRemainingMs / 60000));
   const isCooldownActive = cooldownRemainingMs > 0;
-  const syncButtonDisabled = syncing || syncStatus?.inProgress || isCooldownActive;
+  const syncButtonDisabled = isProPlan && (syncing || syncStatus?.inProgress || isCooldownActive);
   const nextAllowedLabel = syncStatus?.nextAllowedAt
     ? new Date(syncStatus.nextAllowedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
+  const activeTabConfig = Tabs.find((tab) => tab.id === activeTab) || Tabs[0];
+  const isActiveTabLocked = Boolean(activeTabConfig?.proOnly && !isProPlan);
+
+  const handleSyncButtonClick = () => {
+    if (!isProPlan) {
+      setError('Sync Latest is available on Pro. Upgrade to enable real-time sync.');
+      toast.error('Sync Latest is available on Pro. Upgrade to continue.');
+      return;
+    }
+    syncAnalytics();
+  };
 
   if (loading) {
     return (
@@ -711,31 +849,53 @@ const Analytics = () => {
           <p className="mt-2 text-gray-600">Data-driven performance intelligence for your Twitter growth.</p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col items-start gap-2">
+          <div className="flex items-center gap-3">
           <select
             className="input w-auto"
             value={timeframe}
             onChange={(event) => setTimeframe(String(event.target.value))}
           >
-            <option value="7">Last 7 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="50">Last 50 days</option>
-            <option value="90">Last 90 days</option>
+            {TIMEFRAME_OPTIONS.map((option) => {
+              const isLocked = option.proOnly && !isProPlan;
+              return (
+                <option key={option.value} value={option.value} disabled={isLocked}>
+                  {option.label}
+                  {isLocked ? ' (Pro)' : ''}
+                </option>
+              );
+            })}
           </select>
 
           <button
             type="button"
-            onClick={syncAnalytics}
+            onClick={handleSyncButtonClick}
             disabled={syncButtonDisabled}
             className={`btn btn-primary ${syncButtonDisabled ? 'opacity-60 cursor-not-allowed' : ''}`}
           >
-            <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Syncing...' : syncStatus?.inProgress ? 'Sync in progress' : 'Sync Analytics'}
+            {isProPlan ? (
+              <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
+            ) : (
+              <Lock className="h-4 w-4 mr-2" />
+            )}
+            {isProPlan
+              ? syncing
+                ? 'Syncing...'
+                : syncStatus?.inProgress
+                  ? 'Sync in progress'
+                  : 'Sync Latest'
+              : 'Sync Latest (Pro)'}
           </button>
+          </div>
+          {!isProPlan && (
+            <p className="text-xs text-amber-700">
+              Free plan includes last 7 days only. Upgrade to unlock 30/90/365 day ranges and real-time sync.
+            </p>
+          )}
         </div>
       </div>
 
-      {(syncSummary || syncStatus) && (
+      {isProPlan && (syncSummary || syncStatus) && (
         <div className="card border border-blue-100 bg-blue-50/60">
           <div className="text-sm text-blue-900 space-y-2">
             {syncSummary && (
@@ -768,6 +928,19 @@ const Analytics = () => {
           </div>
         </div>
       )}
+      {!isProPlan && (
+        <div className="card border border-amber-200 bg-amber-50/70">
+          <div className="flex items-start gap-3 text-amber-900">
+            <Lock className="h-5 w-5 mt-0.5 flex-shrink-0" />
+            <div className="text-sm">
+              <p className="font-semibold">Advanced analytics is locked on Free.</p>
+              <p>
+                Upgrade to Pro for trend charts, AI insights, timing intelligence, recommendations, and Sync Latest.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="card border border-red-200 bg-red-50 text-red-800">
@@ -783,17 +956,35 @@ const Analytics = () => {
           {Tabs.map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
+            const locked = tab.proOnly && !isProPlan;
             return (
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  if (locked) {
+                    toast.error(`${tab.label} is available on Pro. Upgrade to unlock it.`);
+                  }
+                }}
                 className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  active ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  active
+                    ? locked
+                      ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                      : 'bg-blue-600 text-white'
+                    : locked
+                      ? 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
               >
                 <Icon className="h-4 w-4 mr-2" />
                 {tab.label}
+                {locked && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide">
+                    <Lock className="h-3 w-3" />
+                    Pro
+                  </span>
+                )}
               </button>
             );
           })}
@@ -809,13 +1000,32 @@ const Analytics = () => {
           </div>
         }
       >
-        {activeTab === 'overview' && (
+        {isActiveTabLocked && (
+          <div className="card border border-amber-200 bg-amber-50">
+            <div className="flex items-start gap-3">
+              <Lock className="h-5 w-5 text-amber-700 mt-0.5" />
+              <div>
+                <h3 className="text-lg font-semibold text-amber-900">{activeTabConfig.label} is a Pro feature</h3>
+                <p className="text-sm text-amber-800 mt-1">
+                  Upgrade to Pro to unlock this analytics module and act on deeper performance data.
+                </p>
+                <a href={upgradeUrl} className="btn btn-primary mt-4 inline-flex items-center">
+                  Upgrade to Pro
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isActiveTabLocked && activeTab === 'overview' && (
           <OverviewTab
             stats={enhancedStats}
             chartData={chartData}
             hourlyData={hourlyData}
             topTweets={topTweets}
             timeframe={timeframe}
+            isProPlan={isProPlan}
+            showAdvancedCharts={isProPlan}
             updatedTweetIds={updatedTweetIds}
             skippedTweetIds={skippedTweetIds}
             refreshingTweetIds={refreshingTweetIds}
@@ -823,7 +1033,7 @@ const Analytics = () => {
           />
         )}
 
-        {activeTab === 'insights' && (
+        {!isActiveTabLocked && activeTab === 'insights' && (
           <InsightsTab
             aiInsights={aiInsights}
             performanceScore={performanceScore}
@@ -832,7 +1042,7 @@ const Analytics = () => {
           />
         )}
 
-        {activeTab === 'content' && (
+        {!isActiveTabLocked && activeTab === 'content' && (
           <ContentTab
             contentComparison={contentComparison}
             engagementPatterns={engagementPatterns}
@@ -840,7 +1050,7 @@ const Analytics = () => {
           />
         )}
 
-        {activeTab === 'timing' && (
+        {!isActiveTabLocked && activeTab === 'timing' && (
           <TimingTab
             hourlyData={hourlyData}
             dayPerformance={dayPerformance}
@@ -848,7 +1058,7 @@ const Analytics = () => {
           />
         )}
 
-        {activeTab === 'audience' && (
+        {!isActiveTabLocked && activeTab === 'audience' && (
           <AudienceTab
             audienceSummary={audienceSummary}
             distributionChartData={distributionChartData}
@@ -858,7 +1068,7 @@ const Analytics = () => {
           />
         )}
 
-        {activeTab === 'recommendations' && (
+        {!isActiveTabLocked && activeTab === 'recommendations' && (
           <RecommendationsTab
             recommendations={recommendations}
             goals={goals}

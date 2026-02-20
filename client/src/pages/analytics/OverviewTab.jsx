@@ -1,5 +1,6 @@
 import React from 'react';
-import { BarChart3, ExternalLink, Eye, Heart, MessageCircle, Repeat2 } from 'lucide-react';
+import { BarChart3, ExternalLink, Eye, Heart, Lock, MessageCircle, Repeat2 } from 'lucide-react';
+import { getSuiteGenieProUpgradeUrl } from '../../utils/upgradeUrl';
 import {
   Area,
   AreaChart,
@@ -49,11 +50,14 @@ const OverviewTab = ({
   hourlyData,
   topTweets,
   timeframe,
+  isProPlan = true,
+  showAdvancedCharts = true,
   updatedTweetIds,
   skippedTweetIds,
   refreshingTweetIds = new Set(),
   onForceCheckTweet = null,
 }) => {
+  const upgradeUrl = getSuiteGenieProUpgradeUrl();
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -82,53 +86,72 @@ const OverviewTab = ({
         })}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Reach vs Engagement Trend</h3>
-          {chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={320}>
-              <AreaChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
-                <YAxis />
-                <Tooltip />
-                <Area type="monotone" dataKey="impressions" stroke="#2563eb" fill="#3b82f6" fillOpacity={0.25} />
-                <Area
-                  type="monotone"
-                  dataKey="total_engagement"
-                  stroke="#059669"
-                  fill="#10b981"
-                  fillOpacity={0.25}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="py-16 text-center text-gray-500">No daily metrics available for this timeframe.</div>
-          )}
-        </div>
+      {showAdvancedCharts ? (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <div className="card">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Reach vs Engagement Trend</h3>
+            {chartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={320}>
+                <AreaChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="date" />
+                  <YAxis />
+                  <Tooltip />
+                  <Area type="monotone" dataKey="impressions" stroke="#2563eb" fill="#3b82f6" fillOpacity={0.25} />
+                  <Area
+                    type="monotone"
+                    dataKey="total_engagement"
+                    stroke="#059669"
+                    fill="#10b981"
+                    fillOpacity={0.25}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="py-16 text-center text-gray-500">No daily metrics available for this timeframe.</div>
+            )}
+          </div>
 
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Hourly Engagement Heat</h3>
-          {hourlyData.some((row) => row.tweets > 0) ? (
-            <ResponsiveContainer width="100%" height={320}>
-              <BarChart data={hourlyData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="label" interval={2} />
-                <YAxis />
-                <Tooltip formatter={(value, name) => [value, name === 'engagement' ? 'Avg engagement' : 'Tweets']} />
-                <Bar dataKey="engagement" name="engagement" fill="#6366f1" />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="py-16 text-center text-gray-500">No hourly engagement data available.</div>
-          )}
+          <div className="card">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Hourly Engagement Heat</h3>
+            {hourlyData.some((row) => row.tweets > 0) ? (
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={hourlyData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="label" interval={2} />
+                  <YAxis />
+                  <Tooltip formatter={(value, name) => [value, name === 'engagement' ? 'Avg engagement' : 'Tweets']} />
+                  <Bar dataKey="engagement" name="engagement" fill="#6366f1" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="py-16 text-center text-gray-500">No hourly engagement data available.</div>
+            )}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="card border border-amber-200 bg-amber-50">
+          <div className="flex items-start gap-3">
+            <Lock className="h-5 w-5 text-amber-700 mt-0.5" />
+            <div>
+              <h3 className="text-lg font-semibold text-amber-900">Trend charts are Pro only</h3>
+              <p className="text-sm text-amber-800 mt-1">
+                Upgrade to Pro to unlock daily trend charts, engagement breakdowns, and timing insights.
+              </p>
+              <a href={upgradeUrl} className="btn btn-primary mt-4 inline-flex items-center">
+                Upgrade to Pro
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold text-gray-900">Tweets</h3>
-          <span className="text-sm text-gray-500">Last {timeframe} days</span>
+          <h3 className="text-lg font-semibold text-gray-900">Top Posts</h3>
+          <span className="text-sm text-gray-500">
+            {isProPlan ? `Last ${timeframe} days • Top 20` : 'Last 7 days • Top 5 (Free)'}
+          </span>
         </div>
 
         {topTweets.length > 0 ? (
@@ -208,7 +231,7 @@ const OverviewTab = ({
 
                       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-gray-500">
                         <span>Metrics updated: {formatDateTime(metricsUpdatedAt)}</span>
-                        {onForceCheckTweet && (
+                        {isProPlan && onForceCheckTweet && (
                           <button
                             type="button"
                             onClick={() => onForceCheckTweet(tweet.id)}
