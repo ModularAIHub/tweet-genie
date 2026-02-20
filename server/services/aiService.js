@@ -168,28 +168,59 @@ class AIService {
     console.log(`Available AI providers: ${providers.map(p => p.name).join(', ')}`);
 
     let lastError = null;
+    const authFailures = [];
+
     for (const provider of providers) {
-      try {
-        if (userId) {
-          console.log(`[AI Key Usage] userId=${userId} provider=${provider.name} keyType=${provider.keyType}`);
+      // Attempt this provider with retries for quota/retry-after hints
+      let attempts = 0;
+      const maxProviderAttempts = Math.max(1, maxRetries);
+      while (attempts < maxProviderAttempts) {
+        try {
+          if (userId) {
+            console.log(`[AI Key Usage] userId=${userId} provider=${provider.name} keyType=${provider.keyType}`);
+          }
+          console.log(`Attempting content generation with ${provider.name} (attempt ${attempts + 1}/${maxProviderAttempts})...`);
+          const result = await provider.method(sanitizedPrompt, style, requestedCount);
+          console.log(`✅ Content generated successfully with ${provider.name}`);
+
+          const cleanedContent = this.cleanAIOutput(result);
+
+          return {
+            content: cleanedContent,
+            provider: provider.name,
+            keyType: provider.keyType,
+            success: true
+          };
+        } catch (error) {
+          attempts++;
+          console.error(`❌ ${provider.name} generation failed (attempt ${attempts}):`, error.message);
+          lastError = error;
+
+          // Collect authorization-style failures separately
+          if (/unauthoriz|token expired|invalid key/i.test(error.message || '')) {
+            authFailures.push(`${provider.name} (${provider.keyType}): ${error.message}`);
+            // No point retrying auth errors on this provider
+            break;
+          }
+
+          // If provider indicates quota with retryAfter, wait then retry (if attempts remain)
+          if (error.isQuota || error.retryAfter) {
+            const waitSec = (typeof error.retryAfter === 'number' && error.retryAfter > 0) ? error.retryAfter : Math.min(5 * attempts, 30);
+            if (attempts < maxProviderAttempts) {
+              console.log(`${provider.name} suggests retry after ${waitSec}s — waiting before retrying...`);
+              await new Promise(r => setTimeout(r, Math.ceil(waitSec * 1000)));
+              continue; // retry same provider
+            }
+          }
+
+          // If we've exhausted attempts for this provider, move to next provider
+          break;
         }
-        console.log(`Attempting content generation with ${provider.name}...`);
-        const result = await provider.method(sanitizedPrompt, style, requestedCount);
-        console.log(`✅ Content generated successfully with ${provider.name}`);
-        
-        const cleanedContent = this.cleanAIOutput(result);
-        
-        return {
-          content: cleanedContent,
-          provider: provider.name,
-          keyType: provider.keyType,
-          success: true
-        };
-      } catch (error) {
-        console.error(`❌ ${provider.name} generation failed:`, error.message);
-        lastError = error;
-        continue;
       }
+    }
+
+    if (authFailures.length > 0) {
+      throw new Error(`Authorization failures for AI providers: ${authFailures.join(' ; ')}`);
     }
 
     throw new Error(`All AI providers failed. Last error: ${lastError?.message || 'Unknown error'}`);
@@ -249,28 +280,54 @@ class AIService {
     console.log(`[Strategy Builder] Available AI providers: ${providers.map(p => p.name).join(', ')}`);
 
     let lastError = null;
+    const authFailures = [];
+
     for (const provider of providers) {
-      try {
-        if (userId) {
-          console.log(`[AI Key Usage - Strategy] userId=${userId} provider=${provider.name} keyType=${provider.keyType}`);
+      let attempts = 0;
+      const maxProviderAttempts = Math.max(1, 1); // keep strategy builder conservative
+      while (attempts < maxProviderAttempts) {
+        try {
+          if (userId) {
+            console.log(`[AI Key Usage - Strategy] userId=${userId} provider=${provider.name} keyType=${provider.keyType}`);
+          }
+          console.log(`[Strategy Builder] Attempting generation with ${provider.name} (attempt ${attempts + 1}/${maxProviderAttempts})...`);
+          const result = await provider.method(sanitizedPrompt, style, null);
+          console.log(`✅ [Strategy Builder] Content generated successfully with ${provider.name}`);
+
+          const cleanedContent = this.cleanAIOutput(result);
+
+          return {
+            content: cleanedContent,
+            provider: provider.name,
+            keyType: provider.keyType,
+            success: true
+          };
+        } catch (error) {
+          attempts++;
+          console.error(`❌ [Strategy Builder] ${provider.name} generation failed (attempt ${attempts}):`, error.message);
+          lastError = error;
+
+          if (/unauthoriz|token expired|invalid key/i.test(error.message || '')) {
+            authFailures.push(`${provider.name} (${provider.keyType}): ${error.message}`);
+            break;
+          }
+
+          if (error.isQuota || error.retryAfter) {
+            const waitSec = (typeof error.retryAfter === 'number' && error.retryAfter > 0) ? error.retryAfter : 3;
+            if (attempts < maxProviderAttempts) {
+              console.log(`[Strategy Builder] ${provider.name} suggests retry after ${waitSec}s — waiting before retrying...`);
+              await new Promise(r => setTimeout(r, Math.ceil(waitSec * 1000)));
+              continue;
+            }
+          }
+
+          break;
         }
-        console.log(`[Strategy Builder] Attempting generation with ${provider.name}...`);
-        const result = await provider.method(sanitizedPrompt, style, null);
-        console.log(`✅ [Strategy Builder] Content generated successfully with ${provider.name}`);
-        
-        const cleanedContent = this.cleanAIOutput(result);
-        
-        return {
-          content: cleanedContent,
-          provider: provider.name,
-          keyType: provider.keyType,
-          success: true
-        };
-      } catch (error) {
-        console.error(`❌ [Strategy Builder] ${provider.name} generation failed:`, error.message);
-        lastError = error;
-        continue;
       }
+    }
+
+    if (authFailures.length > 0) {
+      throw new Error(`Authorization failures for AI providers: ${authFailures.join(' ; ')}`);
     }
 
     throw new Error(`All AI providers failed. Last error: ${lastError?.message || 'Unknown error'}`);
@@ -388,7 +445,7 @@ User request: ${prompt}`;
 
     try {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${keyToUse}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${keyToUse}`,
         {
           contents: [{
             parts: [{
@@ -427,7 +484,30 @@ User request: ${prompt}`;
 
       return content;
     } catch (error) {
-      throw new Error(`Google AI Error: ${error.response?.data?.error?.message || error.message}`);
+      // Normalize Google errors: detect quota / retry hints and attach metadata
+      const gMsg = error.response?.data?.error?.message || error.message || 'Google API error';
+      const normalized = new Error(`Google AI Error: ${gMsg}`);
+      normalized.status = error.response?.status;
+
+      // Detect quota exceeded
+      if (/quota exceeded|exceeded your current quota|quota/i.test(gMsg)) {
+        normalized.isQuota = true;
+      }
+
+      // Parse "Please retry in Xs" style messages
+      const retryMatch = gMsg.match(/Please retry in\s*([0-9]+(?:\.[0-9]+)?)s/i) || gMsg.match(/retry after\s*([0-9]+)s/i);
+      if (retryMatch) {
+        normalized.retryAfter = parseFloat(retryMatch[1]);
+      }
+
+      // If server responded with Retry-After header, prefer it
+      const retryHeader = error.response?.headers?.['retry-after'];
+      if (retryHeader) {
+        const parsed = parseFloat(retryHeader);
+        if (!isNaN(parsed)) normalized.retryAfter = parsed;
+      }
+
+      throw normalized;
     }
   }
 
@@ -621,7 +701,7 @@ Generate tweet content for: ${prompt}`;
     }
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.googleApiKey}`,
       requestBody,
       {
         headers: {

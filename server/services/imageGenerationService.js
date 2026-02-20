@@ -92,7 +92,7 @@ class ImageGenerationService {
     }
 
     try {
-      logger.info('Generating image with Gemini 2.0 Flash...');
+      logger.info('Generating image with Gemini 2.5 Flash...');
       const result = await this.generateWithGemini(sanitizedPrompt, style, size);
       logger.info('Image generated successfully with Gemini');
       return {
@@ -103,7 +103,7 @@ class ImageGenerationService {
       };
     } catch (error) {
       logger.error('Gemini image generation failed', { error: error.message });
-      
+      // adding a comment
       // Provide helpful error messages
       if (error.message.includes('quota') || error.message.includes('RESOURCE_EXHAUSTED')) {
         throw new Error('Gemini API quota exceeded. Google\'s free tier has very low image generation quotas. Please try again later or upgrade to a paid plan.');
@@ -119,14 +119,14 @@ class ImageGenerationService {
 
   async generateWithGemini(prompt, style, size = '1024x1024') {
     try {
-      logger.info('Generating image with Gemini 2.0 Flash Image Preview...');
+      logger.info('Generating image with Gemini 2.5 Flash Image Preview...');
       
       // Use softened prompt to avoid safety filters
       const enhancedPrompt = this.enhancePromptForGemini(prompt, style);
       
       // Generate image with safety settings disabled
       const response = await this.googleAI.models.generateContent({
-        model: "gemini-2.0-flash", // Use stable free model
+        model: "gemini-2.5-flash", // Use 2.5 flash for testing
         contents: [{ role: "user", parts: [{ text: enhancedPrompt }] }],
         // ✅ Dial down safety settings for fictional content
         safetySettings: [
