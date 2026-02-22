@@ -18,6 +18,8 @@ import twitterRoutes from './routes/twitter.js';
 import tweetsRoutes from './routes/tweets.js';
 import schedulingRoutes from './routes/scheduling.js';
 import linkedinStatusRoutes from './routes/linkedinStatus.js';
+import threadsStatusRoutes from './routes/threadsStatus.js';
+import internalTwitterRoutes from './routes/internalTwitter.js';
 import analyticsRoutes from './routes/analytics.js';
 import dashboardRoutes from './routes/dashboard.js';
 import creditsRoutes from './routes/credits.js';
@@ -238,6 +240,9 @@ app.get('/internal/debug/env', (req, res) => {
   }
 });
 
+// Internal service routes (header-authenticated inside route)
+app.use('/api/internal/twitter', internalTwitterRoutes);
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', secureAuthRoutes);
@@ -276,6 +281,7 @@ app.use('/api/pro-team', proTeamRoutes); // <-- Register proTeam routes here
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);
 app.use('/api/linkedin', authenticateToken, linkedinStatusRoutes);
+app.use('/api/threads', authenticateToken, threadsStatusRoutes);
 app.use('/api/analytics', authenticateToken, analyticsRoutes);
 app.use('/api/dashboard', authenticateToken, dashboardRoutes);
 app.use('/api/credits', authenticateToken, creditsRoutes);

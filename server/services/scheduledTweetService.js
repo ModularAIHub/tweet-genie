@@ -3,6 +3,7 @@ import { TwitterApi } from 'twitter-api-v2';
 import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
+import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPostOptimizer.js';
 
 const THREAD_REPLY_DELAY_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_MS || '600', 10);
 const THREAD_REPLY_DELAY_JITTER_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_JITTER_MS || '250', 10);
@@ -19,8 +20,143 @@ const SCHEDULED_DB_RETRY_MAX_ATTEMPTS = Number.parseInt(process.env.SCHEDULED_DB
 const MAX_SCHEDULING_WINDOW_DAYS = Number.parseInt(process.env.MAX_SCHEDULING_WINDOW_DAYS || '15', 10);
 const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
 const TWITTER_OAUTH1_APP_SECRET = process.env.TWITTER_API_SECRET || process.env.TWITTER_CONSUMER_SECRET || null;
+const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
+const THREADS_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.THREADS_CROSSPOST_TIMEOUT_MS || '10000', 10);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let scheduledAccountIdColumnTypeCache = null;
+let scheduledMetadataColumnExistsCache = null;
+
+function isDateValue(value) {
+  if (!value) return false;
+  const date = value instanceof Date ? value : new Date(value);
+  return !Number.isNaN(date.getTime());
+}
+
+async function refreshScheduledOAuth2TokenIfNeeded({ scheduledTweet, accountRow, accountType }) {
+  if (!scheduledTweet?.access_token) {
+    return;
+  }
+
+  if (!isDateValue(scheduledTweet.token_expires_at)) {
+    return;
+  }
+
+  const tokenExpiry = new Date(scheduledTweet.token_expires_at);
+  const now = new Date();
+  const refreshThreshold = new Date(tokenExpiry.getTime() - (10 * 60 * 1000));
+  const isExpired = tokenExpiry <= now;
+
+  if (now < refreshThreshold && !isExpired) {
+    return;
+  }
+
+  const minutesUntilExpiry = Math.floor((tokenExpiry - now) / (60 * 1000));
+  console.log('[Scheduled Tweet] OAuth2 token refresh check', {
+    scheduledTweetId: scheduledTweet.id,
+    accountType,
+    username: scheduledTweet.twitter_username,
+    isExpired,
+    minutesUntilExpiry,
+    hasRefreshToken: !!scheduledTweet.refresh_token,
+  });
+
+  if (!scheduledTweet.refresh_token) {
+    if (isExpired) {
+      throw new Error('Twitter token expired and no refresh token is available. Please reconnect your Twitter account.');
+    }
+    return;
+  }
+
+  if (!process.env.TWITTER_CLIENT_ID || !process.env.TWITTER_CLIENT_SECRET) {
+    if (isExpired) {
+      throw new Error('Twitter token expired and refresh is unavailable because TWITTER_CLIENT_ID/TWITTER_CLIENT_SECRET are missing.');
+    }
+    return;
+  }
+
+  try {
+    const credentials = Buffer.from(
+      `${process.env.TWITTER_CLIENT_ID}:${process.env.TWITTER_CLIENT_SECRET}`
+    ).toString('base64');
+
+    const refreshResponse = await fetch('https://api.twitter.com/2/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Basic ${credentials}`,
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: scheduledTweet.refresh_token,
+        client_id: process.env.TWITTER_CLIENT_ID,
+      }),
+    });
+
+    const tokens = await refreshResponse.json();
+
+    if (!tokens?.access_token) {
+      const detail = tokens?.error_description || tokens?.error || 'Refresh token invalid or expired';
+      if (isExpired) {
+        throw new Error(`Twitter token refresh failed: ${detail}. Please reconnect your Twitter account.`);
+      }
+      console.warn('[Scheduled Tweet] OAuth2 refresh failed but current token still usable:', detail);
+      return;
+    }
+
+    const newExpiresAt = new Date(Date.now() + ((tokens.expires_in || 7200) * 1000));
+    if (accountType === 'team') {
+      await pool.query(
+        `UPDATE team_accounts
+         SET access_token = $1,
+             refresh_token = $2,
+             token_expires_at = $3,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $4`,
+        [
+          tokens.access_token,
+          tokens.refresh_token || scheduledTweet.refresh_token,
+          newExpiresAt,
+          accountRow.id,
+        ]
+      );
+    } else {
+      await pool.query(
+        `UPDATE twitter_auth
+         SET access_token = $1,
+             refresh_token = $2,
+             token_expires_at = $3,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $4`,
+        [
+          tokens.access_token,
+          tokens.refresh_token || scheduledTweet.refresh_token,
+          newExpiresAt,
+          scheduledTweet.user_id,
+        ]
+      );
+    }
+
+    scheduledTweet.access_token = tokens.access_token;
+    scheduledTweet.refresh_token = tokens.refresh_token || scheduledTweet.refresh_token;
+    scheduledTweet.token_expires_at = newExpiresAt;
+    if (accountRow) {
+      accountRow.access_token = scheduledTweet.access_token;
+      accountRow.refresh_token = scheduledTweet.refresh_token;
+      accountRow.token_expires_at = scheduledTweet.token_expires_at;
+    }
+
+    console.log('[Scheduled Tweet] OAuth2 token refreshed for scheduled posting', {
+      scheduledTweetId: scheduledTweet.id,
+      username: scheduledTweet.twitter_username,
+      expiresAt: newExpiresAt.toISOString(),
+    });
+  } catch (error) {
+    if (isExpired) {
+      throw error;
+    }
+    console.warn('[Scheduled Tweet] OAuth2 refresh failed before expiry, continuing with current token:', error.message);
+  }
+}
 
 function normalizeScheduledAccountId(rawAccountId, columnType) {
   if (rawAccountId === null || rawAccountId === undefined) {
@@ -72,6 +208,191 @@ async function getScheduledAccountIdColumnType() {
   }
 
   return scheduledAccountIdColumnTypeCache;
+}
+
+async function hasScheduledMetadataColumn() {
+  if (typeof scheduledMetadataColumnExistsCache === 'boolean') {
+    return scheduledMetadataColumnExistsCache;
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'scheduled_tweets'
+         AND column_name = 'metadata'
+       LIMIT 1`
+    );
+    scheduledMetadataColumnExistsCache = rows.length > 0;
+  } catch (error) {
+    console.warn('[ScheduledTweetService] Failed to detect scheduled_tweets.metadata column:', error?.message || String(error));
+    scheduledMetadataColumnExistsCache = false;
+  }
+
+  return scheduledMetadataColumnExistsCache;
+}
+
+function parseJsonObject(value, fallback = {}) {
+  if (!value) return { ...fallback };
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return { ...fallback, ...value };
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...fallback, ...parsed };
+      }
+    } catch {
+      return { ...fallback };
+    }
+  }
+  return { ...fallback };
+}
+
+function parseScheduledCrossPostConfig(scheduledTweet) {
+  const metadata = parseJsonObject(scheduledTweet?.metadata, {});
+  const crossPost = metadata?.cross_post;
+  if (!crossPost || typeof crossPost !== 'object' || Array.isArray(crossPost)) {
+    return { enabled: false, metadata };
+  }
+
+  const targets = crossPost?.targets && typeof crossPost.targets === 'object' ? crossPost.targets : {};
+  const linkedin = Boolean(targets.linkedin);
+  const threads = Boolean(targets.threads);
+
+  if (!linkedin && !threads) {
+    return { enabled: false, metadata };
+  }
+
+  return {
+    enabled: true,
+    metadata,
+    config: {
+      linkedin,
+      threads,
+      optimizeCrossPost: crossPost.optimizeCrossPost !== false,
+    },
+  };
+}
+
+function buildScheduledCrossPostResultShape({ linkedinEnabled = false, threadsEnabled = false, mediaDetected = false } = {}) {
+  return {
+    linkedin: {
+      enabled: Boolean(linkedinEnabled),
+      status: linkedinEnabled ? null : 'disabled',
+      mediaDetected: Boolean(mediaDetected),
+      mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+    },
+    threads: {
+      enabled: Boolean(threadsEnabled),
+      status: threadsEnabled ? null : 'disabled',
+      mediaDetected: Boolean(mediaDetected),
+      mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+    },
+  };
+}
+
+function getTweetPermalink({ username, tweetId }) {
+  const safeTweetId = String(tweetId || '').trim();
+  const safeUsername = String(username || '').trim();
+  if (!safeTweetId || !safeUsername) return '';
+  return `https://twitter.com/${safeUsername}/status/${safeTweetId}`;
+}
+
+async function crossPostScheduledToLinkedIn({ userId, content, tweetUrl, postMode = 'single', mediaDetected = false }) {
+  const linkedinGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+
+  if (!linkedinGenieUrl || !internalApiKey) {
+    return 'skipped_not_configured';
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), LINKEDIN_CROSSPOST_TIMEOUT_MS);
+    const res = await fetch(`${linkedinGenieUrl.replace(/\/$/, '')}/api/internal/cross-post`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-api-key': internalApiKey,
+        'x-internal-caller': 'tweet-genie',
+        'x-platform-user-id': String(userId),
+      },
+      body: JSON.stringify({
+        content,
+        tweetUrl,
+        sourcePlatform: 'x',
+        postMode,
+        mediaDetected: Boolean(mediaDetected),
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 404 && body?.code === 'LINKEDIN_NOT_CONNECTED') return 'not_connected';
+    if (!res.ok) return 'failed';
+    return 'posted';
+  } catch (error) {
+    if (error?.name === 'AbortError') return 'timeout';
+    return 'failed';
+  }
+}
+
+async function crossPostScheduledToThreads({
+  userId,
+  content,
+  threadParts = [],
+  postMode = 'single',
+  tweetUrl = '',
+  mediaDetected = false,
+  optimizeCrossPost = true,
+}) {
+  const socialGenieUrl = String(process.env.SOCIAL_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+
+  if (!socialGenieUrl || !internalApiKey) {
+    return 'skipped_not_configured';
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), THREADS_CROSSPOST_TIMEOUT_MS);
+    const res = await fetch(`${socialGenieUrl.replace(/\/$/, '')}/api/internal/threads/cross-post`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-api-key': internalApiKey,
+        'x-internal-caller': 'tweet-genie',
+        'x-platform-user-id': String(userId),
+      },
+      body: JSON.stringify({
+        postMode: postMode === 'thread' ? 'thread' : 'single',
+        content,
+        threadParts: Array.isArray(threadParts) ? threadParts : [],
+        tweetUrl,
+        sourcePlatform: 'x',
+        optimizeCrossPost: optimizeCrossPost !== false,
+        mediaDetected: Boolean(mediaDetected),
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const body = await res.json().catch(() => ({}));
+    const code = String(body?.code || '').toUpperCase();
+    if (!res.ok) {
+      if (code === 'THREADS_NOT_CONNECTED' || code === 'THREADS_TOKEN_EXPIRED') return 'not_connected';
+      if (code === 'THREADS_UNSUPPORTED_THREAD_MODE') return 'unsupported_thread_mode';
+      return 'failed';
+    }
+    return 'posted';
+  } catch (error) {
+    if (error?.name === 'AbortError') return 'timeout';
+    return 'failed';
+  }
 }
 
 function pad2(value) {
@@ -464,6 +785,12 @@ class ScheduledTweetService {
       accountType
     });
 
+    await refreshScheduledOAuth2TokenIfNeeded({
+      scheduledTweet,
+      accountRow,
+      accountType,
+    });
+
 
     return this.processSingleScheduledTweet(scheduledTweet);
   }
@@ -536,6 +863,122 @@ class ScheduledTweetService {
     }
   }
 
+  /**
+   * Proactively refresh OAuth2 tokens for accounts with upcoming scheduled posts.
+   * Reduces preventable failures for long-running schedules.
+   */
+  async refreshUpcomingScheduledTwitterTokens({
+    horizonHours = 24,
+    limitPerScope = 50,
+  } = {}) {
+    const safeHorizonHours = Number.isFinite(horizonHours) ? Math.max(1, Math.min(168, horizonHours)) : 24;
+    const safeLimit = Number.isFinite(limitPerScope) ? Math.max(1, Math.min(500, limitPerScope)) : 50;
+
+    const summary = {
+      horizonHours: safeHorizonHours,
+      checked: 0,
+      refreshed: 0,
+      errors: 0,
+    };
+
+    const personalQuery = `
+      SELECT DISTINCT ON (ta.user_id)
+             ta.id,
+             ta.user_id,
+             ta.twitter_username,
+             ta.access_token,
+             ta.refresh_token,
+             ta.token_expires_at,
+             ta.oauth1_access_token,
+             ta.oauth1_access_token_secret
+      FROM scheduled_tweets st
+      INNER JOIN twitter_auth ta
+        ON ta.user_id = st.user_id
+      WHERE st.status = 'pending'
+        AND st.team_id IS NULL
+        AND (st.approval_status = 'approved' OR st.approval_status IS NULL)
+        AND st.scheduled_for <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + ($1::int * INTERVAL '1 hour')
+      ORDER BY ta.user_id, st.scheduled_for ASC
+      LIMIT $2
+    `;
+
+    const teamQuery = `
+      SELECT DISTINCT ON (ta.id)
+             ta.id,
+             ta.user_id,
+             ta.twitter_username,
+             ta.access_token,
+             ta.refresh_token,
+             ta.token_expires_at,
+             ta.oauth1_access_token,
+             ta.oauth1_access_token_secret
+      FROM scheduled_tweets st
+      INNER JOIN team_accounts ta
+        ON ta.id::text = st.account_id::text
+      WHERE st.status = 'pending'
+        AND st.team_id IS NOT NULL
+        AND st.account_id IS NOT NULL
+        AND ta.active = true
+        AND (st.approval_status = 'approved' OR st.approval_status IS NULL)
+        AND st.scheduled_for <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + ($1::int * INTERVAL '1 hour')
+      ORDER BY ta.id, st.scheduled_for ASC
+      LIMIT $2
+    `;
+
+    const [personalRes, teamRes] = await Promise.all([
+      pool.query(personalQuery, [safeHorizonHours, safeLimit]),
+      pool.query(teamQuery, [safeHorizonHours, safeLimit]),
+    ]);
+
+    const targets = [
+      ...personalRes.rows.map((row) => ({ row, accountType: 'personal' })),
+      ...teamRes.rows.map((row) => ({ row, accountType: 'team' })),
+    ];
+
+    for (const target of targets) {
+      const { row, accountType } = target;
+      const beforeToken = row.access_token || null;
+      const beforeExpiry = row.token_expires_at ? new Date(row.token_expires_at).toISOString() : null;
+
+      const scheduledLike = {
+        id: `preflight_${accountType}_${row.id || row.user_id || 'unknown'}`,
+        user_id: row.user_id || null,
+        twitter_username: row.twitter_username || null,
+        access_token: row.access_token || null,
+        refresh_token: row.refresh_token || null,
+        token_expires_at: row.token_expires_at || null,
+        oauth1_access_token: row.oauth1_access_token || null,
+        oauth1_access_token_secret: row.oauth1_access_token_secret || null,
+      };
+
+      try {
+        summary.checked += 1;
+        await refreshScheduledOAuth2TokenIfNeeded({
+          scheduledTweet: scheduledLike,
+          accountRow: row,
+          accountType,
+        });
+
+        const afterToken = scheduledLike.access_token || null;
+        const afterExpiry = scheduledLike.token_expires_at ? new Date(scheduledLike.token_expires_at).toISOString() : null;
+        if (beforeToken !== afterToken || beforeExpiry !== afterExpiry) {
+          summary.refreshed += 1;
+        }
+      } catch (error) {
+        summary.errors += 1;
+        console.warn('[Scheduled Tweet] Upcoming token preflight refresh failed', {
+          accountType,
+          userId: row.user_id || null,
+          accountId: row.id || null,
+          username: row.twitter_username || null,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    return summary;
+  }
+
 
   /**
    * Process a single scheduled tweet and post it to Twitter
@@ -543,6 +986,9 @@ class ScheduledTweetService {
    */
   async processSingleScheduledTweet(scheduledTweet) {
     try {
+      const metadataColumnAvailable = await hasScheduledMetadataColumn();
+      const scheduledCrossPost = parseScheduledCrossPostConfig(scheduledTweet);
+
       // Mark as processing
       await pool.query(
         `UPDATE scheduled_tweets
@@ -656,6 +1102,7 @@ class ScheduledTweetService {
       let threadSuccess = true;
       let threadError = null;
       const threadTweetIds = [];
+      const postedThreadContents = [];
 
       if (scheduledTweet.thread_tweets && scheduledTweet.thread_tweets.length > 0) {
         let previousTweetId = tweetResponse.data.id;
@@ -677,6 +1124,7 @@ class ScheduledTweetService {
             }
             const threadTweet = scheduledTweet.thread_tweets[i];
             const cleanThreadContent = stripMarkdown(threadTweet.content);
+            postedThreadContents.push(cleanThreadContent);
             console.log(`[Thread ${i + 1}/${scheduledTweet.thread_tweets.length}] Posting:`, cleanThreadContent);
             const threadTweetData = {
               text: decodeHTMLEntities(cleanThreadContent),
@@ -742,18 +1190,105 @@ class ScheduledTweetService {
         }
         console.log(`Inserted ${threadTweetIds.length} additional thread tweets into history`);
       }
+
+      let crossPostResult = null;
+      if (!scheduledTweet.isTeamAccount && scheduledCrossPost.enabled) {
+        const mediaDetected = detectCrossPostMedia({
+          media: mediaIds,
+          threadMedia: threadMediaArr,
+        });
+        crossPostResult = buildScheduledCrossPostResultShape({
+          linkedinEnabled: scheduledCrossPost.config.linkedin,
+          threadsEnabled: scheduledCrossPost.config.threads,
+          mediaDetected,
+        });
+
+        const shouldCrossPostThread = !(scheduledTweet.thread_tweets && scheduledTweet.thread_tweets.length > 0) || threadSuccess;
+        if (!shouldCrossPostThread) {
+          if (crossPostResult.linkedin.enabled) crossPostResult.linkedin.status = 'skipped_source_thread_failed';
+          if (crossPostResult.threads.enabled) crossPostResult.threads.status = 'skipped_source_thread_failed';
+        } else {
+          const allThreadParts = [cleanContent, ...postedThreadContents].filter((part) => typeof part === 'string' && part.trim());
+          const crossPostPayloads = buildCrossPostPayloads({
+            content: cleanContent,
+            thread: allThreadParts,
+            optimizeCrossPost: scheduledCrossPost.config.optimizeCrossPost,
+          });
+          const tweetUrl = getTweetPermalink({
+            username: scheduledTweet.twitter_username,
+            tweetId: tweetResponse?.data?.id,
+          });
+
+          if (crossPostResult.linkedin.enabled) {
+            crossPostResult.linkedin.status = await crossPostScheduledToLinkedIn({
+              userId: scheduledTweet.user_id,
+              content: crossPostPayloads.linkedin.content,
+              tweetUrl,
+              postMode: crossPostPayloads.linkedin.postMode,
+              mediaDetected,
+            });
+          }
+
+          if (crossPostResult.threads.enabled) {
+            crossPostResult.threads.status = await crossPostScheduledToThreads({
+              userId: scheduledTweet.user_id,
+              content: crossPostPayloads.threads.content,
+              threadParts: crossPostPayloads.threads.threadParts,
+              postMode: crossPostPayloads.threads.postMode,
+              tweetUrl,
+              mediaDetected,
+              optimizeCrossPost: scheduledCrossPost.config.optimizeCrossPost,
+            });
+          }
+        }
+      }
+
       const finalStatus = threadSuccess ? 'completed' : 'partially_completed';
       const errorMsg = threadSuccess ? null : `Main tweet posted, but thread failed: ${threadError?.message || 'Unknown error'}`;
-      await pool.query(
-        `UPDATE scheduled_tweets
-         SET status = $1,
-             posted_at = CURRENT_TIMESTAMP,
-             error_message = $2,
-             processing_started_at = NULL,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $3`,
-        [finalStatus, errorMsg, scheduledTweet.id]
-      );
+      const nextMetadata = metadataColumnAvailable
+        ? (() => {
+            const baseMetadata = scheduledCrossPost?.metadata || parseJsonObject(scheduledTweet?.metadata, {});
+            if (!crossPostResult && !scheduledCrossPost.enabled) {
+              return baseMetadata;
+            }
+            const crossPostMeta = baseMetadata.cross_post && typeof baseMetadata.cross_post === 'object'
+              ? { ...baseMetadata.cross_post }
+              : {};
+            crossPostMeta.last_attempted_at = new Date().toISOString();
+            if (crossPostResult) {
+              crossPostMeta.last_result = crossPostResult;
+            }
+            return {
+              ...baseMetadata,
+              cross_post: crossPostMeta,
+            };
+          })()
+        : null;
+
+      if (metadataColumnAvailable) {
+        await pool.query(
+          `UPDATE scheduled_tweets
+           SET status = $1,
+               posted_at = CURRENT_TIMESTAMP,
+               error_message = $2,
+               metadata = $3,
+               processing_started_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $4`,
+          [finalStatus, errorMsg, JSON.stringify(nextMetadata || {}), scheduledTweet.id]
+        );
+      } else {
+        await pool.query(
+          `UPDATE scheduled_tweets
+           SET status = $1,
+               posted_at = CURRENT_TIMESTAMP,
+               error_message = $2,
+               processing_started_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [finalStatus, errorMsg, scheduledTweet.id]
+        );
+      }
       if (threadSuccess) {
         console.log(`✅ Successfully posted scheduled tweet and thread: ${scheduledTweet.id}`);
       } else {

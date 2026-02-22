@@ -483,6 +483,7 @@ class AIService {
       professional: 'Write in a professional, business-appropriate tone.',
       casual: 'Write in a casual, conversational tone.',
       witty: 'Write with humor and wit, be clever and engaging.',
+      humorous: 'Write with humor and wit, be clever and engaging.',
       inspirational: 'Write in an inspirational, motivational tone.',
       informative: 'Write in an informative, educational tone.'
     };
@@ -556,6 +557,7 @@ User request: ${prompt}`;
       professional: 'professional and business-appropriate',
       casual: 'casual and conversational',
       witty: 'witty, humorous, and clever',
+      humorous: 'witty, humorous, and clever',
       inspirational: 'inspirational and motivational',
       informative: 'informative and educational'
     };
@@ -667,6 +669,7 @@ User request: ${prompt}`;
       professional: 'Write in a professional, business-appropriate tone.',
       casual: 'Write in a casual, conversational tone.',
       witty: 'Write with humor and wit, be clever and engaging.',
+      humorous: 'Write with humor and wit, be clever and engaging.',
       inspirational: 'Write in an inspirational, motivational tone.',
       informative: 'Write in an informative, educational tone.'
     };
@@ -944,6 +947,17 @@ Generate tweet content for: ${prompt}`;
     cleaned = cleaned.replace(/~~([^~]+)~~/g, '$1');
     cleaned = cleaned.replace(/```[^`]*```/g, '');
     cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
+
+    // Remove common assistant-style lead-ins while keeping the actual content
+    cleaned = cleaned.replace(
+      /^(?:okay|ok|sure|absolutely|great)[!,. ]+\s*here(?:'s| is)\s+[^\n]{0,140}\n+/i,
+      ''
+    );
+    cleaned = cleaned.replace(
+      /^(?:here(?:'s| is)\s+(?:a|an|the)\s+(?:tweet|thread|post)[^:]{0,80}:\s*)/i,
+      ''
+    );
+    cleaned = cleaned.replace(/^(?:sure|okay|ok)[!,. ]+\s*/i, '');
 
     // Remove citations
     cleaned = cleaned.replace(/\[\d+\]/g, '');

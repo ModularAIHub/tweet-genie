@@ -21,6 +21,7 @@ import {
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 import { buildReconnectRequiredPayload, buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import { resolveRequestPlanType } from '../middleware/planAccess.js';
+import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPostOptimizer.js';
 
 
 // Bulk save generated tweets/threads as drafts
@@ -65,6 +66,7 @@ const TWITTER_RATE_LIMIT_MAX_WAIT_MS = Number.parseInt(process.env.TWITTER_RATE_
 
 // Timeout for cross-post requests to LinkedIn Genie (ms)
 const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
+const THREADS_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.THREADS_CROSSPOST_TIMEOUT_MS || '10000', 10);
 
 function getThreadPostDelayMs() {
   const baseDelay = Number.isFinite(THREAD_POST_DELAY_MS) ? Math.max(0, THREAD_POST_DELAY_MS) : 900;
@@ -175,7 +177,39 @@ function getAdaptiveThreadDelayMs({ index, totalParts, mediaCount = 0 }) {
 }
 
 // ── LinkedIn cross-post helper ────────────────────────────────────────────────
-async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
+const normalizeCrossPostTargets = ({ postToLinkedin = false, crossPostTargets = null } = {}) => {
+  const rawTargets =
+    crossPostTargets && typeof crossPostTargets === 'object' && !Array.isArray(crossPostTargets)
+      ? crossPostTargets
+      : {};
+
+  const linkedin =
+    typeof rawTargets.linkedin === 'boolean' ? rawTargets.linkedin : Boolean(postToLinkedin);
+  const threads =
+    typeof rawTargets.threads === 'boolean' ? rawTargets.threads : false;
+
+  return { linkedin, threads };
+};
+
+const buildCrossPostResultShape = ({ linkedinEnabled = false, threadsEnabled = false, mediaDetected = false } = {}) => ({
+  linkedin: {
+    enabled: Boolean(linkedinEnabled),
+    status: linkedinEnabled ? null : 'disabled',
+    mediaDetected: Boolean(mediaDetected),
+    mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+  },
+  threads: {
+    enabled: Boolean(threadsEnabled),
+    status: threadsEnabled ? null : 'disabled',
+    mediaDetected: Boolean(mediaDetected),
+    mediaStatus: mediaDetected ? 'text_only_phase1' : 'none',
+  },
+});
+
+const mapLinkedInLegacyStatus = (crossPostResult) =>
+  crossPostResult?.linkedin?.enabled ? (crossPostResult.linkedin.status ?? 'failed') : null;
+
+async function crossPostToLinkedIn({ userId, content, tweetUrl, postMode = 'single', mediaDetected = false }) {
   const linkedinGenieUrl = process.env.LINKEDIN_GENIE_URL;
   const internalApiKey = process.env.INTERNAL_API_KEY;
 
@@ -206,7 +240,13 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
         'x-internal-caller': 'tweet-genie',
         'x-platform-user-id': String(userId),
       },
-      body: JSON.stringify({ content, tweetUrl }),
+      body: JSON.stringify({
+        content,
+        tweetUrl,
+        sourcePlatform: 'x',
+        postMode,
+        mediaDetected: Boolean(mediaDetected),
+      }),
       signal: controller.signal,
     });
 
@@ -265,14 +305,123 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl }) {
     return 'failed';
   }
 }
+
+async function runValidateTwitterConnectionForRetry(req) {
+  return new Promise((resolve, reject) => {
+    const retryReq = {
+      ...req,
+      headers: { ...(req.headers || {}) },
+      user: req.user,
+    };
+
+    const mockRes = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload) {
+        const err = new Error(payload?.error || 'Twitter reconnection required');
+        err.status = this.statusCode || 500;
+        err.data = payload || null;
+        reject(err);
+        return this;
+      },
+    };
+
+    validateTwitterConnection(retryReq, mockRes, () => resolve(retryReq));
+  });
+}
+
+async function crossPostToThreads({
+  userId,
+  content,
+  threadParts = [],
+  postMode = 'single',
+  tweetUrl = '',
+  mediaDetected = false,
+  optimizeCrossPost = true,
+}) {
+  const socialGenieUrl = String(process.env.SOCIAL_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+
+  if (!socialGenieUrl || !internalApiKey) {
+    logger.warn('[Threads Cross-post] Skipped: missing SOCIAL_GENIE_URL or INTERNAL_API_KEY');
+    return 'skipped_not_configured';
+  }
+
+  const endpoint = `${socialGenieUrl.replace(/\/$/, '')}/api/internal/threads/cross-post`;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), THREADS_CROSSPOST_TIMEOUT_MS);
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-api-key': internalApiKey,
+        'x-internal-caller': 'tweet-genie',
+        'x-platform-user-id': String(userId),
+      },
+      body: JSON.stringify({
+        postMode: postMode === 'thread' ? 'thread' : 'single',
+        content,
+        threadParts: Array.isArray(threadParts) ? threadParts : [],
+        tweetUrl,
+        sourcePlatform: 'x',
+        optimizeCrossPost: optimizeCrossPost !== false,
+        mediaDetected: Boolean(mediaDetected),
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    const body = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      logger.warn('[Threads Cross-post] Failed', {
+        status: res.status,
+        code: body?.code,
+      });
+      if (res.status === 404 && String(body?.code || '').toUpperCase().includes('NOT_CONNECTED')) {
+        return 'not_connected';
+      }
+      if (res.status === 401 && String(body?.code || '').toUpperCase().includes('TOKEN_EXPIRED')) {
+        return 'not_connected';
+      }
+      return 'failed';
+    }
+
+    return 'posted';
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      logger.warn('[Threads Cross-post] Timeout reached', { timeoutMs: THREADS_CROSSPOST_TIMEOUT_MS, userId });
+      return 'timeout';
+    }
+    logger.error('[Threads Cross-post] Request error', {
+      name: err?.name,
+      message: err?.message,
+    });
+    return 'failed';
+  }
+}
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Post a tweet
 router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async (req, res) => {
   try {
-    const { content, media, thread, threadMedia, postToLinkedin } = req.body;
+    const {
+      content,
+      media,
+      thread,
+      threadMedia,
+      postToLinkedin,
+      crossPostTargets,
+      optimizeCrossPost = true,
+    } = req.body;
     const userId = req.user.id;
-    const twitterAccount = req.twitterAccount;
+    let twitterAccount = req.twitterAccount;
+    const normalizedCrossPostTargets = normalizeCrossPostTargets({ postToLinkedin, crossPostTargets });
 
     logger.info('[POST /tweets] Tweet request', { 
       userId, 
@@ -282,11 +431,60 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       hasMedia: !!media,
       threadLength: thread?.length,
       postToLinkedin: !!postToLinkedin,
+      crossPostTargets: normalizedCrossPostTargets,
+      optimizeCrossPost: optimizeCrossPost !== false,
     });
 
-    const twitterClient = new TwitterApi(twitterAccount.access_token);
+    let twitterClient = new TwitterApi(twitterAccount.access_token);
+    let hasRetriedTwitter401 = false;
     let tweetResponse;
     let threadTweets = [];
+
+    const refreshTwitterClientAfter401 = async (sourceLabel = 'tweet-post') => {
+      if (hasRetriedTwitter401) {
+        throw new Error('Twitter auth retry already attempted for this request');
+      }
+
+      hasRetriedTwitter401 = true;
+      logger.warn('[POST /tweets] Twitter 401 detected, attempting one token refresh + retry', {
+        userId,
+        sourceLabel,
+      });
+
+      const refreshedReq = await runValidateTwitterConnectionForRetry(req);
+      if (!refreshedReq?.twitterAccount?.access_token) {
+        const err = new Error('Twitter token refresh retry failed');
+        err.code = 'TWITTER_AUTH_EXPIRED';
+        throw err;
+      }
+
+      req.twitterAccount = refreshedReq.twitterAccount;
+      twitterAccount = refreshedReq.twitterAccount;
+      twitterClient = new TwitterApi(twitterAccount.access_token);
+      logger.info('[POST /tweets] Twitter token refresh retry succeeded', {
+        userId,
+        sourceLabel,
+        accountId: twitterAccount?.id,
+      });
+    };
+
+    const postTweetWith401Retry = async (tweetData, label) => {
+      try {
+        return await withRateLimitRetry(
+          () => twitterClient.v2.tweet(tweetData),
+          { label }
+        );
+      } catch (error) {
+        if (isUnauthorizedError(error) && !hasRetriedTwitter401) {
+          await refreshTwitterClientAfter401(label);
+          return await withRateLimitRetry(
+            () => twitterClient.v2.tweet(tweetData),
+            { label: `${label}-401-retry` }
+          );
+        }
+        throw error;
+      }
+    };
 
     try {
       // Handle media upload if present
@@ -337,10 +535,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           text: decodeHTMLEntities(thread[0]),
           ...(firstTweetMediaIds.length > 0 && { media: { media_ids: firstTweetMediaIds } })
         };
-        tweetResponse = await withRateLimitRetry(
-          () => twitterClient.v2.tweet(firstTweetData),
-          { label: 'thread-main-post' }
-        );
+        tweetResponse = await postTweetWith401Retry(firstTweetData, 'thread-main-post');
         logger.info('First thread tweet posted', {
           tweetId: tweetResponse.data?.id,
           textPreview: tweetResponse.data?.text ? `${tweetResponse.data.text.substring(0, 50)}...` : '[no text]'
@@ -386,10 +581,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 ...(threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
               };
 
-              const threadResponse = await withRateLimitRetry(
-                () => twitterClient.v2.tweet(threadTweetData),
-                { label: `thread-reply-post-${i + 1}` }
-              );
+              const threadResponse = await postTweetWith401Retry(threadTweetData, `thread-reply-post-${i + 1}`);
               threadTweets.push(threadResponse.data);
               previousTweetId = threadResponse.data.id;
               
@@ -441,10 +633,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           ...(mediaIds.length > 0 && { media: { media_ids: mediaIds } })
         };
 
-        tweetResponse = await withRateLimitRetry(
-          () => twitterClient.v2.tweet(tweetData),
-          { label: 'single-post' }
-        );
+        tweetResponse = await postTweetWith401Retry(tweetData, 'single-post');
         logger.info('Single tweet posted', {
           tweetId: tweetResponse.data?.id,
           textPreview: tweetResponse.data?.text ? `${tweetResponse.data.text.substring(0, 50)}...` : '[no text]'
@@ -478,24 +667,67 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       );
 
       // ── LinkedIn cross-post (awaited so Vercel doesn't kill it) ─────────────
-      let linkedinStatus = null;
-      if (postToLinkedin === true) {
-        const postContent = thread && thread.length > 0
-          ? thread.join('\n\n')
-          : content;
+      const mediaDetected = detectCrossPostMedia({ media, threadMedia });
+      const crossPostResult = buildCrossPostResultShape({
+        linkedinEnabled: normalizedCrossPostTargets.linkedin,
+        threadsEnabled: normalizedCrossPostTargets.threads,
+        mediaDetected,
+      });
+      const twitterUsername = twitterAccount.account_username || twitterAccount.username || 'i/web';
+      const tweetUrl = `https://twitter.com/${twitterUsername}/status/${tweetResponse.data.id}`;
 
-        try {
-          linkedinStatus = await crossPostToLinkedIn({
-            userId,
-            content: postContent,
-            tweetUrl: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
+      if (normalizedCrossPostTargets.linkedin || normalizedCrossPostTargets.threads) {
+        if (twitterAccount.isTeamAccount) {
+          if (normalizedCrossPostTargets.linkedin) crossPostResult.linkedin.status = 'skipped_individual_only';
+          if (normalizedCrossPostTargets.threads) crossPostResult.threads.status = 'skipped_individual_only';
+        } else {
+          const formattedCrossPost = buildCrossPostPayloads({
+            content,
+            thread,
+            optimizeCrossPost,
           });
-          logger.info('LinkedIn cross-post completed', { userId, status: linkedinStatus });
-        } catch (err) {
-          logger.error('LinkedIn cross-post error', { userId, error: err?.message || String(err) });
-          linkedinStatus = 'failed';
+
+          if (normalizedCrossPostTargets.linkedin) {
+            try {
+              crossPostResult.linkedin.status = await crossPostToLinkedIn({
+                userId,
+                content: formattedCrossPost.linkedin.content,
+                tweetUrl,
+                postMode: formattedCrossPost.linkedin.postMode,
+                mediaDetected,
+              });
+            } catch (err) {
+              logger.error('LinkedIn cross-post error', { userId, error: err?.message || String(err) });
+              crossPostResult.linkedin.status = 'failed';
+            }
+          }
+
+          if (normalizedCrossPostTargets.threads) {
+            try {
+              crossPostResult.threads.status = await crossPostToThreads({
+                userId,
+                content: formattedCrossPost.threads.content,
+                threadParts: formattedCrossPost.threads.threadParts,
+                postMode: formattedCrossPost.threads.postMode,
+                tweetUrl,
+                mediaDetected,
+                optimizeCrossPost,
+              });
+            } catch (err) {
+              logger.error('Threads cross-post error', { userId, error: err?.message || String(err) });
+              crossPostResult.threads.status = 'failed';
+            }
+          }
         }
       }
+
+      const linkedinStatus = mapLinkedInLegacyStatus(crossPostResult);
+      logger.info('Cross-post completed', {
+        userId,
+        linkedin: crossPostResult.linkedin.status,
+        threads: crossPostResult.threads.status,
+        mediaDetected,
+      });
       // ─────────────────────────────────────────────────────────────────────────
 
       res.json({
@@ -504,7 +736,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           id: rows[0].id,
           tweet_id: tweetResponse.data.id,
           content: mainContent,
-          url: `https://twitter.com/${twitterAccount.username}/status/${tweetResponse.data.id}`,
+          url: tweetUrl,
           credits_used: 0,
           thread_count: thread ? thread.length : 1,
           thread_status: thread && thread.length > 1
@@ -518,6 +750,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         // skipped = env vars missing
         // timeout = LinkedIn Genie took too long
         linkedin: linkedinStatus,
+        crossPost: crossPostResult,
       });
 
     } catch (twitterError) {

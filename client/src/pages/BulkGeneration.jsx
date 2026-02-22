@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Masonry from 'react-masonry-css';
 import Collapsible from '../components/Collapsible';
 import RichTextTextarea from '../components/RichTextTextarea';
 import { Switch } from '@headlessui/react';
 import { ai, tweets, scheduling } from '../utils/api';
+import { loadDraft, saveDraft, clearDraft } from '../utils/draftStorage';
 import dayjs from 'dayjs';
 import moment from 'moment-timezone';
 import { Lock } from 'lucide-react';
@@ -13,10 +14,311 @@ import { hasProPlanAccess } from '../utils/planAccess';
 import { getSuiteGenieProUpgradeUrl } from '../utils/upgradeUrl';
 
 const BULK_GENERATION_SEED_KEY = 'bulkGenerationSeed';
+const BULK_GENERATION_DRAFT_KEY = 'bulkGenerationDraft';
+const BULK_GENERATION_DRAFT_VERSION = 1;
+const BULK_GENERATION_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const MAX_BULK_PROMPTS = 30;
 const MAX_SCHEDULING_WINDOW_DAYS = 15;
 const RECOMMENDED_SCHEDULING_WINDOW_DAYS = 14;
 const PROMPT_LIMIT_WARNING = `Only the first ${MAX_BULK_PROMPTS} prompts will be used.`;
+
+const splitStrategyPromptInstruction = (rawPrompt = '') => {
+  const normalized = String(rawPrompt || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return { prompt: '', instruction: '', hasInstruction: false };
+  }
+
+  const instructionMatch = normalized.match(/\bInstruction:\s*/i);
+  if (!instructionMatch || typeof instructionMatch.index !== 'number') {
+    return { prompt: normalized, instruction: '', hasInstruction: false };
+  }
+
+  const promptPart = normalized.slice(0, instructionMatch.index).replace(/\s+/g, ' ').trim();
+  const instructionPart = normalized
+    .slice(instructionMatch.index + instructionMatch[0].length)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return {
+    prompt: promptPart || normalized.replace(/\s+/g, ' ').trim(),
+    instruction: instructionPart,
+    hasInstruction: Boolean(instructionPart),
+  };
+};
+
+const buildBulkGenerationRequestPrompt = (rawPrompt, isThread) => {
+  const parsed = splitStrategyPromptInstruction(rawPrompt);
+  if (!parsed.hasInstruction) {
+    return rawPrompt;
+  }
+
+  const lines = [
+    isThread
+      ? 'Create ONE complete X (Twitter) thread from the strategy prompt below.'
+      : 'Create ONE complete X (Twitter) tweet from the strategy prompt below.',
+    'Return only the final content.',
+    'Do not add prefaces like "Here is", "Okay", or labels.',
+    'Do not leave the output unfinished or end mid-example.',
+    isThread
+      ? 'Thread format: 3-5 tweets separated by --- and each tweet under 280 characters.'
+      : 'Keep the tweet under 260 characters.',
+    `Strategy prompt: ${parsed.prompt}`,
+    `Execution instruction: ${parsed.instruction}`,
+  ];
+
+  return lines.join('\n');
+};
+
+const sanitizeDraftString = (value, maxLength = 2000) =>
+  String(value || '').replace(/\r\n/g, '\n').trim().slice(0, maxLength);
+
+const normalizeBulkDraftManualPromptItems = (items = [], maxCount = MAX_BULK_PROMPTS) => {
+  if (!Array.isArray(items)) return [];
+
+  return items
+    .map((item, index) => ({
+      id: index,
+      prompt: sanitizeDraftString(item?.prompt, 1200),
+      isThread: Boolean(item?.isThread),
+    }))
+    .filter((item) => item.prompt.length > 0)
+    .slice(0, maxCount)
+    .map((item, index) => ({ ...item, id: index }));
+};
+
+const serializeBulkOutputsForDraft = (outputs = {}) => {
+  if (!outputs || typeof outputs !== 'object') return {};
+
+  return Object.entries(outputs).reduce((acc, [key, value]) => {
+    if (!value || typeof value !== 'object' || value.loading) return acc;
+
+    const isThread = Boolean(value.isThread);
+    const threadParts = isThread
+      ? (Array.isArray(value.threadParts)
+          ? value.threadParts.map((part) => sanitizeDraftString(part, 1000)).filter(Boolean)
+          : [])
+      : [];
+    const text = isThread
+      ? (threadParts.length > 0 ? threadParts.join('---') : sanitizeDraftString(value.text, 5000))
+      : sanitizeDraftString(value.text, 1200);
+
+    if (!text && !value.error) return acc;
+
+    acc[String(key)] = {
+      id: Number.isFinite(Number(value.id)) ? Number(value.id) : Number(key),
+      prompt: sanitizeDraftString(value.prompt, 1200),
+      isThread,
+      text,
+      threadParts: isThread ? threadParts : undefined,
+      error: value.error ? sanitizeDraftString(value.error, 500) : null,
+    };
+
+    return acc;
+  }, {});
+};
+
+const restoreBulkOutputsFromDraft = (rawOutputs = {}) => {
+  if (!rawOutputs || typeof rawOutputs !== 'object' || Array.isArray(rawOutputs)) {
+    return {};
+  }
+
+  return Object.entries(rawOutputs).reduce((acc, [key, value], fallbackIndex) => {
+    if (!value || typeof value !== 'object') return acc;
+
+    const isThread = Boolean(value.isThread);
+    let threadParts = [];
+    if (isThread) {
+      threadParts = Array.isArray(value.threadParts)
+        ? value.threadParts.map((part) => sanitizeDraftString(part, 1000)).filter(Boolean)
+        : splitGeneratedThreadParts(value.text || '');
+      if (threadParts.length === 0) {
+        const fallbackText = sanitizeDraftString(value.text, 5000);
+        if (fallbackText) threadParts = [fallbackText];
+      }
+    }
+
+    const text = isThread
+      ? (threadParts.length > 0 ? threadParts.join('---') : sanitizeDraftString(value.text, 5000))
+      : sanitizeDraftString(value.text, 1200);
+    const error = value.error ? sanitizeDraftString(value.error, 500) : null;
+
+    if (!text && !error) return acc;
+
+    const numericId = Number.isFinite(Number(value.id)) ? Number(value.id) : fallbackIndex;
+    acc[String(key)] = {
+      id: numericId,
+      prompt: sanitizeDraftString(value.prompt, 1200),
+      isThread,
+      text,
+      threadParts: isThread ? threadParts : undefined,
+      images: Array(isThread ? Math.max(threadParts.length, 1) : 1).fill(null),
+      loading: false,
+      error,
+      appeared: true,
+    };
+    return acc;
+  }, {});
+};
+
+const serializeSeededPromptItemsForDraft = (items = []) => {
+  if (!Array.isArray(items)) return [];
+
+  return items
+    .slice(0, MAX_BULK_PROMPTS)
+    .map((item) => ({
+      sourceType: typeof item?.sourceType === 'string' ? item.sourceType : 'seeded_strategy',
+      prompt: sanitizeDraftString(item?.prompt, 1200),
+      isThread: Boolean(item?.isThread),
+      category: sanitizeDraftString(item?.category, 120) || 'general',
+      idea: sanitizeDraftString(item?.idea, 600),
+      instruction: sanitizeDraftString(item?.instruction, 500),
+      recommendedFormat: sanitizeDraftString(item?.recommendedFormat, 40) || (item?.isThread ? 'thread' : 'single_tweet'),
+      goal: sanitizeDraftString(item?.goal, 160),
+      hashtagsHint: sanitizeDraftString(item?.hashtagsHint, 160),
+      legacyPromptText: sanitizeDraftString(item?.prompt || item?.legacyPromptText, 1200),
+      strategyPrompt: item?.strategyPrompt
+        ? {
+            strategyId: item.strategyPrompt.strategyId ?? null,
+            promptId: item.strategyPrompt.promptId ?? null,
+            idea: sanitizeDraftString(item.strategyPrompt.idea, 600),
+            instruction: sanitizeDraftString(item.strategyPrompt.instruction, 500),
+            category: sanitizeDraftString(item.strategyPrompt.category, 120),
+            recommendedFormat: sanitizeDraftString(item.strategyPrompt.recommendedFormat, 40),
+            goal: sanitizeDraftString(item.strategyPrompt.goal, 160),
+            hashtagsHint: sanitizeDraftString(item.strategyPrompt.hashtagsHint, 160),
+            extraContext: sanitizeDraftString(item.strategyPrompt.extraContext, 2000),
+          }
+        : null,
+    }))
+    .filter((item) => item.idea || item.prompt);
+};
+
+const hasMeaningfulBulkDraft = ({ prompts, promptList, seededPromptItems, outputs, discarded }) => {
+  const outputCount = outputs && typeof outputs === 'object' ? Object.keys(outputs).length : 0;
+  return Boolean(
+    String(prompts || '').trim() ||
+      (Array.isArray(promptList) && promptList.length > 0) ||
+      (Array.isArray(seededPromptItems) && seededPromptItems.length > 0) ||
+      outputCount > 0 ||
+      (Array.isArray(discarded) && discarded.length > 0)
+  );
+};
+
+const splitGeneratedThreadParts = (content = '', preferredParts) => {
+  if (Array.isArray(preferredParts) && preferredParts.length > 0) {
+    return preferredParts.map((part) => String(part || '').trim()).filter(Boolean);
+  }
+
+  const safeContent = String(content || '').trim();
+  if (!safeContent) return [];
+
+  // Method 1: Split by '---' (primary separator)
+  if (safeContent.includes('---')) {
+    return safeContent.split('---').map((t) => t.trim()).filter(Boolean);
+  }
+
+  // Method 2: numbered patterns (1., 2., etc.)
+  if (safeContent.match(/^\d+\./m)) {
+    return safeContent.split(/(?=^\d+\.)/m).map((t) => t.trim()).filter(Boolean);
+  }
+
+  // Method 3: double newline
+  if (safeContent.includes('\n\n')) {
+    return safeContent.split('\n\n').map((t) => t.trim()).filter(Boolean);
+  }
+
+  // Method 4: intelligent sentence split for long content
+  if (safeContent.length > 280) {
+    const sentences = safeContent.split(/[.!?]+\s+/).filter((s) => s.trim());
+    const threadParts = [];
+    let currentPart = '';
+
+    for (const sentence of sentences) {
+      if ((currentPart + sentence).length > 250 && currentPart) {
+        threadParts.push(currentPart.trim());
+        currentPart = sentence;
+      } else {
+        currentPart += (currentPart ? '. ' : '') + sentence;
+      }
+    }
+    if (currentPart) threadParts.push(currentPart.trim());
+    return threadParts.filter(Boolean);
+  }
+
+  return [safeContent];
+};
+
+const normalizeStructuredSeededItem = (item, index, strategyIdFromSeed = null) => {
+  const safeString = (value, maxLength = 500) =>
+    String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+
+  const idea = safeString(item?.idea || '', 600);
+  const instruction = safeString(item?.instruction || '', 500);
+  const recommendedFormat = safeString(item?.recommendedFormat || item?.recommended_format || '', 40).toLowerCase() || 'single_tweet';
+  const category = safeString(item?.category || 'general', 120) || 'general';
+  const goal = safeString(item?.goal || '', 160);
+  const hashtagsHint = safeString(item?.hashtagsHint || item?.hashtags_hint || '', 160);
+  const extraContext = safeString(item?.extraContext || item?.extra_context || '', 2000);
+  const legacyPromptText = safeString(item?.legacyPromptText || item?.prompt || '', 1200);
+
+  if (!idea || idea.length < 5) return null;
+
+  return {
+    id: `seed-${index}`,
+    sourceType: 'seeded_strategy',
+    prompt: legacyPromptText || (instruction ? `${idea} Instruction: ${instruction}` : idea),
+    isThread: Boolean(item?.isThread) || recommendedFormat === 'thread',
+    category,
+    idea,
+    instruction,
+    recommendedFormat,
+    goal,
+    hashtagsHint,
+    strategyPrompt: {
+      strategyId: item?.strategyId ?? strategyIdFromSeed ?? null,
+      promptId: item?.promptId ?? item?.id ?? null,
+      idea,
+      instruction,
+      category,
+      recommendedFormat,
+      goal,
+      hashtagsHint,
+      extraContext,
+    },
+  };
+};
+
+const normalizeLegacySeededItem = (item, index) => {
+  const rawPrompt = typeof item?.prompt === 'string' ? item.prompt : '';
+  const parsed = splitStrategyPromptInstruction(rawPrompt);
+  const category = typeof item?.category === 'string' ? item.category.trim() || 'general' : 'general';
+
+  if (!parsed.prompt || parsed.prompt.length < 3) return null;
+
+  return {
+    id: `seed-${index}`,
+    sourceType: 'seeded_legacy',
+    prompt: rawPrompt.replace(/\s*\n+\s*/g, ' ').replace(/\s{2,}/g, ' ').trim(),
+    isThread: Boolean(item?.isThread),
+    category,
+    idea: parsed.prompt,
+    instruction: parsed.instruction,
+    recommendedFormat: Boolean(item?.isThread) ? 'thread' : 'single_tweet',
+    goal: '',
+    hashtagsHint: '',
+    strategyPrompt: {
+      strategyId: item?.strategyId ?? null,
+      promptId: item?.id ?? null,
+      idea: parsed.prompt,
+      instruction: parsed.instruction,
+      category,
+      recommendedFormat: Boolean(item?.isThread) ? 'thread' : 'single_tweet',
+      goal: '',
+      hashtagsHint: '',
+      extraContext: '',
+    },
+  };
+};
 
 const BulkGeneration = () => {
   const { user } = useAuth();
@@ -24,9 +326,13 @@ const BulkGeneration = () => {
   const upgradeUrl = getSuiteGenieProUpgradeUrl();
   const location = useLocation();
   const hasAppliedSeedRef = useRef(false);
+  const appliedStrategySeedThisMountRef = useRef(false);
+  const hasHydratedBulkDraftRef = useRef(false);
+  const hasSkippedBulkDraftAutosaveRef = useRef(false);
   const outputSectionRef = useRef(null);
   const [prompts, setPrompts] = useState('');
-  const [promptList, setPromptList] = useState([]); // [{ prompt, isThread }]
+  const [promptList, setPromptList] = useState([]); // manual prompts only [{ prompt, isThread }]
+  const [seededPromptItems, setSeededPromptItems] = useState([]); // structured strategy-seeded prompts
   // outputs: { [idx]: { ...result, loading, error } }
   const [outputs, setOutputs] = useState({});
   const [discarded, setDiscarded] = useState([]); // array of idx
@@ -44,6 +350,10 @@ const BulkGeneration = () => {
   const [showCreditInfo, setShowCreditInfo] = useState(true);
   const [seedMessage, setSeedMessage] = useState('');
   const outputCount = Object.keys(outputs).length;
+  const combinedPromptItems = useMemo(
+    () => [...seededPromptItems, ...promptList].slice(0, MAX_BULK_PROMPTS),
+    [seededPromptItems, promptList]
+  );
 
   const frequencyOptions = [
     { value: 'daily', label: 'Daily posting' },
@@ -73,20 +383,23 @@ const BulkGeneration = () => {
     }
 
     const normalizedItems = parsedSeed.items
-      .map((item, index) => ({
-        prompt: typeof item?.prompt === 'string' ? item.prompt.trim() : '',
-        isThread: Boolean(item?.isThread),
-        id: index,
-      }))
-      .filter((item) => item.prompt.length > 0)
+      .map((item, index) => {
+        const isV2 = parsedSeed?.version === 2 || item?.idea || item?.promptId || item?.legacyPromptText;
+        return isV2
+          ? normalizeStructuredSeededItem(item, index, parsedSeed?.strategyId ?? null)
+          : normalizeLegacySeededItem(item, index);
+      })
+      .filter(Boolean)
       .slice(0, MAX_BULK_PROMPTS);
 
     if (normalizedItems.length > 0) {
-      setPrompts(normalizedItems.map((item) => item.prompt).join('\n'));
-      setPromptList(normalizedItems);
+      appliedStrategySeedThisMountRef.current = true;
+      setSeededPromptItems(normalizedItems);
+      setPrompts('');
+      setPromptList([]);
       const wasTrimmed = parsedSeed.items.length > normalizedItems.length;
       setSeedMessage(
-        `Loaded ${normalizedItems.length} prompt${normalizedItems.length === 1 ? '' : 's'} from Strategy Builder.${wasTrimmed ? ` Capped to ${MAX_BULK_PROMPTS}.` : ''}`
+        `Loaded ${normalizedItems.length} strategy prompt${normalizedItems.length === 1 ? '' : 's'} from Strategy Builder.${wasTrimmed ? ` Capped to ${MAX_BULK_PROMPTS}.` : ''}`
       );
     }
 
@@ -95,10 +408,166 @@ const BulkGeneration = () => {
   }, [location?.state]);
 
   useEffect(() => {
+    if (!hasAppliedSeedRef.current || hasHydratedBulkDraftRef.current) return;
+
+    hasHydratedBulkDraftRef.current = true;
+
+    if (appliedStrategySeedThisMountRef.current) {
+      return;
+    }
+
+    const loaded = loadDraft(BULK_GENERATION_DRAFT_KEY, {
+      version: BULK_GENERATION_DRAFT_VERSION,
+      ttlMs: BULK_GENERATION_DRAFT_TTL_MS,
+    });
+
+    const draft = loaded?.data;
+    if (!draft || typeof draft !== 'object' || Array.isArray(draft)) {
+      return;
+    }
+
+    let restoredSeeded = [];
+    if (Array.isArray(draft.seededPromptItems)) {
+      restoredSeeded = draft.seededPromptItems
+        .map((item, index) => {
+          const preferred = item?.strategyPrompt && typeof item.strategyPrompt === 'object'
+            ? {
+                ...item,
+                ...item.strategyPrompt,
+                isThread: item?.isThread,
+                legacyPromptText: item?.legacyPromptText || item?.prompt,
+              }
+            : item;
+
+          return normalizeStructuredSeededItem(preferred, index, item?.strategyPrompt?.strategyId ?? item?.strategyId ?? null)
+            || normalizeLegacySeededItem(item, index);
+        })
+        .filter(Boolean)
+        .slice(0, MAX_BULK_PROMPTS);
+    }
+
+    const remainingSlots = Math.max(0, MAX_BULK_PROMPTS - restoredSeeded.length);
+    let restoredManualPromptList = normalizeBulkDraftManualPromptItems(draft.promptList, remainingSlots);
+
+    if (restoredManualPromptList.length === 0 && typeof draft.prompts === 'string') {
+      const fallbackLines = draft.prompts
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, remainingSlots);
+      restoredManualPromptList = fallbackLines.map((prompt, index) => ({
+        id: index,
+        prompt,
+        isThread: false,
+      }));
+    }
+
+    const restoredPromptsText = restoredManualPromptList.map((item) => item.prompt).join('\n');
+    const restoredOutputs = restoreBulkOutputsFromDraft(draft.outputs);
+    const restoredDiscarded = Array.isArray(draft.discarded)
+      ? draft.discarded.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 0)
+      : [];
+
+    setSeededPromptItems(restoredSeeded);
+    setPromptList(restoredManualPromptList);
+    setPrompts(restoredPromptsText);
+    setOutputs(restoredOutputs);
+    setDiscarded(restoredDiscarded);
+
+    if (typeof draft.frequency === 'string' && frequencyOptions.some((opt) => opt.value === draft.frequency)) {
+      setFrequency(draft.frequency);
+    }
+    if (typeof draft.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(draft.startDate)) {
+      setStartDate(draft.startDate);
+    }
+    if (typeof draft.timeOfDay === 'string' && /^\d{2}:\d{2}$/.test(draft.timeOfDay)) {
+      setTimeOfDay(draft.timeOfDay);
+    }
+    if (Number.isInteger(draft.postsPerDay) && draft.postsPerDay >= 1 && draft.postsPerDay <= 5) {
+      setPostsPerDay(draft.postsPerDay);
+    }
+    if (Array.isArray(draft.dailyTimes) && draft.dailyTimes.length > 0) {
+      const restoredDailyTimes = draft.dailyTimes
+        .map((time) => (typeof time === 'string' && /^\d{2}:\d{2}$/.test(time) ? time : null))
+        .filter(Boolean)
+        .slice(0, 5);
+      if (restoredDailyTimes.length > 0) {
+        setDailyTimes(restoredDailyTimes);
+      }
+    }
+    if (Array.isArray(draft.daysOfWeek)) {
+      setDaysOfWeek(
+        draft.daysOfWeek
+          .map((day) => Number(day))
+          .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+      );
+    }
+
+    setSeedMessage((prev) => prev || 'Restored your bulk generation draft.');
+  }, [location?.state, frequencyOptions]);
+
+  useEffect(() => {
     if (outputCount > 0 && outputSectionRef.current) {
       outputSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [outputCount]);
+
+  useEffect(() => {
+    if (!hasHydratedBulkDraftRef.current) return;
+
+    if (!hasSkippedBulkDraftAutosaveRef.current) {
+      hasSkippedBulkDraftAutosaveRef.current = true;
+      return;
+    }
+
+    const promptListForDraft = normalizeBulkDraftManualPromptItems(
+      promptList,
+      Math.max(0, MAX_BULK_PROMPTS - seededPromptItems.length)
+    );
+    const promptsTextForDraft = promptListForDraft.map((item) => item.prompt).join('\n');
+    const draftPayload = {
+      prompts: promptsTextForDraft,
+      promptList: promptListForDraft.map((item) => ({
+        prompt: item.prompt,
+        isThread: Boolean(item.isThread),
+      })),
+      seededPromptItems: serializeSeededPromptItemsForDraft(seededPromptItems),
+      outputs: serializeBulkOutputsForDraft(outputs),
+      discarded: Array.isArray(discarded)
+        ? discarded.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 0)
+        : [],
+      frequency,
+      startDate,
+      timeOfDay,
+      postsPerDay,
+      dailyTimes: Array.isArray(dailyTimes) ? dailyTimes.map((time) => String(time || '').slice(0, 5)) : [],
+      daysOfWeek: Array.isArray(daysOfWeek) ? daysOfWeek.map((day) => Number(day)).filter(Number.isInteger) : [],
+    };
+
+    const timeoutId = setTimeout(() => {
+      if (!hasMeaningfulBulkDraft(draftPayload)) {
+        clearDraft(BULK_GENERATION_DRAFT_KEY);
+        return;
+      }
+
+      saveDraft(BULK_GENERATION_DRAFT_KEY, draftPayload, { version: BULK_GENERATION_DRAFT_VERSION });
+    }, 500);
+
+    return () => clearTimeout(timeoutId);
+  }, [
+    prompts,
+    promptList,
+    seededPromptItems,
+    outputs,
+    discarded,
+    frequency,
+    startDate,
+    timeOfDay,
+    postsPerDay,
+    dailyTimes,
+    daysOfWeek,
+  ]);
 
   // Handle posts per day change
   const handlePostsPerDayChange = (count) => {
@@ -324,9 +793,10 @@ const BulkGeneration = () => {
   const handlePromptsChange = (e) => {
     const rawValue = e.target.value.replace(/\r\n/g, '\n');
     const lines = rawValue.split('\n').map((p) => p.trim()).filter(Boolean);
-    const cappedLines = lines.slice(0, MAX_BULK_PROMPTS);
+    const remainingSlots = Math.max(0, MAX_BULK_PROMPTS - seededPromptItems.length);
+    const cappedLines = lines.slice(0, remainingSlots);
     setPrompts(rawValue);
-    if (lines.length > MAX_BULK_PROMPTS) {
+    if (lines.length > remainingSlots) {
       setError(PROMPT_LIMIT_WARNING);
     } else {
       setError((prev) => (prev === PROMPT_LIMIT_WARNING ? '' : prev));
@@ -342,6 +812,32 @@ const BulkGeneration = () => {
 
   const handlePromptThreadToggle = (idx, isThread) => {
     setPromptList((list) => list.map((item, i) => (i === idx ? { ...item, isThread } : item)));
+  };
+
+  const handleSeededPromptThreadToggle = (idx, isThread) => {
+    setSeededPromptItems((list) =>
+      list.map((item, i) => {
+        if (i !== idx) return item;
+        return {
+          ...item,
+          isThread,
+          strategyPrompt: item.strategyPrompt
+            ? {
+                ...item.strategyPrompt,
+                recommendedFormat: isThread ? 'thread' : 'single_tweet',
+              }
+            : item.strategyPrompt,
+        };
+      })
+    );
+  };
+
+  const handleSeededPromptRemove = (idx) => {
+    setSeededPromptItems((list) => list.filter((_, i) => i !== idx).map((item, nextIdx) => ({
+      ...item,
+      id: `seed-${nextIdx}`,
+    })));
+    setError((prev) => (prev === PROMPT_LIMIT_WARNING ? '' : prev));
   };
 
   const handlePromptRemove = (idx) => {
@@ -459,62 +955,56 @@ const handleGenerate = async () => {
     setError('');
     setOutputs({});
     try {
-      if (promptList.length > MAX_BULK_PROMPTS) {
+      if (combinedPromptItems.length === 0) {
+        setError('Add at least one prompt to generate.');
+        return;
+      }
+      if (combinedPromptItems.length > MAX_BULK_PROMPTS) {
         setError(`Bulk generation is limited to ${MAX_BULK_PROMPTS} prompts.`);
         return;
       }
       const newOutputs = {};
-      for (let idx = 0; idx < promptList.length; idx++) {
-        const { prompt, isThread } = promptList[idx];
+      for (let idx = 0; idx < combinedPromptItems.length; idx++) {
+        const promptItem = combinedPromptItems[idx];
+        const { prompt, isThread } = promptItem;
         setOutputs(prev => ({ ...prev, [idx]: { loading: true, prompt } }));
         try {
-          const res = await ai.generate({ prompt, isThread });
+          const isSeededStrategyPrompt = Boolean(
+            typeof promptItem?.sourceType === 'string' &&
+              promptItem.sourceType.startsWith('seeded') &&
+              promptItem?.strategyPrompt?.idea
+          );
+
+          const requestPayload = isSeededStrategyPrompt
+            ? {
+                prompt: promptItem.prompt || promptItem.idea || '',
+                isThread,
+                generationMode: 'strategy_prompt',
+                strategyPrompt: {
+                  ...promptItem.strategyPrompt,
+                  recommendedFormat: isThread ? 'thread' : (promptItem.strategyPrompt?.recommendedFormat || 'single_tweet'),
+                },
+                clientSource: 'bulk',
+              }
+            : {
+                prompt: buildBulkGenerationRequestPrompt(prompt, isThread),
+                isThread,
+                clientSource: 'bulk',
+              };
+
+          const res = await ai.generate(requestPayload);
           const data = res.data;
           if (isThread) {
-            // For threads, try multiple split methods to detect thread parts
-            let threadParts = [];
-            
-            // Method 1: Split by '---' (primary separator)
-            if (data.content.includes('---')) {
-              threadParts = data.content.split('---').map(t => t.trim()).filter(Boolean);
-            }
-            // Method 2: If no '---', try splitting by numbered patterns (1., 2., etc.)
-            else if (data.content.match(/^\d+\./m)) {
-              threadParts = data.content.split(/(?=^\d+\.)/m).map(t => t.trim()).filter(Boolean);
-            }
-            // Method 3: If still no parts, split by double newline
-            else if (data.content.includes('\n\n')) {
-              threadParts = data.content.split('\n\n').map(t => t.trim()).filter(Boolean);
-            }
-            // Method 4: If all else fails but content is long, split intelligently
-            else if (data.content.length > 280) {
-              const sentences = data.content.split(/[.!?]+\s+/).filter(s => s.trim());
-              threadParts = [];
-              let currentPart = '';
-              
-              for (const sentence of sentences) {
-                if ((currentPart + sentence).length > 250 && currentPart) {
-                  threadParts.push(currentPart.trim());
-                  currentPart = sentence;
-                } else {
-                  currentPart += (currentPart ? '. ' : '') + sentence;
-                }
-              }
-              if (currentPart) threadParts.push(currentPart.trim());
-            }
-            // Fallback: treat as single part if nothing worked
-            else {
-              threadParts = [data.content.trim()];
-            }
-
-            // Ensure we have at least one part
+            let threadParts = splitGeneratedThreadParts(data.content, data.threadParts);
             if (threadParts.length === 0) {
               threadParts = [data.content.trim()];
             }
 
             newOutputs[idx] = {
-              prompt,
-              text: data.content,
+              prompt: promptItem.idea || prompt,
+              text: (Array.isArray(data.threadParts) && data.threadParts.length > 0)
+                ? data.threadParts.join('---')
+                : data.content,
               isThread: true,
               threadParts: threadParts,
               images: Array(threadParts.length).fill(null),
@@ -527,7 +1017,7 @@ const handleGenerate = async () => {
             let tweetText = data.content.split('---')[0].trim();
             if (tweetText.length > 280) tweetText = tweetText.slice(0, 280);
             newOutputs[idx] = {
-              prompt,
+              prompt: promptItem.idea || prompt,
               text: tweetText,
               isThread: false,
               threadParts: undefined,
@@ -540,7 +1030,11 @@ const handleGenerate = async () => {
           }
           setOutputs(prev => ({ ...prev, [idx]: newOutputs[idx] }));
         } catch (err) {
-          newOutputs[idx] = { prompt, loading: false, error: err?.response?.data?.error || 'Failed to generate.' };
+          newOutputs[idx] = {
+            prompt: promptItem.idea || prompt,
+            loading: false,
+            error: err?.response?.data?.error || 'Failed to generate.',
+          };
           setOutputs(prev => ({ ...prev, [idx]: newOutputs[idx] }));
         }
       }
@@ -551,10 +1045,6 @@ const handleGenerate = async () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleImageChange = (draftId, files) => {
-    setImagesMap(prev => ({ ...prev, [draftId]: Array.from(files) }));
   };
 
   if (!hasProAccess) {
@@ -627,12 +1117,69 @@ const handleGenerate = async () => {
             aria-label="Prompts (one per line)"
           />
           <label htmlFor="bulk-prompts" className="absolute left-4 top-3 text-blue-500 text-base font-medium pointer-events-none transition-all duration-200 peer-focus:-top-5 peer-focus:text-sm peer-focus:text-blue-700 peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-placeholder-shown:text-blue-400 bg-blue-50 px-1 rounded">
-            Prompts (one per line)
+            {seededPromptItems.length > 0 ? 'Add manual prompts (optional, one per line)' : 'Prompts (one per line)'}
           </label>
           <div className="absolute right-4 bottom-3 text-xs text-blue-400 select-none">
-            {Math.min(prompts.split('\n').map((line) => line.trim()).filter(Boolean).length, MAX_BULK_PROMPTS)}/{MAX_BULK_PROMPTS} prompts
+            {Math.min(combinedPromptItems.length, MAX_BULK_PROMPTS)}/{MAX_BULK_PROMPTS} prompts
           </div>
         </div>
+        {seededPromptItems.length > 0 && (
+          <div className="mb-4">
+            <div className="mb-2 text-sm font-semibold text-blue-900">Strategy Builder prompts</div>
+            <div className="space-y-2">
+              {seededPromptItems.map((item, idx) => (
+                <div
+                  key={item.id || `seeded-${idx}`}
+                  className="rounded-xl border border-blue-200 bg-white/90 px-4 py-3 shadow-sm"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">
+                          {item.category || 'general'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${item.isThread ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-700'}`}>
+                          {item.isThread ? 'Thread' : 'Single Tweet'}
+                        </span>
+                      </div>
+                      <div className="text-sm text-gray-800 leading-relaxed">{item.idea || item.prompt}</div>
+                      {item.instruction && (
+                        <div className="mt-1 text-xs text-gray-500">
+                          <span className="font-medium text-gray-600">Instruction:</span> {item.instruction}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={item.isThread}
+                          onChange={(e) => handleSeededPromptThreadToggle(idx, e.target.checked)}
+                          disabled={loading}
+                          className="form-checkbox h-4 w-4 text-fuchsia-600 transition"
+                        />
+                        <span className="ml-2 text-xs text-gray-600">Thread</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => handleSeededPromptRemove(idx)}
+                        disabled={loading}
+                        className="h-6 w-6 rounded-full border border-red-300 bg-white text-sm font-bold leading-none text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        title="Remove strategy prompt"
+                        aria-label={`Remove strategy prompt ${idx + 1}`}
+                      >
+                        -
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 text-xs text-gray-500">
+              Seeded prompts come from Strategy Builder. You can toggle thread format or remove any prompt before generating.
+            </div>
+          </div>
+        )}
         <div className="text-xs text-blue-500 mb-2">Tip: Paste or type multiple prompts, one per line. Each line will generate a tweet or thread. You can edit or discard results after generation.</div>
         <div className="text-xs text-blue-600 mb-2">Use <b>Space</b> for normal typing and press <b>Enter</b> for a new prompt line.</div>
         <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
@@ -640,6 +1187,9 @@ const handleGenerate = async () => {
         </div>
         {promptList.length > 0 && (
           <div className="mt-4 space-y-2">
+            {seededPromptItems.length > 0 && (
+              <div className="text-sm font-semibold text-blue-900">Manual prompts</div>
+            )}
             {promptList.map((p, idx) => (
               <div key={p.id} className="flex items-center justify-between bg-gradient-to-r from-blue-100 to-blue-200 rounded-xl px-4 py-2 border border-blue-200 shadow-sm">
                 <span className="text-sm text-gray-700 flex-1 truncate">{p.prompt}</span>
@@ -674,7 +1224,7 @@ const handleGenerate = async () => {
         <button
           className="mt-6 bg-gradient-to-r from-blue-600 to-blue-400 text-white px-10 py-3 text-lg font-semibold rounded-xl shadow-lg hover:from-blue-700 hover:to-blue-500 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
           onClick={handleGenerate}
-          disabled={loading || !prompts.trim()}
+          disabled={loading || combinedPromptItems.length === 0}
         >
           {loading ? (
             <span className="flex items-center gap-2"><span className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></span> Generating...</span>

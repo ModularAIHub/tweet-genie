@@ -278,6 +278,14 @@ const migrations = [
     `
   },
   {
+    version: 18,
+    name: 'add_scheduled_tweets_metadata',
+    sql: `
+      ALTER TABLE scheduled_tweets
+        ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+    `
+  },
+  {
     version: 5,
     name: 'create_ai_generations_table',
     sql: `

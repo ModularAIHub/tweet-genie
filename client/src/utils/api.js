@@ -389,7 +389,32 @@ export const providers = {
 
 // AI endpoints
 export const ai = {
-  generate: ({ prompt, style = 'casual', isThread = false }) => api.post('/api/ai/generate', { prompt, style, isThread }),
+  generate: (...args) => {
+    // Backward-compatible signatures:
+    // 1) generate({ prompt, style, isThread, generationMode, strategyPrompt, clientSource })
+    // 2) generate(prompt, style, isThread)
+    if (args.length === 1 && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])) {
+      const {
+        prompt = '',
+        style = 'casual',
+        isThread = false,
+        generationMode = 'default',
+        strategyPrompt,
+        clientSource,
+      } = args[0];
+      const payload = { prompt, style, isThread, generationMode };
+      if (strategyPrompt && typeof strategyPrompt === 'object') {
+        payload.strategyPrompt = strategyPrompt;
+      }
+      if (typeof clientSource === 'string' && clientSource.trim()) {
+        payload.clientSource = clientSource.trim();
+      }
+      return api.post('/api/ai/generate', payload);
+    }
+
+    const [prompt, style = 'casual', isThread = false] = args;
+    return api.post('/api/ai/generate', { prompt, style, isThread });
+  },
   generateOptions: (prompt, style = 'casual', count = 3) => 
     api.post('/api/ai/generate-options', { prompt, style, count }),
   bulkGenerate: (prompts, options) => api.post('/api/ai/bulk-generate', { prompts, options }),

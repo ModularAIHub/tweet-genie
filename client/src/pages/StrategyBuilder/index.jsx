@@ -56,12 +56,15 @@ const StrategyBuilder = () => {
   const [editTopics, setEditTopics] = useState([]);
   const [goalInput, setGoalInput] = useState('');
   const [topicInput, setTopicInput] = useState('');
+  const [extraContextInput, setExtraContextInput] = useState('');
   const [creatingTeam, setCreatingTeam] = useState(false);
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [strategyOptions, setStrategyOptions] = useState([]);
   const [switchingStrategyId, setSwitchingStrategyId] = useState('');
 
   const normalizeListItem = (value) => value.trim().replace(/\s+/g, ' ').slice(0, 80);
+  const normalizeExtraContext = (value) =>
+    String(value || '').replace(/\r\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim().slice(0, 2000);
 
   const addListItem = (inputValue, currentItems, setItems, setInput) => {
     const candidates = String(inputValue || '')
@@ -101,6 +104,7 @@ const StrategyBuilder = () => {
     setEditTopics([]);
     setGoalInput('');
     setTopicInput('');
+    setExtraContextInput('');
     setFormMode('create');
     setShowCreateForm(true);
     setCurrentView('chat');
@@ -120,6 +124,7 @@ const StrategyBuilder = () => {
       setEditTopics(Array.isArray(loadedStrategy.topics) ? loadedStrategy.topics : []);
       setGoalInput('');
       setTopicInput('');
+      setExtraContextInput(loadedStrategy?.metadata?.extra_context || '');
       setFormMode('edit');
       setShowCreateForm(true);
       setCurrentView('chat');
@@ -189,6 +194,7 @@ const StrategyBuilder = () => {
         setEditTopics([]);
         setGoalInput('');
         setTopicInput('');
+        setExtraContextInput('');
         openCreateStrategyForm();
         return;
       }
@@ -219,6 +225,7 @@ const StrategyBuilder = () => {
         ...(strategy?.metadata || {}),
         basic_profile_completed: true,
         basic_profile_completed_at: new Date().toISOString(),
+        extra_context: normalizeExtraContext(extraContextInput),
       };
 
       let savedStrategy;
@@ -304,6 +311,7 @@ const StrategyBuilder = () => {
     setEditTopics(Array.isArray(strategy?.topics) ? strategy.topics : []);
     setGoalInput('');
     setTopicInput('');
+    setExtraContextInput(strategy?.metadata?.extra_context || '');
     setFormMode('edit');
     setShowCreateForm(true);
   };
@@ -547,6 +555,25 @@ const StrategyBuilder = () => {
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 disabled={creatingTeam}
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-900 mb-3">
+                Extra Context <span className="text-gray-400">(Optional)</span>
+              </label>
+              <p className="text-sm text-gray-600 mb-3">
+                Add product details, offer positioning, proof points, constraints, keywords, or phrases to avoid.
+                This will be reused when generating topics and prompts.
+              </p>
+              <textarea
+                placeholder="e.g., We help marketing agencies automate social content + scheduling. Avoid hype words. Mention ROI, team time savings, and simple onboarding."
+                value={extraContextInput}
+                onChange={(e) => setExtraContextInput(e.target.value.slice(0, 2000))}
+                rows={4}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={creatingTeam}
+              />
+              <p className="mt-2 text-xs text-gray-500">{extraContextInput.length}/2000</p>
             </div>
 
             {isAdvancedEditMode && (
@@ -846,7 +873,12 @@ const StrategyBuilder = () => {
           />
         )}
 
-        {currentView === 'prompts' && strategy && <PromptLibrary strategyId={strategy.id} />}
+        {currentView === 'prompts' && strategy && (
+          <PromptLibrary
+            strategyId={strategy.id}
+            strategyExtraContext={strategy?.metadata?.extra_context || ''}
+          />
+        )}
       </div>
     </div>
   );

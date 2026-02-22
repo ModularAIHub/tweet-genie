@@ -20,6 +20,7 @@ const Settings = () => {
   const { isTeamMode } = useAccount();
   const [activeTab, setActiveTab] = useState('twitter');
   const [twitterAccounts, setTwitterAccounts] = useState([]);
+  const [twitterTokenStatus, setTwitterTokenStatus] = useState(null);
   const [aiProviders, setAiProviders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showApiKey, setShowApiKey] = useState({});
@@ -110,14 +111,27 @@ const Settings = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const accountsRes = await twitter.getStatus();
-      const data = accountsRes.data;
+      const [accountsRes, tokenStatusRes] = await Promise.allSettled([
+        twitter.getStatus(),
+        twitter.getTokenStatus(),
+      ]);
+      const data = accountsRes.status === 'fulfilled' ? accountsRes.value.data : {};
       if (Array.isArray(data.accounts)) {
         setTwitterAccounts(data.accounts);
       } else if (data.account) {
         setTwitterAccounts([data.account]);
       } else {
         setTwitterAccounts([]);
+      }
+
+      if (tokenStatusRes.status === 'fulfilled') {
+        setTwitterTokenStatus(tokenStatusRes.value?.data || null);
+      } else {
+        setTwitterTokenStatus(null);
+      }
+
+      if (accountsRes.status === 'rejected') {
+        throw accountsRes.reason;
       }
     } catch (error) {
       console.error('Failed to fetch settings data:', error);
@@ -186,6 +200,54 @@ const Settings = () => {
       console.error('OAuth 1.0a connect error:', error);
       toast.error(error?.response?.data?.error || 'Failed to initiate OAuth 1.0a connection');
     }
+  };
+
+  const getOAuth2StatusUI = () => {
+    if (
+      twitterTokenStatus &&
+      twitterTokenStatus.connected === false &&
+      !twitterTokenStatus.requiresTeamAccountSelection
+    ) {
+      return {
+        card: 'bg-red-50 border-red-200',
+        text: 'text-red-600',
+        badge: 'text-red-600',
+        label: 'OAuth 2.0 not usable (Reconnect required)',
+        detail: 'A Twitter account row exists, but posting auth is not valid. Reconnect Twitter.',
+        statusText: 'Reconnect',
+      };
+    }
+
+    if (twitterTokenStatus?.connected && twitterTokenStatus?.isExpired) {
+      return {
+        card: 'bg-red-50 border-red-200',
+        text: 'text-red-600',
+        badge: 'text-red-600',
+        label: 'OAuth 2.0 expired (Reconnect required)',
+        detail: 'Posting may fail until you reconnect Twitter.',
+        statusText: 'Expired',
+      };
+    }
+
+    if (twitterTokenStatus?.connected && twitterTokenStatus?.needsRefresh) {
+      return {
+        card: 'bg-amber-50 border-amber-200',
+        text: 'text-amber-700',
+        badge: 'text-amber-700',
+        label: 'OAuth 2.0 connected (Expiring soon)',
+        detail: 'The app will try to refresh your token automatically.',
+        statusText: 'Connected',
+      };
+    }
+
+    return {
+      card: 'bg-green-50 border-green-200',
+      text: 'text-green-600',
+      badge: 'text-green-600',
+      label: 'OAuth 2.0 Connected (Text tweets)',
+      detail: null,
+      statusText: 'Connected',
+    };
   };
 
   const handleTwitterConnect = async () => {
@@ -318,6 +380,14 @@ const Settings = () => {
     );
   }
 
+  const oauth2StatusUI = getOAuth2StatusUI();
+  const showReconnectAction =
+    !isTeamMode &&
+    (
+      (!!twitterTokenStatus?.connected && !!twitterTokenStatus?.isExpired) ||
+      (twitterTokenStatus && twitterTokenStatus.connected === false && !twitterTokenStatus.requiresTeamAccountSelection)
+    );
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Header */}
@@ -376,7 +446,7 @@ const Settings = () => {
                 {twitterAccounts.map((account) => (
                   <div key={account.id} className="space-y-4">
                     {/* OAuth 2.0 Connection Status */}
-                    <div className="flex items-center justify-between p-4 bg-green-50 rounded-lg border border-green-200">
+                    <div className={`flex items-center justify-between p-4 rounded-lg border ${oauth2StatusUI.card}`}>
                       <div className="flex items-center space-x-4">
                         <img
                           src={account.profile_image_url}
@@ -394,16 +464,31 @@ const Settings = () => {
                             {account.followers_count?.toLocaleString()} followers • 
                             {account.following_count?.toLocaleString()} following
                           </p>
-                          <p className="text-xs text-green-600 font-medium">
-                            ✓ OAuth 2.0 Connected (Text tweets)
+                          <p className={`text-xs font-medium ${oauth2StatusUI.text}`}>
+                            {oauth2StatusUI.label}
                           </p>
+                          {oauth2StatusUI.detail ? (
+                            <p className="text-xs text-gray-600 mt-1">
+                              {oauth2StatusUI.detail}
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                       <div className="flex items-center space-x-3">
-                        <span className="flex items-center text-green-600 text-sm">
+                        <span className={`flex items-center text-sm ${oauth2StatusUI.badge}`}>
                           <Check className="h-4 w-4 mr-1" />
-                          Connected
+                          {oauth2StatusUI.statusText}
                         </span>
+                        {showReconnectAction ? (
+                          <button
+                            onClick={handleTwitterConnect}
+                            disabled={isTeamMode}
+                            className="btn btn-primary btn-sm disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <LinkIcon className="h-4 w-4 mr-1" />
+                            Reconnect
+                          </button>
+                        ) : null}
                         <button
                           onClick={() => handleTwitterDisconnect()}
                           disabled={isTeamMode}

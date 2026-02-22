@@ -5,6 +5,11 @@ import { requireProPlan, resolveRequestPlanType } from '../middleware/planAccess
 import { creditService } from '../services/creditService.js';
 import { TeamCreditService } from '../services/teamCreditService.js';
 import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/sanitization.js';
+import {
+  normalizeStrategyPromptPayload,
+  buildStrategyGenerationPrompt,
+  evaluateStrategyGeneratedContent,
+} from '../utils/strategyPromptBuilder.js';
 // import { bulkGenerate } from '../controllers/aiController.js';
 
 const router = express.Router();
@@ -92,7 +97,27 @@ router.post('/bulk-generate', authenticateToken, requireProPlan('Bulk generation
 // Generate AI content
 router.post('/generate', authenticateToken, async (req, res) => {
   try {
-    const { prompt, style = 'casual', isThread = false, schedule = false, scheduleOptions = {} } = req.body;
+    const {
+      prompt,
+      style = 'casual',
+      isThread = false,
+      schedule = false,
+      scheduleOptions = {},
+      generationMode = 'default',
+      strategyPrompt: rawStrategyPrompt = null,
+      clientSource = '',
+    } = req.body || {};
+
+    const normalizedGenerationMode =
+      typeof generationMode === 'string' && generationMode.trim().toLowerCase() === 'strategy_prompt'
+        ? 'strategy_prompt'
+        : 'default';
+    const strategyPrompt =
+      normalizedGenerationMode === 'strategy_prompt'
+        ? normalizeStrategyPromptPayload(rawStrategyPrompt)
+        : null;
+    const effectiveClientSource =
+      typeof clientSource === 'string' ? clientSource.trim().toLowerCase().slice(0, 32) : '';
 
     // Rate limiting
     if (!checkRateLimit(req.user.id, 'ai_generation', 10, 60000)) {
@@ -101,16 +126,6 @@ router.post('/generate', authenticateToken, async (req, res) => {
         error: 'Rate limit exceeded. Please wait before making more requests.'
       });
     }
-
-    // Basic validation only (AI service handles proper validation)
-    if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5) {
-      return res.status(400).json({
-        success: false,
-        error: 'Prompt is required and must be at least 5 characters'
-      });
-    }
-
-    const sanitizedPrompt = prompt.trim();
 
     // Validate style parameter
     const allowedStyles = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
@@ -121,10 +136,40 @@ router.post('/generate', authenticateToken, async (req, res) => {
       });
     }
 
+    if (normalizedGenerationMode === 'strategy_prompt' && !strategyPrompt) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valid strategyPrompt with idea is required for strategy generation mode'
+      });
+    }
+
+    // Basic validation only (AI service handles proper validation)
+    if (normalizedGenerationMode !== 'strategy_prompt' && (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Prompt is required and must be at least 5 characters'
+      });
+    }
+
+    const sanitizedPrompt =
+      normalizedGenerationMode === 'strategy_prompt'
+        ? buildStrategyGenerationPrompt({ strategyPrompt, isThread, style })
+        : String(prompt || '').trim();
+
+    if (!sanitizedPrompt || sanitizedPrompt.length < 5) {
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to build a valid prompt for generation'
+      });
+    }
+
     // Only estimate thread count if isThread is true
     let estimatedThreadCount = 1;
     if (isThread) {
-      const threadCountMatch = prompt.match(/generate\s+(\d+)\s+threads?/i);
+      const threadCountMatch =
+        normalizedGenerationMode === 'strategy_prompt'
+          ? null
+          : String(prompt || '').match(/generate\s+(\d+)\s+threads?/i);
       estimatedThreadCount = threadCountMatch ? parseInt(threadCountMatch[1]) : 1;
     }
     // Calculate estimated credits needed (1.2 credits per thread)
@@ -173,21 +218,109 @@ router.post('/generate', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log(`AI generation request: "${sanitizedPrompt}" with style: ${style}`);
+    if (normalizedGenerationMode === 'strategy_prompt') {
+      console.log(
+        `[AI generation][strategy] source=${effectiveClientSource || 'unknown'} style=${style} thread=${Boolean(isThread)} ideaLen=${strategyPrompt?.idea?.length || 0} extraContextLen=${strategyPrompt?.extraContext?.length || 0}`
+      );
+    } else {
+      console.log(`AI generation request: "${sanitizedPrompt}" with style: ${style}`);
+    }
 
     // First generate the content to analyze thread count
     let result;
+    let qualityGuard = null;
+    let normalizedThreadParts = null;
     try {
-      result = await aiService.generateContent(
+      const authTokenForGeneration =
+        req.cookies?.accessToken ||
+        (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) ||
+        null;
+      const firstAttempt = await aiService.generateContent(
         sanitizedPrompt,
         style,
         3,
-        req.cookies?.accessToken ||
-          (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) ||
-          null,
+        authTokenForGeneration,
         req.user.id,
         resolvedPlanType
       );
+
+      if (normalizedGenerationMode !== 'strategy_prompt' || !strategyPrompt) {
+        result = firstAttempt;
+      } else {
+        qualityGuard = {
+          mode: 'strategy_prompt',
+          checked: true,
+          passed: true,
+          retried: false,
+          issues: [],
+        };
+
+        let primaryEval = evaluateStrategyGeneratedContent({
+          content: firstAttempt?.content || '',
+          isThread: Boolean(isThread),
+        });
+        let chosenAttempt = firstAttempt;
+        let chosenEval = primaryEval;
+
+        if (!primaryEval.passed) {
+          qualityGuard.retried = true;
+          const retryPrompt = buildStrategyGenerationPrompt({
+            strategyPrompt,
+            isThread,
+            style,
+            retryContext: { issues: primaryEval.issues },
+          });
+
+          if (retryPrompt && retryPrompt.length >= 5) {
+            try {
+              const retryAttempt = await aiService.generateContent(
+                retryPrompt,
+                style,
+                3,
+                authTokenForGeneration,
+                req.user.id,
+                resolvedPlanType
+              );
+              const retryEval = evaluateStrategyGeneratedContent({
+                content: retryAttempt?.content || '',
+                isThread: Boolean(isThread),
+              });
+
+              if (
+                retryEval.passed ||
+                (!retryEval.critical && (chosenEval.critical || retryEval.issues.length <= chosenEval.issues.length))
+              ) {
+                chosenAttempt = retryAttempt;
+                chosenEval = retryEval;
+              }
+            } catch (retryError) {
+              console.error('[AI generation][strategy] retry attempt failed:', retryError?.message || retryError);
+              if (chosenEval.issues.length === 0) {
+                chosenEval.issues = ['Retry attempt failed'];
+              } else {
+                chosenEval.issues = Array.from(new Set([...chosenEval.issues, 'Retry attempt failed']));
+              }
+            }
+          }
+        }
+
+        if (chosenEval.critical) {
+          const qualityFailureError = new Error(
+            `Strategy generation quality check failed: ${(chosenEval.issues || []).join('; ') || 'Critical validation failure'}`
+          );
+          qualityFailureError.code = 'STRATEGY_QUALITY_FAILED';
+          throw qualityFailureError;
+        }
+
+        qualityGuard.passed = Boolean(chosenEval.passed);
+        qualityGuard.issues = Array.isArray(chosenEval.issues) ? chosenEval.issues : [];
+        normalizedThreadParts = Array.isArray(chosenEval.threadParts) ? chosenEval.threadParts : null;
+
+        result = {
+          ...chosenAttempt,
+          content: chosenEval.normalizedContent || chosenAttempt?.content || '',
+        };
+      }
     } catch (aiError) {
       // Refund credits if AI generation fails
       console.error('AI generation failed, refunding credits:', estimatedCreditsNeeded);
@@ -202,24 +335,30 @@ router.post('/generate', authenticateToken, async (req, res) => {
     let threadCount = 1;
     let tweets = [sanitizedContent];
     if (isThread) {
-      // Count threads by splitting on "---" separator (the actual format used by AI service)
-      const threadSeparators = sanitizedContent.split('---').filter(section => section.trim().length > 0);
-      if (threadSeparators.length > 1) {
-        threadCount = threadSeparators.length;
-        tweets = threadSeparators.map(t => t.trim());
-        console.log(`Multiple threads detected: ${threadCount} threads (separated by ---)`);
+      if (Array.isArray(normalizedThreadParts) && normalizedThreadParts.length > 0) {
+        threadCount = normalizedThreadParts.length;
+        tweets = normalizedThreadParts.map((t) => t.trim()).filter(Boolean);
+        console.log(`[AI generation][strategy] Using normalized thread parts: ${threadCount}`);
       } else {
-        // Fallback: if no --- separators, check if it's a single long thread
-        const lines = sanitizedContent.split('\n').filter(line => line.trim().length > 0);
-        if (lines.length > 3) {
-          threadCount = Math.min(Math.ceil(lines.length / 3), 5); // Estimate 3 lines per tweet, cap at 5
-          // Split into tweets of 3 lines each
-          tweets = [];
-          for (let i = 0; i < lines.length; i += 3) {
-            tweets.push(lines.slice(i, i + 3).join('\n'));
+        // Count threads by splitting on "---" separator (the actual format used by AI service)
+        const threadSeparators = sanitizedContent.split('---').filter(section => section.trim().length > 0);
+        if (threadSeparators.length > 1) {
+          threadCount = threadSeparators.length;
+          tweets = threadSeparators.map(t => t.trim());
+          console.log(`Multiple threads detected: ${threadCount} threads (separated by ---)`);
+        } else {
+          // Fallback: if no --- separators, check if it's a single long thread
+          const lines = sanitizedContent.split('\n').filter(line => line.trim().length > 0);
+          if (lines.length > 3) {
+            threadCount = Math.min(Math.ceil(lines.length / 3), 5); // Estimate 3 lines per tweet, cap at 5
+            // Split into tweets of 3 lines each
+            tweets = [];
+            for (let i = 0; i < lines.length; i += 3) {
+              tweets.push(lines.slice(i, i + 3).join('\n'));
+            }
+            tweets = tweets.slice(0, 5);
+            console.log(`Long content detected: estimated ${threadCount} tweets based on ${lines.length} lines`);
           }
-          tweets = tweets.slice(0, 5);
-          console.log(`Long content detected: estimated ${threadCount} tweets based on ${lines.length} lines`);
         }
       }
     }
@@ -297,7 +436,9 @@ router.post('/generate', authenticateToken, async (req, res) => {
       creditSource: creditCheck.source,
       generatedAt: new Date().toISOString(),
       scheduled: schedule ? true : false,
-      scheduledResult
+      scheduledResult,
+      ...(Array.isArray(normalizedThreadParts) && normalizedThreadParts.length > 0 ? { threadParts: normalizedThreadParts } : {}),
+      ...(qualityGuard ? { qualityGuard } : {})
     });
 
   } catch (error) {

@@ -67,6 +67,9 @@ const parseCsvInput = (value = '') =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const normalizeExtraContext = (value = '') =>
+  String(value || '').replace(/\r\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim().slice(0, 2000);
+
 const StrategyOverview = ({ strategy, onGeneratePrompts, onStrategyUpdated }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [promptCount, setPromptCount] = useState(0);
@@ -75,10 +78,16 @@ const StrategyOverview = ({ strategy, onGeneratePrompts, onStrategyUpdated }) =>
   const [manualTopicsInput, setManualTopicsInput] = useState('');
   const [aiPromptInput, setAiPromptInput] = useState('');
   const [isApplyingAddOn, setIsApplyingAddOn] = useState(false);
+  const [extraContextInput, setExtraContextInput] = useState(strategy?.metadata?.extra_context || '');
+  const [isSavingExtraContext, setIsSavingExtraContext] = useState(false);
 
   useEffect(() => {
     loadPromptCount();
   }, [strategy?.id]);
+
+  useEffect(() => {
+    setExtraContextInput(strategy?.metadata?.extra_context || '');
+  }, [strategy?.id, strategy?.metadata?.extra_context]);
 
   const loadPromptCount = async () => {
     if (!strategy?.id) return;
@@ -190,6 +199,29 @@ const StrategyOverview = ({ strategy, onGeneratePrompts, onStrategyUpdated }) =>
       }
     } finally {
       setIsApplyingAddOn(false);
+    }
+  };
+
+  const handleSaveExtraContext = async () => {
+    if (!strategy?.id) return;
+    setIsSavingExtraContext(true);
+    try {
+      const nextExtraContext = normalizeExtraContext(extraContextInput);
+      const response = await strategyApi.update(strategy.id, {
+        metadata: {
+          ...(strategy?.metadata || {}),
+          extra_context: nextExtraContext,
+          last_strategy_update_source: 'manual_extra_context_edit',
+        },
+      });
+      if (onStrategyUpdated && response?.data) {
+        onStrategyUpdated(response.data);
+      }
+      toast.success('Extra context saved.');
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to save extra context');
+    } finally {
+      setIsSavingExtraContext(false);
     }
   };
 
@@ -377,6 +409,31 @@ const StrategyOverview = ({ strategy, onGeneratePrompts, onStrategyUpdated }) =>
           Content Topics
         </h3>
         <ArrayDisplay items={strategy.topics} emptyText="No topics defined yet" />
+      </div>
+
+      <div className="bg-white rounded-xl p-6 border border-gray-200">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <h3 className="text-lg font-semibold text-gray-900">Extra Context (Optional)</h3>
+          <button
+            type="button"
+            onClick={handleSaveExtraContext}
+            disabled={isSavingExtraContext}
+            className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {isSavingExtraContext ? 'Saving...' : 'Save Context'}
+          </button>
+        </div>
+        <p className="text-sm text-gray-600 mb-3">
+          Reusable details for topic suggestions and prompt/content generation (offer, proof, constraints, keywords, phrases to avoid).
+        </p>
+        <textarea
+          value={extraContextInput}
+          onChange={(e) => setExtraContextInput(e.target.value.slice(0, 2000))}
+          rows={4}
+          placeholder="e.g., We help agencies automate content planning + scheduling. Avoid hype words. Mention ROI and saved hours."
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+        <p className="mt-2 text-xs text-gray-500">{extraContextInput.length}/2000</p>
       </div>
 
       <div className="bg-white rounded-xl p-6 border border-gray-200">

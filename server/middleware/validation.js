@@ -28,6 +28,11 @@ export const tweetSchema = Joi.object({
   }),
   // Allow frontend to pass a postToLinkedin boolean flag
   postToLinkedin: Joi.boolean().optional(),
+  crossPostTargets: Joi.object({
+    linkedin: Joi.boolean().optional(),
+    threads: Joi.boolean().optional(),
+  }).optional(),
+  optimizeCrossPost: Joi.boolean().optional(),
   media: Joi.array().items(Joi.string()).max(4).optional(),
   scheduled_for: Joi.date().greater('now').optional(),
   thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
@@ -51,6 +56,11 @@ export const scheduleSchema = Joi.object({
   content: Joi.string().allow('').max(280).optional(),
   // Allow scheduling requests to include postToLinkedin
   postToLinkedin: Joi.boolean().optional(),
+  crossPostTargets: Joi.object({
+    linkedin: Joi.boolean().optional(),
+    threads: Joi.boolean().optional(),
+  }).optional(),
+  optimizeCrossPost: Joi.boolean().optional(),
   media: Joi.array().items(Joi.string()).max(4).optional().allow(null),
   thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
   threadMedia: Joi.array().items(

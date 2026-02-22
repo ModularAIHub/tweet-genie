@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { tweets, twitter, ai, imageGeneration, scheduling, media } from '../utils/api';
+import { loadDraft, saveDraft, clearDraft } from '../utils/draftStorage';
 import { 
   sanitizeUserInput, 
   sanitizeAIContent, 
@@ -16,6 +17,39 @@ const getBase64Size = (base64String) => {
 };
 // Maximum image size in bytes (5MB)
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+const COMPOSE_DRAFT_STORAGE_KEY = 'tweetComposerDraft';
+const COMPOSE_DRAFT_VERSION = 1;
+const COMPOSE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const ALLOWED_AI_STYLES = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
+
+const normalizeComposeDraftTweets = (tweets = []) => {
+  if (!Array.isArray(tweets) || tweets.length === 0) return [''];
+  const cleaned = tweets
+    .map((tweet) => String(tweet || ''))
+    .map((tweet) => (tweet === '---' ? tweet : tweet.slice(0, 300)))
+    .slice(0, 10);
+
+  return cleaned.length > 0 ? cleaned : [''];
+};
+
+const hasMeaningfulComposeDraft = (draft = {}) => {
+  const threadTweets = Array.isArray(draft.threadTweets) ? draft.threadTweets : [];
+  const hasThreadText = threadTweets.some((tweet) => {
+    const value = String(tweet || '').trim();
+    return value && value !== '---';
+  });
+
+  return Boolean(
+    String(draft.content || '').trim() ||
+      hasThreadText ||
+      Boolean(draft.isThread) ||
+      String(draft.scheduledFor || '').trim() ||
+      String(draft.aiPrompt || '').trim() ||
+      String(draft.imagePrompt || '').trim() ||
+      Boolean(draft.showAIPrompt) ||
+      Boolean(draft.showImagePrompt)
+  );
+};
 
 const getCachedSelectedTwitterAccount = () => {
   if (typeof window === 'undefined' || !window.localStorage) {
@@ -58,6 +92,84 @@ const normalizeIdeaPrompt = (prompt) =>
     .replace(/^["']+|["']+$/g, '')
     .trim();
 
+const parseStrategyPromptDetails = (prompt = '') => {
+  const raw = String(prompt || '').replace(/\r\n/g, '\n').trim();
+  if (!raw) {
+    return { idea: '', instruction: '' };
+  }
+
+  const instructionMatch = raw.match(/\bInstruction:\s*/i);
+  if (!instructionMatch || typeof instructionMatch.index !== 'number') {
+    return { idea: normalizeIdeaPrompt(raw), instruction: '' };
+  }
+
+  const ideaPart = raw.slice(0, instructionMatch.index).replace(/\s+/g, ' ').trim();
+  const instructionPart = raw
+    .slice(instructionMatch.index + instructionMatch[0].length)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return {
+    idea: normalizeIdeaPrompt(ideaPart || raw),
+    instruction: instructionPart,
+  };
+};
+
+const buildSingleTweetAIPrompt = (rawPrompt) => {
+  const { idea, instruction } = parseStrategyPromptDetails(rawPrompt);
+  const safeIdea = idea || normalizeIdeaPrompt(String(rawPrompt || ''));
+
+  const promptLines = [
+    'Create ONE original, complete tweet for X (Twitter) inspired by the idea below.',
+    'Return only the final tweet text.',
+    'No labels, no quotes, no preface (for example: no "Here is", no "Okay").',
+    'Use a fresh hook and wording (do not copy the idea text directly).',
+    'Keep it under 260 characters.',
+    'Do not end mid-sentence or with an unfinished example.',
+    `Idea: ${safeIdea}`,
+  ];
+
+  if (instruction) {
+    promptLines.push(`Extra instruction: ${instruction}`);
+  }
+
+  return promptLines.join('\n');
+};
+
+const normalizePromptComparisonText = (value = '') =>
+  String(value || '').replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim();
+
+const sanitizeStrategyPromptContext = (context = {}) => {
+  if (!context || typeof context !== 'object' || Array.isArray(context)) {
+    return null;
+  }
+
+  const normalizeText = (value, maxLength = 500) =>
+    sanitizeUserInput(String(value || '').trim(), {
+      maxLength,
+      encodeHTML: false,
+      preserveSpacing: true,
+    }).replace(/\s+/g, ' ').trim();
+
+  const normalized = {
+    strategyId: context.strategyId ?? null,
+    promptId: context.promptId ?? context.id ?? null,
+    idea: normalizeText(context.idea, 600),
+    instruction: normalizeText(context.instruction, 500),
+    category: normalizeText(context.category, 120),
+    recommendedFormat: normalizeText(context.recommendedFormat, 40).toLowerCase() || 'single_tweet',
+    goal: normalizeText(context.goal, 160),
+    hashtagsHint: normalizeText(context.hashtagsHint, 160),
+    extraContext: normalizeText(context.extraContext, 2000),
+  };
+
+  if (!normalized.idea || normalized.idea.length < 5) {
+    return null;
+  }
+
+  return normalized;
+};
+
 // Helper function to convert File to base64 data URL
 const fileToBase64 = (file) => {
   return new Promise((resolve, reject) => {
@@ -70,6 +182,10 @@ const fileToBase64 = (file) => {
 
 export const useTweetComposer = () => {
   const cachedAccount = getCachedSelectedTwitterAccount();
+  const [isComposeDraftHydrated, setIsComposeDraftHydrated] = useState(false);
+  const hasSkippedComposeDraftAutosaveRef = useRef(false);
+  const lastTokenStatusToastAtRef = useRef(0);
+  const lastTokenStatusCheckAtRef = useRef(0);
 
   // State
   const [content, setContentState] = useState('');
@@ -83,6 +199,8 @@ export const useTweetComposer = () => {
   const [isThread, setIsThread] = useState(false);
   const [showAIPrompt, setShowAIPrompt] = useState(false);
   const [aiPrompt, setAiPromptState] = useState('');
+  const [strategyPromptContext, setStrategyPromptContextState] = useState(null);
+  const [strategyPromptSeedText, setStrategyPromptSeedTextState] = useState('');
   const [aiStyle, setAiStyle] = useState('casual');
   const [isGenerating, setIsGenerating] = useState(false);
   const [showImagePrompt, setShowImagePrompt] = useState(false);
@@ -101,8 +219,21 @@ export const useTweetComposer = () => {
   };
 
   const setAiPrompt = (value) => {
-    const cleaned = value.length > 1000 ? value.substring(0, 1000) : value;
+    const cleaned = value.length > 2000 ? value.substring(0, 2000) : value;
     setAiPromptState(cleaned);
+  };
+
+  const setStrategyPromptContext = (value) => {
+    setStrategyPromptContextState(sanitizeStrategyPromptContext(value));
+  };
+
+  const clearStrategyPromptContext = () => {
+    setStrategyPromptContextState(null);
+    setStrategyPromptSeedTextState('');
+  };
+
+  const setStrategyPromptSeedText = (value) => {
+    setStrategyPromptSeedTextState(String(value || '').slice(0, 4000));
   };
 
   const setImagePrompt = (value) => {
@@ -144,6 +275,142 @@ export const useTweetComposer = () => {
       });
     };
   }, []);
+
+  useEffect(() => {
+    const runSilentTokenCheck = () => {
+      checkTwitterPostingTokenStatus({ silent: true }).catch(() => {});
+    };
+
+    runSilentTokenCheck();
+
+    const handleFocus = () => {
+      runSilentTokenCheck();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        runSilentTokenCheck();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const loaded = loadDraft(COMPOSE_DRAFT_STORAGE_KEY, {
+      version: COMPOSE_DRAFT_VERSION,
+      ttlMs: COMPOSE_DRAFT_TTL_MS,
+    });
+
+    const draft = loaded?.data;
+    if (draft && typeof draft === 'object' && !Array.isArray(draft)) {
+      if (typeof draft.content === 'string') {
+        setContent(draft.content);
+      }
+
+      const restoredThreadTweets = normalizeComposeDraftTweets(draft.threadTweets);
+      setThreadTweetsState(restoredThreadTweets);
+      setThreadImages(Array(restoredThreadTweets.length).fill([]));
+
+      if (typeof draft.isThread === 'boolean') {
+        setIsThread(draft.isThread);
+      }
+
+      if (typeof draft.scheduledFor === 'string') {
+        setScheduledFor(draft.scheduledFor.slice(0, 64));
+      }
+
+      if (typeof draft.showAIPrompt === 'boolean') {
+        setShowAIPrompt(draft.showAIPrompt);
+      }
+
+      if (typeof draft.aiPrompt === 'string') {
+        setAiPrompt(draft.aiPrompt);
+      }
+
+      if (draft.strategyPromptContext) {
+        setStrategyPromptContext(draft.strategyPromptContext);
+      }
+
+      if (typeof draft.strategyPromptSeedText === 'string') {
+        setStrategyPromptSeedText(draft.strategyPromptSeedText);
+      }
+
+      if (typeof draft.aiStyle === 'string' && ALLOWED_AI_STYLES.includes(draft.aiStyle)) {
+        setAiStyle(draft.aiStyle);
+      }
+
+      if (typeof draft.showImagePrompt === 'boolean') {
+        setShowImagePrompt(draft.showImagePrompt);
+      }
+
+      if (typeof draft.imagePrompt === 'string') {
+        setImagePrompt(draft.imagePrompt);
+      }
+
+      if (typeof draft.imageStyle === 'string' && draft.imageStyle.trim()) {
+        setImageStyle(draft.imageStyle.trim().slice(0, 40));
+      }
+    }
+
+    setIsComposeDraftHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isComposeDraftHydrated) return;
+
+    // Skip the first autosave pass after hydration to avoid overwriting a just-restored draft.
+    if (!hasSkippedComposeDraftAutosaveRef.current) {
+      hasSkippedComposeDraftAutosaveRef.current = true;
+      return;
+    }
+
+    const draftPayload = {
+      content: String(content || ''),
+      threadTweets: normalizeComposeDraftTweets(threadTweets),
+      isThread: Boolean(isThread),
+      scheduledFor: String(scheduledFor || '').slice(0, 64),
+      showAIPrompt: Boolean(showAIPrompt),
+      aiPrompt: String(aiPrompt || '').slice(0, 2000),
+      strategyPromptContext: strategyPromptContext ? sanitizeStrategyPromptContext(strategyPromptContext) : null,
+      strategyPromptSeedText: String(strategyPromptSeedText || '').slice(0, 4000),
+      aiStyle: ALLOWED_AI_STYLES.includes(aiStyle) ? aiStyle : 'casual',
+      showImagePrompt: Boolean(showImagePrompt),
+      imagePrompt: String(imagePrompt || '').slice(0, 1000),
+      imageStyle: String(imageStyle || 'natural').slice(0, 40),
+    };
+
+    const timeoutId = setTimeout(() => {
+      if (!hasMeaningfulComposeDraft(draftPayload)) {
+        clearDraft(COMPOSE_DRAFT_STORAGE_KEY);
+        return;
+      }
+
+      saveDraft(COMPOSE_DRAFT_STORAGE_KEY, draftPayload, { version: COMPOSE_DRAFT_VERSION });
+    }, 500);
+
+    return () => clearTimeout(timeoutId);
+  }, [
+    isComposeDraftHydrated,
+    content,
+    threadTweets,
+    isThread,
+    scheduledFor,
+    showAIPrompt,
+    aiPrompt,
+    strategyPromptContext,
+    strategyPromptSeedText,
+    aiStyle,
+    showImagePrompt,
+    imagePrompt,
+    imageStyle,
+  ]);
 
   // Computed values
   const characterCount = isThread 
@@ -240,6 +507,48 @@ export const useTweetComposer = () => {
     }
   };
 
+  const checkTwitterPostingTokenStatus = async ({ silent = true, force = false } = {}) => {
+    const now = Date.now();
+    if (!force && now - lastTokenStatusCheckAtRef.current < 15_000) {
+      return { ok: true, skipped: true };
+    }
+
+    lastTokenStatusCheckAtRef.current = now;
+
+    try {
+      const response = await twitter.getTokenStatus();
+      const status = response?.data || {};
+
+      if (status?.requiresTeamAccountSelection) {
+        return { ok: true, status };
+      }
+
+      const unusable = status?.connected === false || Boolean(status?.isExpired);
+      if (unusable) {
+        if (!silent || now - lastTokenStatusToastAtRef.current > 20_000) {
+          lastTokenStatusToastAtRef.current = now;
+          const message = status?.isExpired
+            ? 'Twitter token expired. Please reconnect your account before posting.'
+            : 'Twitter connection is not usable right now. Please reconnect your account.';
+          toast.error(message, { duration: 5000 });
+        }
+
+        return { ok: false, status };
+      }
+
+      if (!silent && status?.needsRefresh) {
+        toast('Twitter token is expiring soon. We will try to refresh it automatically.', { icon: 'ℹ️' });
+      }
+
+      return { ok: true, status };
+    } catch (error) {
+      if (!silent) {
+        console.warn('Twitter token preflight check failed:', error);
+      }
+      return { ok: true, error };
+    }
+  };
+
   // Handlers
   const handleImageUpload = (event) => {
     const files = Array.from(event.target.files);
@@ -295,7 +604,21 @@ export const useTweetComposer = () => {
   };
 
   // ── FIXED: now accepts postToLinkedin as a parameter ──
-  const handlePost = async (postToLinkedin = false) => {
+  const handlePost = async (crossPostInput = false) => {
+    const normalizedCrossPost =
+      crossPostInput && typeof crossPostInput === 'object' && !Array.isArray(crossPostInput)
+        ? {
+            linkedin: Boolean(crossPostInput.linkedin),
+            threads: Boolean(crossPostInput.threads),
+            optimizeCrossPost: crossPostInput.optimizeCrossPost !== false,
+          }
+        : {
+            linkedin: Boolean(crossPostInput),
+            threads: false,
+            optimizeCrossPost: true,
+          };
+    const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
+
     // Validate content before posting
     if (isThread) {
       const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
@@ -328,8 +651,104 @@ export const useTweetComposer = () => {
       }
     }
 
+    const tokenPreflight = await checkTwitterPostingTokenStatus({ silent: false, force: true });
+    if (!tokenPreflight.ok) {
+      setTimeout(() => {
+        window.location.href = '/settings';
+      }, 1000);
+      return;
+    }
+
     setIsPosting(true);
     try {
+      const crossPostRequestFields = {
+        ...(normalizedCrossPost.linkedin && { postToLinkedin: true }),
+        ...(hasAnyCrossPostTarget && {
+          crossPostTargets: {
+            linkedin: normalizedCrossPost.linkedin,
+            threads: normalizedCrossPost.threads,
+          },
+          optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
+        }),
+      };
+
+      const showPostResultToast = ({ response, isThreadPost, validTweetsCount = 1 }) => {
+        const baseSuccessMessage = isThreadPost
+          ? `Thread with ${validTweetsCount} tweets posted successfully!`
+          : 'Tweet posted successfully!';
+
+        const crossPost = response?.data?.crossPost;
+        if (crossPost && typeof crossPost === 'object') {
+          const selectedPlatforms = [];
+          if (normalizedCrossPost.linkedin) {
+            selectedPlatforms.push({ label: 'LinkedIn', result: crossPost.linkedin || null });
+          }
+          if (normalizedCrossPost.threads) {
+            selectedPlatforms.push({ label: 'Threads', result: crossPost.threads || null });
+          }
+
+          if (selectedPlatforms.length === 0) {
+            toast.success(baseSuccessMessage);
+            return;
+          }
+
+          const successful = [];
+          const issues = [];
+          let mediaFallbackShown = false;
+
+          for (const platform of selectedPlatforms) {
+            const status = String(platform?.result?.status || '').trim();
+            if (status === 'posted') {
+              successful.push(platform.label);
+              if (platform?.result?.mediaDetected && platform?.result?.mediaStatus === 'text_only_phase1') {
+                mediaFallbackShown = true;
+              }
+              continue;
+            }
+
+            const statusMessages = {
+              not_connected: `${platform.label} not connected — X post succeeded.`,
+              timeout: `${platform.label} cross-post timed out — X post succeeded.`,
+              skipped_individual_only: `${platform.label} cross-post is available only for personal Twitter accounts right now.`,
+              skipped_not_configured: `${platform.label} cross-post is not configured yet.`,
+              skipped: `${platform.label} cross-post was skipped.`,
+              failed: `${platform.label} cross-post failed — X post succeeded.`,
+              disabled: null,
+              '': null,
+              null: null,
+            };
+
+            const issue = statusMessages[status] ?? `${platform.label} cross-post did not complete (${status}). X post succeeded.`;
+            if (issue) issues.push(issue);
+          }
+
+          if (successful.length > 0 && issues.length === 0) {
+            toast.success(`${baseSuccessMessage.replace(/!$/, '')} & cross-posted to ${successful.join(' + ')}!`);
+          } else {
+            toast.success(baseSuccessMessage);
+            issues.forEach((message) => toast(message, { icon: '⚠️' }));
+          }
+
+          if (mediaFallbackShown) {
+            toast('Images were posted to X only. Cross-posts used text-only content (Phase 1).', { icon: 'ℹ️' });
+          }
+          return;
+        }
+
+        const linkedinStatus = response?.data?.linkedin;
+        if (normalizedCrossPost.linkedin && linkedinStatus === 'posted') {
+          toast.success(isThreadPost ? 'Thread posted & cross-posted to LinkedIn! ✓' : 'Tweet posted & cross-posted to LinkedIn! ✓');
+        } else if (normalizedCrossPost.linkedin && linkedinStatus === 'failed') {
+          toast.success(baseSuccessMessage);
+          toast.error('LinkedIn cross-post failed — check your connection.');
+        } else if (normalizedCrossPost.linkedin && linkedinStatus === 'not_connected') {
+          toast.success(baseSuccessMessage);
+          toast.error('LinkedIn not connected — post was X only.');
+        } else {
+          toast.success(baseSuccessMessage);
+        }
+      };
+
       // Upload main tweet images
       let mediaIds = [];
       if (selectedImages.length > 0) {
@@ -392,18 +811,9 @@ export const useTweetComposer = () => {
           thread: validTweets,
           threadMedia,
           media: mediaIds.length > 0 ? mediaIds : undefined,
-          // Only include postToLinkedin in the request if it's true
-          ...(postToLinkedin && { postToLinkedin: true }),
+          ...crossPostRequestFields,
         });
-        const linkedinStatus = response?.data?.linkedin;
-        if (linkedinStatus === 'posted') {
-          toast.success(`Thread posted & cross-posted to LinkedIn! ✓`);
-        } else if (linkedinStatus === 'failed') {
-          toast.success(`Thread posted!`);
-          toast.error('LinkedIn cross-post failed — check your connection.');
-        } else {
-          toast.success(`Thread with ${validTweets.length} tweets posted successfully!`);
-        }
+        showPostResultToast({ response, isThreadPost: true, validTweetsCount: validTweets.length });
         setThreadTweets(['']);
         setThreadImages([]);
         setIsThread(false);
@@ -411,21 +821,9 @@ export const useTweetComposer = () => {
         const response = await tweets.create({
           content: content.trim(),
           media: mediaIds.length > 0 ? mediaIds : undefined,
-          // Only include postToLinkedin in the request if it's true
-          ...(postToLinkedin && { postToLinkedin: true }),
+          ...crossPostRequestFields,
         });
-        const linkedinStatus = response?.data?.linkedin;
-        if (linkedinStatus === 'posted') {
-          toast.success('Tweet posted & cross-posted to LinkedIn! ✓');
-        } else if (linkedinStatus === 'failed') {
-          toast.success('Tweet posted!');
-          toast.error('LinkedIn cross-post failed — check your connection.');
-        } else if (linkedinStatus === 'not_connected') {
-          toast.success('Tweet posted!');
-          toast.error('LinkedIn not connected — post was Twitter only.');
-        } else {
-          toast.success('Tweet posted successfully!');
-        }
+        showPostResultToast({ response, isThreadPost: false });
         setContent('');
       }
 
@@ -444,6 +842,7 @@ export const useTweetComposer = () => {
           }
         });
       });
+      clearDraft(COMPOSE_DRAFT_STORAGE_KEY);
 
     } catch (error) {
       console.error('Post tweet error:', error);
@@ -478,8 +877,21 @@ export const useTweetComposer = () => {
     }
   };
 
-  // Accepts a date string and timezone as arguments
-  const handleSchedule = async (dateString, timezone) => {
+  // Accepts a date string/timezone and optional cross-post settings
+  const handleSchedule = async (dateString, timezone, crossPostInput = false) => {
+    const normalizedCrossPost =
+      crossPostInput && typeof crossPostInput === 'object' && !Array.isArray(crossPostInput)
+        ? {
+            linkedin: Boolean(crossPostInput.linkedin),
+            threads: Boolean(crossPostInput.threads),
+            optimizeCrossPost: crossPostInput.optimizeCrossPost !== false,
+          }
+        : {
+            linkedin: Boolean(crossPostInput),
+            threads: false,
+            optimizeCrossPost: true,
+          };
+    const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
     if (isThread) {
       const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
       if (validTweets.length === 0) {
@@ -557,10 +969,26 @@ export const useTweetComposer = () => {
         await scheduling.create({
           thread: validTweets,
           threadMedia,
+          ...(normalizedCrossPost.linkedin && { postToLinkedin: true }),
+          ...(hasAnyCrossPostTarget && {
+            crossPostTargets: {
+              linkedin: normalizedCrossPost.linkedin,
+              threads: normalizedCrossPost.threads,
+            },
+            optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
+          }),
           scheduled_for: dateString,
           timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
         });
-        toast.success('Thread scheduled successfully!');
+        if (hasAnyCrossPostTarget) {
+          const labels = [
+            normalizedCrossPost.linkedin ? 'LinkedIn' : null,
+            normalizedCrossPost.threads ? 'Threads' : null,
+          ].filter(Boolean);
+          toast.success(`Thread scheduled. Cross-post to ${labels.join(' + ')} will run at publish time.`);
+        } else {
+          toast.success('Thread scheduled successfully!');
+        }
         setThreadTweets(['']);
         setThreadImages([]);
         setIsThread(false);
@@ -568,10 +996,26 @@ export const useTweetComposer = () => {
         await scheduling.create({
           content: content.trim(),
           media: mediaIds.length > 0 ? mediaIds : undefined,
+          ...(normalizedCrossPost.linkedin && { postToLinkedin: true }),
+          ...(hasAnyCrossPostTarget && {
+            crossPostTargets: {
+              linkedin: normalizedCrossPost.linkedin,
+              threads: normalizedCrossPost.threads,
+            },
+            optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
+          }),
           scheduled_for: dateString,
           timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
         });
-        toast.success('Tweet scheduled successfully!');
+        if (hasAnyCrossPostTarget) {
+          const labels = [
+            normalizedCrossPost.linkedin ? 'LinkedIn' : null,
+            normalizedCrossPost.threads ? 'Threads' : null,
+          ].filter(Boolean);
+          toast.success(`Tweet scheduled. Cross-post to ${labels.join(' + ')} will run at publish time.`);
+        } else {
+          toast.success('Tweet scheduled successfully!');
+        }
         setContent('');
       }
 
@@ -582,6 +1026,7 @@ export const useTweetComposer = () => {
         }
       });
       setSelectedImages([]);
+      clearDraft(COMPOSE_DRAFT_STORAGE_KEY);
       fetchScheduledTweets();
     } catch (error) {
       console.error('Schedule tweet error:', error);
@@ -592,9 +1037,10 @@ export const useTweetComposer = () => {
     }
   };
 
-  const handleAIGenerate = async () => {
-    let sanitizedPrompt = sanitizeUserInput(aiPrompt.trim(), { 
-      maxLength: 1000,
+  const handleAIGenerate = async (promptOverride = null) => {
+    const promptSource = typeof promptOverride === 'string' ? promptOverride : aiPrompt;
+    let sanitizedPrompt = sanitizeUserInput(promptSource.trim(), { 
+      maxLength: 2000,
       encodeHTML: false
     });
 
@@ -605,27 +1051,41 @@ export const useTweetComposer = () => {
 
     let aiRequestPrompt = sanitizedPrompt;
     let aiRequestIsThread = isThread;
+    const normalizedCurrentPrompt = normalizePromptComparisonText(sanitizedPrompt);
+    const normalizedSeedPrompt = normalizePromptComparisonText(strategyPromptSeedText);
+    const canUseStrategyMode = Boolean(
+      strategyPromptContext &&
+      strategyPromptContext.idea &&
+      normalizedCurrentPrompt &&
+      normalizedCurrentPrompt === normalizedSeedPrompt
+    );
+
     if (!isThread) {
-      const normalizedIdea = normalizeIdeaPrompt(sanitizedPrompt);
-      aiRequestPrompt = [
-        'Create ONE original tweet for X (Twitter) inspired by the idea below.',
-        'Rules:',
-        '1) Do not copy phrases or sentence structure from the idea.',
-        '2) Use a fresh hook and different wording.',
-        '3) Keep the tweet under 260 characters.',
-        '4) Return only the tweet text with no labels or quotes.',
-        `Idea: ${normalizedIdea}`,
-      ].join('\n');
+      aiRequestPrompt = buildSingleTweetAIPrompt(sanitizedPrompt);
       aiRequestIsThread = false;
     }
 
     setIsGenerating(true);
     try {
-      const response = await ai.generate({
-        prompt: aiRequestPrompt,
-        style: aiStyle,
-        isThread: aiRequestIsThread
-      });
+      const aiPayload = canUseStrategyMode
+        ? {
+            prompt: sanitizedPrompt,
+            style: aiStyle,
+            isThread: aiRequestIsThread,
+            generationMode: 'strategy_prompt',
+            strategyPrompt: {
+              ...strategyPromptContext,
+              recommendedFormat: strategyPromptContext.recommendedFormat || 'single_tweet',
+            },
+            clientSource: 'compose',
+          }
+        : {
+            prompt: aiRequestPrompt,
+            style: aiStyle,
+            isThread: aiRequestIsThread,
+          };
+
+      const response = await ai.generate(aiPayload);
 
       if (response.data && response.data.content) {
         const sanitizedContent = sanitizeAIContent(response.data.content, {
@@ -650,6 +1110,7 @@ export const useTweetComposer = () => {
 
         setShowAIPrompt(false);
         setAiPrompt('');
+        clearStrategyPromptContext();
 
         if (response.data.creditsUsed && response.data.threadCount) {
           toast.success(`Content generated successfully! Used ${response.data.creditsUsed} credits for ${response.data.threadCount} thread(s).`);
@@ -939,6 +1400,11 @@ export const useTweetComposer = () => {
     showAIPrompt,
     aiPrompt,
     setAiPrompt,
+    strategyPromptContext,
+    setStrategyPromptContext,
+    clearStrategyPromptContext,
+    strategyPromptSeedText,
+    setStrategyPromptSeedText,
     aiStyle,
     setAiStyle,
     isGenerating,

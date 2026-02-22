@@ -62,7 +62,63 @@ const cleanPromptText = (value = '') =>
     .replace(/\s+/g, ' ')
     .trim();
 
-const PromptLibrary = ({ strategyId }) => {
+const mergePromptWithInstruction = (
+  promptText,
+  instructionText,
+  { singleLine = false } = {}
+) => {
+  const cleanedPrompt = cleanPromptText(promptText);
+  const cleanedInstruction = cleanPromptText(instructionText);
+  const instruction =
+    cleanedInstruction && cleanedInstruction.toLowerCase() !== cleanedPrompt.toLowerCase()
+      ? cleanedInstruction
+      : '';
+
+  if (!instruction) return cleanedPrompt;
+
+  if (singleLine) {
+    return `${cleanedPrompt} Instruction: ${instruction}`.replace(/\s+/g, ' ').trim();
+  }
+
+  return `${cleanedPrompt}\n\nInstruction: ${instruction}`;
+};
+
+const normalizeFreeformContext = (value = '') =>
+  String(value || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+
+const buildStructuredStrategyPrompt = (prompt, strategyId, strategyExtraContext = '') => {
+  const variables = parseVariables(prompt?.variables);
+  const cleanedIdea = cleanPromptText(prompt?.prompt_text || '');
+  const instruction = typeof variables.instruction === 'string' ? cleanPromptText(variables.instruction) : '';
+  const recommendedFormat =
+    typeof variables.recommended_format === 'string'
+      ? variables.recommended_format.trim().toLowerCase()
+      : 'single_tweet';
+  const goal = typeof variables.goal === 'string' ? cleanPromptText(variables.goal) : '';
+  const hashtagsHint =
+    typeof variables.hashtags_hint === 'string' ? cleanPromptText(variables.hashtags_hint) : '';
+  const mergedPromptText = mergePromptWithInstruction(cleanedIdea, instruction, { singleLine: false });
+  const legacySingleLinePrompt = mergePromptWithInstruction(cleanedIdea, instruction, { singleLine: true });
+
+  return {
+    mergedPromptText,
+    legacySingleLinePrompt,
+    isThread: recommendedFormat === 'thread',
+    strategyPrompt: {
+      strategyId,
+      promptId: prompt?.id,
+      idea: cleanedIdea,
+      instruction,
+      category: prompt?.category || 'general',
+      recommendedFormat,
+      goal,
+      hashtagsHint,
+      extraContext: normalizeFreeformContext(strategyExtraContext),
+    },
+  };
+};
+
+const PromptLibrary = ({ strategyId, strategyExtraContext = '' }) => {
   const navigate = useNavigate();
   const [prompts, setPrompts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -265,27 +321,26 @@ const PromptLibrary = ({ strategyId }) => {
     }
 
     const seed = {
+      version: 2,
       strategyId,
       source: 'strategy_library',
       generatedAt: new Date().toISOString(),
       items: selectedPrompts.map((prompt) => {
-        const variables = parseVariables(prompt.variables);
-        const instruction =
-          typeof variables.instruction === 'string' ? cleanPromptText(variables.instruction) : '';
-        const cleanedPrompt = cleanPromptText(prompt.prompt_text);
-        const recommendedFormat =
-          typeof variables.recommended_format === 'string'
-            ? variables.recommended_format.trim().toLowerCase()
-            : 'single_tweet';
-        const mergedPrompt = instruction
-          ? `${cleanedPrompt}\n\nInstruction: ${instruction}`
-          : cleanedPrompt;
+        const structured = buildStructuredStrategyPrompt(prompt, strategyId, strategyExtraContext);
 
         return {
-          id: prompt.id,
-          prompt: mergedPrompt,
-          isThread: recommendedFormat === 'thread',
-          category: prompt.category || 'general',
+          id: prompt.id, // legacy key
+          promptId: prompt.id,
+          prompt: structured.legacySingleLinePrompt, // legacy v1 compatibility
+          legacyPromptText: structured.legacySingleLinePrompt,
+          idea: structured.strategyPrompt.idea,
+          instruction: structured.strategyPrompt.instruction,
+          isThread: structured.isThread,
+          category: structured.strategyPrompt.category,
+          recommendedFormat: structured.strategyPrompt.recommendedFormat,
+          goal: structured.strategyPrompt.goal,
+          hashtagsHint: structured.strategyPrompt.hashtagsHint,
+          extraContext: structured.strategyPrompt.extraContext,
         };
       }),
     };
@@ -299,29 +354,23 @@ const PromptLibrary = ({ strategyId }) => {
   };
 
   const handleGeneratePrompt = (prompt) => {
-    const variables = parseVariables(prompt.variables);
-    const instruction =
-      typeof variables.instruction === 'string' ? cleanPromptText(variables.instruction) : '';
-    const cleanedPrompt = cleanPromptText(prompt.prompt_text);
-    const recommendedFormat =
-      typeof variables.recommended_format === 'string'
-        ? variables.recommended_format.trim().toLowerCase()
-        : 'single_tweet';
-    const mergedPrompt = instruction
-      ? `${cleanedPrompt}\n\nInstruction: ${instruction}`
-      : cleanedPrompt;
+    const structured = buildStructuredStrategyPrompt(prompt, strategyId, strategyExtraContext);
 
     const payload = {
+      version: 2,
       id: prompt.id,
-      text: mergedPrompt,
-      category: prompt.category || 'general',
+      text: structured.mergedPromptText, // legacy display fallback
+      category: structured.strategyPrompt.category,
       source: 'strategy_library',
-      recommendedFormat,
+      recommendedFormat: structured.strategyPrompt.recommendedFormat,
       generatedAt: new Date().toISOString(),
+      strategyPrompt: {
+        ...structured.strategyPrompt,
+      },
     };
 
     // Backward compatible fallback for older compose flows
-    localStorage.setItem('composerPrompt', mergedPrompt);
+    localStorage.setItem('composerPrompt', structured.mergedPromptText);
     localStorage.setItem('composerPromptPayload', JSON.stringify(payload));
     markPromptGenerated(prompt.id);
 

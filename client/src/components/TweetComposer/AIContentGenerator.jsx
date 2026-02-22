@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Sparkles, ArrowRight } from 'lucide-react';
 import { fetchApiKeyPreference } from '../../utils/byok-platform';
 
@@ -15,6 +15,7 @@ const AIContentGenerator = ({
 
   // Local state for unrestricted input
   const [localPrompt, setLocalPrompt] = useState(aiPrompt || '');
+  const promptTextareaRef = useRef(null);
   // State for BYOK/platform mode
   const [apiKeyMode, setApiKeyMode] = useState('platform');
 
@@ -32,6 +33,17 @@ const AIContentGenerator = ({
     setLocalPrompt(aiPrompt || '');
   }, [aiPrompt]);
 
+  const resizePromptTextarea = () => {
+    const textarea = promptTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.max(textarea.scrollHeight, 60)}px`;
+  };
+
+  useEffect(() => {
+    resizePromptTextarea();
+  }, [localPrompt, showAIPrompt]);
+
   // Handle local input changes without sanitization
   const handlePromptChange = (e) => {
     const value = e.target.value;
@@ -47,7 +59,7 @@ const AIContentGenerator = ({
   // Handle generate button click
   const handleGenerate = () => {
     setAiPrompt(localPrompt); // Ensure latest value is synced
-    onGenerate();
+    onGenerate(localPrompt);
   };
 
   if (!showAIPrompt) return null;
@@ -79,6 +91,7 @@ const AIContentGenerator = ({
             What would you like to tweet about?
           </label>
           <textarea
+            ref={promptTextareaRef}
             value={localPrompt}
             onChange={handlePromptChange}
             onBlur={handlePromptBlur}
@@ -86,10 +99,7 @@ const AIContentGenerator = ({
             className="w-full px-4 py-3 border border-blue-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 text-base bg-white/80 transition-all resize-none min-h-[60px]"
             rows={Math.max(3, localPrompt.split('\n').length)}
             style={{ minHeight: '60px', height: 'auto', overflow: 'hidden' }}
-            onInput={e => {
-              e.target.style.height = 'auto';
-              e.target.style.height = e.target.scrollHeight + 'px';
-            }}
+            onInput={resizePromptTextarea}
           />
           <div className="mt-2 text-xs text-blue-700">
             💡 For multiple threads, try: <span className="font-medium">"Generate 5 threads about top anime moments"</span> or <span className="font-medium">"Create 3 threads about productivity tips"</span>

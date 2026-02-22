@@ -18,6 +18,18 @@ class StrategyService {
     };
   }
 
+  sanitizeExtraContext(value = '') {
+    return String(value || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 2000);
+  }
+
+  getStrategyExtraContext(strategy = null) {
+    return this.sanitizeExtraContext(strategy?.metadata?.extra_context || '');
+  }
+
   stripMarkdownCodeFences(value = '') {
     return String(value)
       .replace(/^```json\s*/i, '')
@@ -467,6 +479,7 @@ class StrategyService {
     const tone = strategy?.tone_style || 'clear and practical';
     const audience = strategy?.target_audience || 'your target audience';
     const niche = strategy?.niche || 'your niche';
+    const extraContext = this.getStrategyExtraContext(strategy);
     const topicPool = topics.length > 0 ? topics : [niche];
     const goalPool = goals.length > 0 ? goals : ['Build authority'];
     const categories = this.getPromptCategories();
@@ -598,6 +611,7 @@ class StrategyService {
           recommended_format: variant.recommended_format || 'single_tweet',
           goal,
           tone_hint: tone,
+          ...(extraContext ? { context_hint: extraContext.slice(0, 200) } : {}),
         },
       });
     }
@@ -816,7 +830,17 @@ class StrategyService {
       metadata = {},
     } = data;
 
-    const scopedMetadata = this.withProductScope(metadata);
+    const safeMetadata =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? {
+            ...metadata,
+            ...(Object.prototype.hasOwnProperty.call(metadata, 'extra_context')
+              ? { extra_context: this.sanitizeExtraContext(metadata.extra_context) }
+              : {}),
+          }
+        : {};
+
+    const scopedMetadata = this.withProductScope(safeMetadata);
 
     const { rows } = await pool.query(
       `INSERT INTO user_strategies (user_id, team_id, niche, target_audience, posting_frequency, content_goals, topics, status, metadata)
@@ -1043,21 +1067,27 @@ class StrategyService {
         // Special handling for requesting new topic suggestions
         if (currentStepData.key === 'topics' && wantsSuggestions) {
           const { rows: strategyRows } = await pool.query(
-            `SELECT niche, target_audience, content_goals FROM user_strategies WHERE id = $1
-             AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
+              `SELECT niche, target_audience, content_goals, metadata FROM user_strategies WHERE id = $1
+               AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
             [strategyId, this.productScope]
           );
           const currentStrategy = strategyRows[0];
           
           if (currentStrategy.niche) {
             try {
+              const extraContext = this.getStrategyExtraContext(currentStrategy);
               const topicPrompt = `Based on this Twitter strategy:
 - Niche: ${currentStrategy.niche}
 - Audience: ${currentStrategy.target_audience || 'general audience'}
 - Goals: ${(currentStrategy.content_goals || []).join(', ')}
-
-Suggest 5-7 specific, actionable content topics for this niche. Make them concrete and relevant.
-Format: Just list topics separated by commas, no formatting.`;
+${extraContext ? `- Extra context: ${extraContext.slice(0, 800)}\n` : ''}
+Suggest 5-7 specific, actionable content topics for this niche.
+Requirements:
+- Avoid duplicate angles.
+- Mix beginner and intermediate topics.
+- Include a mix of pain-point, outcome, process, mistake, and mini case-study angles.
+- Make topics concrete and relevant to the audience and goals.
+Format: Just list topics separated by commas, no bullets, no numbering, no extra text.`;
 
               console.log('User requested topic suggestions for:', currentStrategy.niche);
               const result = await aiService.generateStrategyContent(topicPrompt, 'professional', null, userId);
@@ -1135,8 +1165,8 @@ Format: Just list topics separated by commas, no formatting.`;
         // For topics step, ALWAYS generate personalized suggestions based on niche
         if (steps[currentStep].key === 'topics') {
           const { rows: strategyRows } = await pool.query(
-            `SELECT niche, target_audience, content_goals FROM user_strategies WHERE id = $1
-             AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
+              `SELECT niche, target_audience, content_goals, metadata FROM user_strategies WHERE id = $1
+               AND COALESCE(metadata->>'product', 'tweet-genie') = $2`,
             [strategyId, this.productScope]
           );
           const currentStrategy = strategyRows[0];
@@ -1146,13 +1176,19 @@ Format: Just list topics separated by commas, no formatting.`;
               console.log(`⏳ [Step 6] Generating topic suggestions for niche: ${currentStrategy.niche}...`);
               const startTime = Date.now();
               
+              const extraContext = this.getStrategyExtraContext(currentStrategy);
               const topicPrompt = `Based on this Twitter strategy:
 - Niche: ${currentStrategy.niche}
 - Audience: ${currentStrategy.target_audience || 'general audience'}
 - Goals: ${(currentStrategy.content_goals || []).join(', ')}
-
-Suggest 5-7 specific, actionable content topics for this niche. Make them concrete and relevant.
-Format: Just list topics separated by commas, no formatting.`;
+${extraContext ? `- Extra context: ${extraContext.slice(0, 800)}\n` : ''}
+Suggest 5-7 specific, actionable content topics for this niche.
+Requirements:
+- Avoid duplicate angles.
+- Mix beginner and intermediate topics.
+- Include a mix of pain-point, outcome, process, mistake, and mini case-study angles.
+- Make topics concrete and relevant to the audience and goals.
+Format: Just list topics separated by commas, no bullets, no numbering, no extra text.`;
 
               const result = await aiService.generateStrategyContent(topicPrompt, 'professional', null, userId);
               const elapsed = Date.now() - startTime;
@@ -1383,6 +1419,7 @@ Format: Just list topics separated by commas, no formatting.`;
 
     try {
       const desiredCount = 36;
+      const extraContext = this.getStrategyExtraContext(strategy);
       const systemPrompt = [
         'Return ONLY valid JSON. No markdown and no extra text.',
         'Schema:',
@@ -1406,12 +1443,15 @@ Format: Just list topics separated by commas, no formatting.`;
         '- keep prompt_text focused on one angle.',
         '- each category must contain multiple distinct frameworks, not the same sentence pattern.',
         '- avoid repeating the same first 5-6 words across prompts in the same category.',
+        '- reduce generic openings like "Inspire", "Invite", "Show" unless the angle specifically requires it.',
+        '- vary hooks (question, contrarian, checklist, before/after, case-study, myth, warning, mini-framework).',
         '- if placeholders are useful, use {placeholder_name} tokens.',
         `Niche: ${strategy.niche || ''}`,
         `Target Audience: ${strategy.target_audience || ''}`,
         `Goals: ${(strategy.content_goals || []).join(', ')}`,
         `Tone: ${strategy.tone_style || ''}`,
         `Topics: ${(strategy.topics || []).join(', ')}`,
+        ...(extraContext ? [`Extra Context: ${extraContext.slice(0, 800)}`] : []),
       ].join('\n');
 
       let normalizedPrompts = [];
@@ -1565,6 +1605,17 @@ Format: Just list topics separated by commas, no formatting.`;
   // Update strategy
   async updateStrategy(strategyId, updates) {
     const nextUpdates = { ...updates };
+    const hasIncomingMetadata =
+      nextUpdates.metadata && typeof nextUpdates.metadata === 'object' && !Array.isArray(nextUpdates.metadata);
+    const incomingMetadata = hasIncomingMetadata ? { ...nextUpdates.metadata } : null;
+    const touchesExtraContext =
+      Boolean(incomingMetadata) && Object.prototype.hasOwnProperty.call(incomingMetadata, 'extra_context');
+
+    if (touchesExtraContext) {
+      incomingMetadata.extra_context = this.sanitizeExtraContext(incomingMetadata.extra_context);
+      nextUpdates.metadata = incomingMetadata;
+    }
+
     const promptRelevantFields = [
       'niche',
       'target_audience',
@@ -1574,7 +1625,7 @@ Format: Just list topics separated by commas, no formatting.`;
       'topics',
     ];
     const touchesPromptRelevantFields = promptRelevantFields
-      .some((field) => Object.prototype.hasOwnProperty.call(nextUpdates, field));
+      .some((field) => Object.prototype.hasOwnProperty.call(nextUpdates, field)) || touchesExtraContext;
     const touchesGoals = Object.prototype.hasOwnProperty.call(nextUpdates, 'content_goals');
     const touchesTopics = Object.prototype.hasOwnProperty.call(nextUpdates, 'topics');
 
@@ -1596,13 +1647,16 @@ Format: Just list topics separated by commas, no formatting.`;
 
     if (touchesPromptRelevantFields) {
       const strategy = await this.getStrategy(strategyId);
-      const incomingMetadata = nextUpdates.metadata && typeof nextUpdates.metadata === 'object' && !Array.isArray(nextUpdates.metadata)
+      const mergedIncomingMetadata = nextUpdates.metadata && typeof nextUpdates.metadata === 'object' && !Array.isArray(nextUpdates.metadata)
         ? nextUpdates.metadata
         : {};
       nextUpdates.metadata = this.buildStrategyMetadata(
-        { ...(strategy?.metadata || {}), ...incomingMetadata },
-        incomingMetadata.last_strategy_update_source || 'manual_edit'
+        { ...(strategy?.metadata || {}), ...mergedIncomingMetadata },
+        mergedIncomingMetadata.last_strategy_update_source || 'manual_edit'
       );
+    } else if (hasIncomingMetadata) {
+      // Persist metadata-only updates without forcing prompt regeneration when unrelated fields change.
+      nextUpdates.metadata = this.withProductScope(incomingMetadata);
     }
 
     const allowedFields = [

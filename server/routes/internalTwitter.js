@@ -1,0 +1,328 @@
+import express from 'express';
+import { TwitterApi } from 'twitter-api-v2';
+import { pool } from '../config/database.js';
+import { validateTwitterConnection } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
+
+const router = express.Router();
+
+const ensureInternalRequest = (req, res, next) => {
+  const configuredKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  const providedKey = String(req.headers['x-internal-api-key'] || '').trim();
+
+  if (!configuredKey) {
+    return res.status(503).json({
+      error: 'Internal API key is not configured',
+      code: 'INTERNAL_API_KEY_NOT_CONFIGURED',
+    });
+  }
+
+  if (!providedKey || providedKey !== configuredKey) {
+    return res.status(403).json({
+      error: 'Forbidden',
+      code: 'INTERNAL_AUTH_FAILED',
+    });
+  }
+
+  req.isInternal = true;
+  next();
+};
+
+const resolvePlatformUserId = (req) => String(req.headers['x-platform-user-id'] || '').trim();
+
+const getPersonalTwitterAccount = async (platformUserId) => {
+  if (!platformUserId) return null;
+  const { rows } = await pool.query(
+    `SELECT id, user_id, twitter_user_id, twitter_username, access_token, refresh_token, token_expires_at
+     FROM twitter_auth
+     WHERE user_id = $1
+     LIMIT 1`,
+    [platformUserId]
+  );
+  return rows[0] || null;
+};
+
+const isTokenExpired = (tokenExpiresAt) => {
+  if (!tokenExpiresAt) return false;
+  const expiresMs = new Date(tokenExpiresAt).getTime();
+  return Number.isFinite(expiresMs) && expiresMs <= Date.now();
+};
+
+const trimText = (value, maxLength = 5000) => String(value || '').trim().slice(0, maxLength);
+
+const runValidateTwitterConnection = async (platformUserId) => {
+  const mockReq = {
+    user: { id: platformUserId },
+    headers: {},
+  };
+
+  return new Promise((resolve, reject) => {
+    let statusCode = 500;
+    const mockRes = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(payload) {
+        const error = new Error(payload?.error || 'Twitter validation failed');
+        error.status = statusCode;
+        error.payload = payload || null;
+        reject(error);
+        return this;
+      },
+    };
+
+    validateTwitterConnection(mockReq, mockRes, () => resolve(mockReq));
+  });
+};
+
+router.get('/status', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      connected: false,
+      reason: 'missing_platform_user_id',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  try {
+    const validatedReq = await runValidateTwitterConnection(platformUserId);
+    const account = validatedReq?.twitterAccount || null;
+
+    return res.json({
+      connected: true,
+      account: {
+        id: account.id,
+        twitter_user_id: account.twitter_user_id || null,
+        username: account.twitter_username || null,
+      },
+    });
+  } catch (error) {
+    const reconnectReason = String(error?.payload?.reason || '').toLowerCase();
+    if (error?.payload?.code === 'TWITTER_RECONNECT_REQUIRED') {
+      return res.json({
+        connected: false,
+        reason: reconnectReason.includes('token') ? 'token_expired' : 'not_connected',
+        code: reconnectReason.includes('token') ? 'TWITTER_TOKEN_EXPIRED' : 'TWITTER_NOT_CONNECTED',
+      });
+    }
+
+    logger.error('[internal/twitter/status] Failed to resolve status', {
+      userId: platformUserId,
+      error: error?.message || String(error),
+    });
+
+    return res.status(500).json({
+      connected: false,
+      reason: 'internal_error',
+      code: 'TWITTER_STATUS_FAILED',
+    });
+  }
+});
+
+router.post('/cross-post', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const {
+    content = '',
+    mediaDetected = false,
+    postMode = 'single',
+  } = req.body || {};
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  const normalizedMode = String(postMode || 'single').toLowerCase();
+  if (normalizedMode !== 'single') {
+    return res.status(400).json({
+      error: 'Only single post cross-post is supported for X in Phase 1',
+      code: 'UNSUPPORTED_TWITTER_POST_MODE',
+    });
+  }
+
+  const normalizedContent = trimText(content, 1000);
+  if (!normalizedContent) {
+    return res.status(400).json({
+      error: 'content is required',
+      code: 'TWITTER_CONTENT_REQUIRED',
+    });
+  }
+  if (normalizedContent.length > 280) {
+    return res.status(400).json({
+      error: 'X post exceeds 280 characters',
+      code: 'X_POST_TOO_LONG',
+      length: normalizedContent.length,
+    });
+  }
+
+  try {
+    const validatedReq = await runValidateTwitterConnection(platformUserId);
+    const account = validatedReq?.twitterAccount;
+
+    const twitterClient = new TwitterApi(account.access_token);
+    const tweetResponse = await twitterClient.v2.tweet({ text: normalizedContent });
+    const tweetId = tweetResponse?.data?.id || null;
+    const username = account.twitter_username || 'i/web';
+    const tweetUrl = tweetId ? `https://twitter.com/${username}/status/${tweetId}` : null;
+
+    logger.info('[internal/twitter/cross-post] Posted to X', {
+      userId: platformUserId,
+      tweetId,
+      mediaDetected: Boolean(mediaDetected),
+      length: normalizedContent.length,
+    });
+
+    return res.json({
+      success: true,
+      status: 'posted',
+      mode: 'single',
+      mediaDetected: Boolean(mediaDetected),
+      tweetId,
+      tweetUrl,
+    });
+  } catch (error) {
+    if (error?.payload?.code === 'TWITTER_RECONNECT_REQUIRED') {
+      const reconnectReason = String(error?.payload?.reason || '').toLowerCase();
+      return res.status(reconnectReason.includes('token') ? 401 : 404).json({
+        error: error?.payload?.error || 'Twitter account not connected',
+        code: reconnectReason.includes('token') ? 'TWITTER_TOKEN_EXPIRED' : 'TWITTER_NOT_CONNECTED',
+      });
+    }
+
+    const code = String(error?.code || '').toUpperCase();
+    const status = Number(error?.code || 0);
+    const message = String(error?.message || 'Failed to post to X');
+
+    logger.error('[internal/twitter/cross-post] Failed to post to X', {
+      userId: platformUserId,
+      error: message,
+      code,
+    });
+
+    if (code.includes('AUTH') || code.includes('UNAUTHORIZED') || status === 401) {
+      return res.status(401).json({ error: message, code: 'TWITTER_TOKEN_EXPIRED' });
+    }
+
+    return res.status(500).json({
+      error: message,
+      code: 'TWITTER_CROSSPOST_FAILED',
+    });
+  }
+});
+
+router.post('/save-to-history', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const {
+    content = '',
+    sourcePlatform = 'platform',
+    tweetId = null,
+    mediaDetected = false,
+  } = req.body || {};
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  const normalizedContent = trimText(content, 5000);
+  if (!normalizedContent) {
+    return res.status(400).json({
+      error: 'content is required',
+      code: 'TWITTER_CONTENT_REQUIRED',
+    });
+  }
+
+  try {
+    const account = await getPersonalTwitterAccount(platformUserId);
+    const normalizedTweetId = String(tweetId || '').trim() || null;
+
+    if (normalizedTweetId) {
+      const { rows: existingRows } = await pool.query(
+        `SELECT id
+         FROM tweets
+         WHERE user_id = $1
+           AND tweet_id = $2
+         LIMIT 1`,
+        [platformUserId, normalizedTweetId]
+      );
+      if (existingRows.length > 0) {
+        return res.json({
+          success: true,
+          status: 'already_exists',
+          historyId: existingRows[0].id,
+        });
+      }
+    }
+
+    const safeSource = String(sourcePlatform || '').trim() || 'platform';
+
+    const { rows } = await pool.query(
+      `INSERT INTO tweets (
+        user_id,
+        account_id,
+        author_id,
+        tweet_id,
+        content,
+        media_urls,
+        thread_tweets,
+        credits_used,
+        is_thread,
+        thread_count,
+        impressions,
+        likes,
+        retweets,
+        replies,
+        status,
+        source,
+        posted_at,
+        created_at,
+        updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, 0, false, 1, 0, 0, 0, 0, 'posted', $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      )
+      RETURNING id`,
+      [
+        platformUserId,
+        null,
+        account?.twitter_user_id || null,
+        normalizedTweetId,
+        normalizedContent,
+        JSON.stringify([]),
+        JSON.stringify([]),
+        safeSource.length > 20 ? 'platform' : safeSource,
+      ]
+    );
+
+    logger.info('[internal/twitter/save-to-history] Saved X cross-post to Tweet Genie history', {
+      userId: platformUserId,
+      historyId: rows[0]?.id || null,
+      tweetId: normalizedTweetId,
+      mediaDetected: Boolean(mediaDetected),
+      source: safeSource.length > 20 ? 'platform' : safeSource,
+    });
+
+    return res.json({
+      success: true,
+      status: 'saved',
+      historyId: rows[0]?.id || null,
+    });
+  } catch (error) {
+    logger.error('[internal/twitter/save-to-history] Error', {
+      userId: platformUserId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to save to history',
+      code: 'TWITTER_HISTORY_SAVE_FAILED',
+    });
+  }
+});
+
+export default router;

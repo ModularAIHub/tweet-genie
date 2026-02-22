@@ -12,6 +12,19 @@ const STUCK_RECOVERY_INTERVAL_MS = Number.parseInt(
   process.env.DB_SCHEDULED_TWEET_WORKER_RECOVERY_INTERVAL_MS || '60000',
   10
 );
+const TOKEN_PREFLIGHT_ENABLED = process.env.DB_SCHEDULED_TOKEN_PREFLIGHT_ENABLED !== 'false';
+const TOKEN_PREFLIGHT_INTERVAL_MS = Number.parseInt(
+  process.env.DB_SCHEDULED_TOKEN_PREFLIGHT_INTERVAL_MS || '300000',
+  10
+);
+const TOKEN_PREFLIGHT_HORIZON_HOURS = Number.parseInt(
+  process.env.DB_SCHEDULED_TOKEN_PREFLIGHT_HORIZON_HOURS || '24',
+  10
+);
+const TOKEN_PREFLIGHT_LIMIT = Number.parseInt(
+  process.env.DB_SCHEDULED_TOKEN_PREFLIGHT_LIMIT || '50',
+  10
+);
 const MAX_ERROR_LENGTH = 900;
 
 let tickInProgress = false;
@@ -20,6 +33,7 @@ let workerInterval = null;
 let workerStartedAt = null;
 let lastTickFinishedAt = null;
 let lastRecoveryRunAt = null;
+let lastTokenPreflightRunAt = null;
 
 const workerStats = {
   ticks: 0,
@@ -31,6 +45,9 @@ const workerStats = {
   retriedRows: 0,
   skippedRows: 0,
   failedRows: 0,
+  tokenPreflightRuns: 0,
+  tokenPreflightRefreshed: 0,
+  tokenPreflightErrors: 0,
 };
 
 const lastTickSummary = {
@@ -44,6 +61,7 @@ const lastTickSummary = {
   retried: 0,
   skipped: 0,
   failed: 0,
+  tokenPreflight: null,
   status: 'idle',
   error: null,
 };
@@ -121,6 +139,7 @@ async function schedulerTick() {
   lastTickSummary.retried = 0;
   lastTickSummary.skipped = 0;
   lastTickSummary.failed = 0;
+  lastTickSummary.tokenPreflight = null;
 
   try {
     const nowMs = Date.now();
@@ -135,6 +154,38 @@ async function schedulerTick() {
       workerStats.recoveredRows += recovered;
       lastTickSummary.recovered = recovered;
       lastRecoveryRunAt = nowMs;
+    }
+
+    const shouldRunTokenPreflight =
+      TOKEN_PREFLIGHT_ENABLED &&
+      (
+        !lastTokenPreflightRunAt ||
+        !Number.isFinite(TOKEN_PREFLIGHT_INTERVAL_MS) ||
+        TOKEN_PREFLIGHT_INTERVAL_MS <= 0 ||
+        nowMs - lastTokenPreflightRunAt >= TOKEN_PREFLIGHT_INTERVAL_MS
+      );
+
+    if (shouldRunTokenPreflight) {
+      try {
+        const tokenPreflightSummary = await scheduledTweetService.refreshUpcomingScheduledTwitterTokens({
+          horizonHours: TOKEN_PREFLIGHT_HORIZON_HOURS,
+          limitPerScope: TOKEN_PREFLIGHT_LIMIT,
+        });
+        workerStats.tokenPreflightRuns += 1;
+        workerStats.tokenPreflightRefreshed += Number(tokenPreflightSummary?.refreshed || 0);
+        workerStats.tokenPreflightErrors += Number(tokenPreflightSummary?.errors || 0);
+        lastTickSummary.tokenPreflight = tokenPreflightSummary;
+        if (Number(tokenPreflightSummary?.refreshed || 0) > 0 || Number(tokenPreflightSummary?.errors || 0) > 0) {
+          console.log('[DBScheduledTweetWorker] Token preflight summary', tokenPreflightSummary);
+        }
+      } catch (error) {
+        workerStats.tokenPreflightRuns += 1;
+        workerStats.tokenPreflightErrors += 1;
+        lastTickSummary.tokenPreflight = { error: safeErrorMessage(error) };
+        console.warn('[DBScheduledTweetWorker] Token preflight failed:', safeErrorMessage(error));
+      } finally {
+        lastTokenPreflightRunAt = nowMs;
+      }
     }
 
     const dueRows = await claimDueScheduledTweets(BATCH_SIZE);
@@ -218,6 +269,7 @@ export function getDbScheduledTweetWorkerStatus() {
     stuckMinutes: STUCK_MINUTES,
     recoveryIntervalMs: STUCK_RECOVERY_INTERVAL_MS,
     lastRecoveryRunAt: toIso(lastRecoveryRunAt),
+    lastTokenPreflightRunAt: toIso(lastTokenPreflightRunAt),
     stats: { ...workerStats },
     lastTick: {
       tickId: lastTickSummary.tickId,
@@ -232,6 +284,7 @@ export function getDbScheduledTweetWorkerStatus() {
       retried: lastTickSummary.retried,
       skipped: lastTickSummary.skipped,
       failed: lastTickSummary.failed,
+      tokenPreflight: lastTickSummary.tokenPreflight,
     },
     nextRunAt,
     nextRunInMs: nextRunAt ? Math.max(0, new Date(nextRunAt).getTime() - now) : null,
@@ -252,11 +305,16 @@ export async function startDbScheduledTweetWorker(options = {}) {
   workerStarted = true;
   workerStartedAt = Date.now();
   lastRecoveryRunAt = null;
+  lastTokenPreflightRunAt = null;
   console.log('[DBScheduledTweetWorker] Started', {
     intervalMs: POLL_INTERVAL_MS,
     batchSize: BATCH_SIZE,
     stuckMinutes: STUCK_MINUTES,
     recoveryIntervalMs: STUCK_RECOVERY_INTERVAL_MS,
+    tokenPreflightEnabled: TOKEN_PREFLIGHT_ENABLED,
+    tokenPreflightIntervalMs: TOKEN_PREFLIGHT_INTERVAL_MS,
+    tokenPreflightHorizonHours: TOKEN_PREFLIGHT_HORIZON_HOURS,
+    tokenPreflightLimit: TOKEN_PREFLIGHT_LIMIT,
   });
 
   await schedulerTick();
@@ -278,5 +336,6 @@ export function stopDbScheduledTweetWorker() {
   workerStarted = false;
   workerStartedAt = null;
   lastRecoveryRunAt = null;
+  lastTokenPreflightRunAt = null;
   tickInProgress = false;
 }

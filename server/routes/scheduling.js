@@ -63,6 +63,7 @@ const TIMEZONE_ALIAS_MAP = {
   'asia/calcutta': 'Asia/Kolkata',
 };
 let scheduledAccountIdColumnTypeCache = null;
+let scheduledMetadataColumnExistsCache = null;
 
 function normalizeScheduledAccountId(rawAccountId, columnType) {
   if (rawAccountId === null || rawAccountId === undefined) {
@@ -114,6 +115,65 @@ async function getScheduledAccountIdColumnType() {
   }
 
   return scheduledAccountIdColumnTypeCache;
+}
+
+async function hasScheduledMetadataColumn() {
+  if (typeof scheduledMetadataColumnExistsCache === 'boolean') {
+    return scheduledMetadataColumnExistsCache;
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'scheduled_tweets'
+         AND column_name = 'metadata'
+       LIMIT 1`
+    );
+    scheduledMetadataColumnExistsCache = rows.length > 0;
+  } catch (error) {
+    console.warn('[Scheduling] Failed to detect scheduled_tweets.metadata column. Cross-post scheduling metadata will be skipped.', error.message);
+    scheduledMetadataColumnExistsCache = false;
+  }
+
+  return scheduledMetadataColumnExistsCache;
+}
+
+function normalizeScheduledCrossPostTargets({ postToLinkedin = false, crossPostTargets = null } = {}) {
+  const rawTargets =
+    crossPostTargets && typeof crossPostTargets === 'object' && !Array.isArray(crossPostTargets)
+      ? crossPostTargets
+      : {};
+
+  const linkedin =
+    typeof rawTargets.linkedin === 'boolean' ? rawTargets.linkedin : Boolean(postToLinkedin);
+  const threads =
+    typeof rawTargets.threads === 'boolean' ? rawTargets.threads : false;
+
+  return { linkedin, threads };
+}
+
+function buildScheduledCrossPostMetadata({ targets, optimizeCrossPost = true } = {}) {
+  const linkedin = Boolean(targets?.linkedin);
+  const threads = Boolean(targets?.threads);
+
+  if (!linkedin && !threads) {
+    return null;
+  }
+
+  return {
+    cross_post: {
+      version: 1,
+      targets: {
+        linkedin,
+        threads,
+      },
+      optimizeCrossPost: optimizeCrossPost !== false,
+      source: 'tweet_genie_schedule',
+      createdAt: new Date().toISOString(),
+    },
+  };
 }
 
 function normalizeTimezoneInput(timezone) {
@@ -688,7 +748,17 @@ router.post('/bulk', validateTwitterConnection, async (req, res) => {
 // Schedule a tweet
 router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, async (req, res) => {
   try {
-    const { content, media = [], thread, threadMedia = [], scheduled_for, timezone = 'UTC' } = req.body;
+    const {
+      content,
+      media = [],
+      thread,
+      threadMedia = [],
+      scheduled_for,
+      timezone = 'UTC',
+      postToLinkedin = false,
+      crossPostTargets = null,
+      optimizeCrossPost = true,
+    } = req.body;
     const userId = req.user.id;
     let teamId = req.headers['x-team-id'] || null;
     const selectedAccountId = req.headers['x-selected-account-id'] || null;
@@ -838,30 +908,78 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       return res.status(400).json({ error: 'Please enter some content or add images' });
     }
 
+    const normalizedCrossPostTargets = normalizeScheduledCrossPostTargets({
+      postToLinkedin,
+      crossPostTargets,
+    });
+    const scheduledMetadata = buildScheduledCrossPostMetadata({
+      targets: normalizedCrossPostTargets,
+      optimizeCrossPost,
+    });
+    const canStoreMetadata = scheduledMetadata ? await hasScheduledMetadataColumn() : false;
+
     // Save scheduled tweet
+    const insertColumns = [
+      'user_id',
+      'team_id',
+      'account_id',
+      'author_id',
+      'content',
+      'media',
+      'media_urls',
+      'thread_tweets',
+      'thread_media',
+      'scheduled_for',
+      'timezone',
+      'status',
+      'approval_status',
+      'approved_by',
+      'approval_requested_at',
+      'created_at',
+      'updated_at',
+    ];
+    const insertValues = [
+      userId,
+      teamId || null,
+      accountId || null,
+      authorId,
+      mainContent,
+      JSON.stringify(media),
+      JSON.stringify(media),
+      JSON.stringify(threadTweets),
+      JSON.stringify(threadMediaArr),
+      parsedSchedule.utcDbTimestamp,
+      normalizedTimezone,
+      approvalStatus,
+      approvedBy,
+      approvalStatus === 'pending_approval' ? new Date() : null,
+    ];
+    if (canStoreMetadata) {
+      insertColumns.splice(15, 0, 'metadata');
+      insertValues.push(JSON.stringify(scheduledMetadata));
+    } else if (scheduledMetadata) {
+      schedulingDebug('[Scheduling] scheduled_tweets.metadata column not available; cross-post schedule settings will not persist', {
+        userId,
+        hasLinkedIn: normalizedCrossPostTargets.linkedin,
+        hasThreads: normalizedCrossPostTargets.threads,
+      });
+    }
+
+    const valuePlaceholders = insertColumns.map((_, index) => {
+      if (insertColumns[index] === 'status') return `'pending'`;
+      if (insertColumns[index] === 'created_at' || insertColumns[index] === 'updated_at') return 'CURRENT_TIMESTAMP';
+      const valueIndex = (() => {
+        const nonLiteralColumns = insertColumns.filter((col) => !['status', 'created_at', 'updated_at'].includes(col));
+        return nonLiteralColumns.indexOf(insertColumns[index]) + 1;
+      })();
+      return `$${valueIndex}`;
+    });
+
     const { rows } = await pool.query(
-      `INSERT INTO scheduled_tweets (
-        user_id, team_id, account_id, author_id, content, media, media_urls, thread_tweets, thread_media, 
-        scheduled_for, timezone, status, approval_status, approved_by, approval_requested_at,
-        created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      RETURNING *`,
-      [
-        userId, 
-        teamId || null, 
-        accountId || null,
-        authorId,
-        mainContent,
-        JSON.stringify(media),
-        JSON.stringify(media),
-        JSON.stringify(threadTweets),
-        JSON.stringify(threadMediaArr),
-        parsedSchedule.utcDbTimestamp,
-        normalizedTimezone,
-        approvalStatus,
-        approvedBy,
-        approvalStatus === 'pending_approval' ? new Date() : null
-      ]
+      `INSERT INTO scheduled_tweets (${insertColumns.join(', ')})
+       VALUES (${valuePlaceholders.join(', ')})
+       RETURNING *`,
+      insertValues
     );
 
     if (approvalStatus === 'approved') {
