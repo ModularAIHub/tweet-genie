@@ -286,6 +286,11 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl, postMode = 'sing
       return 'not_connected';
     }
 
+    if (liRes.status === 401 && liBody.code === 'LINKEDIN_TOKEN_EXPIRED') {
+      logger.warn('[LinkedIn Cross-post] LinkedIn token expired/revoked', { userId });
+      return 'not_connected';
+    }
+
     if (!liRes.ok) {
       logger.warn('[LinkedIn Cross-post] Failed', { status: liRes.status, bodyLength, safeFields });
       return 'failed';
@@ -433,6 +438,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       postToLinkedin: !!postToLinkedin,
       crossPostTargets: normalizedCrossPostTargets,
       optimizeCrossPost: optimizeCrossPost !== false,
+      tokenExpiresAt: twitterAccount?.token_expires_at,
+      hasAccessToken: !!twitterAccount?.access_token,
+      accessTokenPrefix: twitterAccount?.access_token?.substring(0, 10) + '...'
     });
 
     let twitterClient = new TwitterApi(twitterAccount.access_token);
@@ -449,6 +457,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       logger.warn('[POST /tweets] Twitter 401 detected, attempting one token refresh + retry', {
         userId,
         sourceLabel,
+        oldTokenPrefix: twitterAccount?.access_token?.substring(0, 10) + '...'
       });
 
       const refreshedReq = await runValidateTwitterConnectionForRetry(req);
@@ -465,6 +474,8 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         userId,
         sourceLabel,
         accountId: twitterAccount?.id,
+        newTokenPrefix: twitterAccount?.access_token?.substring(0, 10) + '...',
+        newTokenExpiresAt: twitterAccount?.token_expires_at
       });
     };
 

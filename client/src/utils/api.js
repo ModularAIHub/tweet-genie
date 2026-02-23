@@ -13,7 +13,7 @@ export const CREDIT_BALANCE_UPDATED_EVENT = 'suitegenie:credits-balance-updated'
 const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
 const SELECTED_ACCOUNT_STORAGE_KEY = 'selectedTwitterAccount';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+const API_BASE_URL = String(import.meta.env.VITE_API_URL || '').trim();
 
 // Create axios instance
 const api = axios.create({

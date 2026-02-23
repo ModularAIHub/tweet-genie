@@ -5,6 +5,8 @@ import { validateTwitterConnection } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
+const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
+const TWITTER_OAUTH1_APP_SECRET = process.env.TWITTER_API_SECRET || process.env.TWITTER_CONSUMER_SECRET || null;
 
 const ensureInternalRequest = (req, res, next) => {
   const configuredKey = String(process.env.INTERNAL_API_KEY || '').trim();
@@ -29,16 +31,43 @@ const ensureInternalRequest = (req, res, next) => {
 };
 
 const resolvePlatformUserId = (req) => String(req.headers['x-platform-user-id'] || '').trim();
+const resolvePlatformTeamId = (req) => String(req.headers['x-platform-team-id'] || '').trim();
 
 const getPersonalTwitterAccount = async (platformUserId) => {
   if (!platformUserId) return null;
   const { rows } = await pool.query(
-    `SELECT id, user_id, twitter_user_id, twitter_username, access_token, refresh_token, token_expires_at
+    `SELECT id, user_id, twitter_user_id, twitter_username, access_token, refresh_token, token_expires_at,
+            oauth1_access_token, oauth1_access_token_secret
      FROM twitter_auth
      WHERE user_id = $1
      LIMIT 1`,
     [platformUserId]
   );
+  return rows[0] || null;
+};
+
+const getTeamTwitterAccountForMember = async (platformUserId, platformTeamId) => {
+  if (!platformUserId || !platformTeamId) return null;
+
+  const { rows } = await pool.query(
+    `SELECT ta.id, ta.team_id, ta.user_id, ta.twitter_user_id, ta.twitter_username,
+            ta.access_token, ta.refresh_token, ta.token_expires_at,
+            ta.oauth1_access_token, ta.oauth1_access_token_secret
+     FROM team_accounts ta
+     INNER JOIN team_members tm
+       ON tm.team_id = ta.team_id
+      AND tm.user_id = $1
+      AND tm.status = 'active'
+     WHERE ta.team_id::text = $2::text
+       AND ta.active = true
+     ORDER BY
+       CASE WHEN ta.user_id = $1 THEN 0 ELSE 1 END,
+       ta.updated_at DESC NULLS LAST,
+       ta.id DESC
+     LIMIT 1`,
+    [platformUserId, platformTeamId]
+  );
+
   return rows[0] || null;
 };
 
@@ -49,6 +78,28 @@ const isTokenExpired = (tokenExpiresAt) => {
 };
 
 const trimText = (value, maxLength = 5000) => String(value || '').trim().slice(0, maxLength);
+
+const hasOauth1Credentials = (account) =>
+  Boolean(account?.oauth1_access_token && account?.oauth1_access_token_secret);
+
+const createTwitterClientForPosting = (account) => {
+  if (hasOauth1Credentials(account)) {
+    if (TWITTER_OAUTH1_APP_KEY && TWITTER_OAUTH1_APP_SECRET) {
+      return new TwitterApi({
+        appKey: TWITTER_OAUTH1_APP_KEY,
+        appSecret: TWITTER_OAUTH1_APP_SECRET,
+        accessToken: account.oauth1_access_token,
+        accessSecret: account.oauth1_access_token_secret,
+      });
+    }
+  }
+
+  if (account?.access_token) {
+    return new TwitterApi(account.access_token);
+  }
+
+  throw new Error('No valid Twitter credentials found');
+};
 
 const runValidateTwitterConnection = async (platformUserId) => {
   const mockReq = {
@@ -124,6 +175,7 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
 
 router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req);
   const {
     content = '',
     mediaDetected = false,
@@ -161,10 +213,37 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   }
 
   try {
-    const validatedReq = await runValidateTwitterConnection(platformUserId);
-    const account = validatedReq?.twitterAccount;
+    let account = null;
+    let accountScope = 'personal';
 
-    const twitterClient = new TwitterApi(account.access_token);
+    if (platformTeamId) {
+      account = await getTeamTwitterAccountForMember(platformUserId, platformTeamId);
+      if (account) {
+        accountScope = 'team';
+      }
+    }
+
+    if (!account) {
+      const validatedReq = await runValidateTwitterConnection(platformUserId);
+      account = validatedReq?.twitterAccount;
+      accountScope = 'personal';
+    }
+
+    if (!account) {
+      return res.status(404).json({
+        error: 'Twitter account not connected',
+        code: 'TWITTER_NOT_CONNECTED',
+      });
+    }
+
+    if (isTokenExpired(account.token_expires_at) && !hasOauth1Credentials(account)) {
+      return res.status(401).json({
+        error: 'Twitter token expired',
+        code: 'TWITTER_TOKEN_EXPIRED',
+      });
+    }
+
+    const twitterClient = createTwitterClientForPosting(account);
     const tweetResponse = await twitterClient.v2.tweet({ text: normalizedContent });
     const tweetId = tweetResponse?.data?.id || null;
     const username = account.twitter_username || 'i/web';
@@ -172,6 +251,8 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
 
     logger.info('[internal/twitter/cross-post] Posted to X', {
       userId: platformUserId,
+      teamId: platformTeamId || null,
+      accountScope,
       tweetId,
       mediaDetected: Boolean(mediaDetected),
       length: normalizedContent.length,
@@ -200,6 +281,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
 
     logger.error('[internal/twitter/cross-post] Failed to post to X', {
       userId: platformUserId,
+      teamId: platformTeamId || null,
       error: message,
       code,
     });
@@ -217,6 +299,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
 
 router.post('/save-to-history', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req);
   const {
     content = '',
     sourcePlatform = 'platform',
@@ -240,7 +323,9 @@ router.post('/save-to-history', ensureInternalRequest, async (req, res) => {
   }
 
   try {
-    const account = await getPersonalTwitterAccount(platformUserId);
+    const account =
+      (platformTeamId ? await getTeamTwitterAccountForMember(platformUserId, platformTeamId) : null) ||
+      await getPersonalTwitterAccount(platformUserId);
     const normalizedTweetId = String(tweetId || '').trim() || null;
 
     if (normalizedTweetId) {
@@ -262,6 +347,7 @@ router.post('/save-to-history', ensureInternalRequest, async (req, res) => {
     }
 
     const safeSource = String(sourcePlatform || '').trim() || 'platform';
+    const historyAccountId = platformTeamId ? account?.id || null : null;
 
     const { rows } = await pool.query(
       `INSERT INTO tweets (
@@ -290,7 +376,7 @@ router.post('/save-to-history', ensureInternalRequest, async (req, res) => {
       RETURNING id`,
       [
         platformUserId,
-        null,
+        historyAccountId,
         account?.twitter_user_id || null,
         normalizedTweetId,
         normalizedContent,
@@ -302,6 +388,7 @@ router.post('/save-to-history', ensureInternalRequest, async (req, res) => {
 
     logger.info('[internal/twitter/save-to-history] Saved X cross-post to Tweet Genie history', {
       userId: platformUserId,
+      teamId: platformTeamId || null,
       historyId: rows[0]?.id || null,
       tweetId: normalizedTweetId,
       mediaDetected: Boolean(mediaDetected),
@@ -316,6 +403,7 @@ router.post('/save-to-history', ensureInternalRequest, async (req, res) => {
   } catch (error) {
     logger.error('[internal/twitter/save-to-history] Error', {
       userId: platformUserId,
+      teamId: platformTeamId || null,
       error: error?.message || String(error),
     });
     return res.status(500).json({

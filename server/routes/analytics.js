@@ -548,6 +548,33 @@ router.get('/overview', authenticateToken, async (req, res) => {
     );
     const { rows: tweets } = await pool.query(tweetsStatement.sql, tweetsStatement.params);
 
+    const recentTweetsLimit = isProPlan ? 10 : 5;
+    const recentTweetsStatement = buildScopedStatement(
+      `SELECT
+        id, tweet_id, content,
+        COALESCE(impressions, 0) as impressions,
+        COALESCE(likes, 0) as likes,
+        COALESCE(retweets, 0) as retweets,
+        COALESCE(replies, 0) as replies,
+        COALESCE(quote_count, 0) as quote_count,
+        COALESCE(bookmark_count, 0) as bookmark_count,
+        source,
+        COALESCE(external_created_at, created_at) as created_at,
+        COALESCE(updated_at, external_created_at, created_at) as metrics_updated_at,
+        (COALESCE(impressions, 0) + COALESCE(likes, 0) * 2 + COALESCE(retweets, 0) * 3 + COALESCE(replies, 0) * 2 + COALESCE(quote_count, 0) * 2 + COALESCE(bookmark_count, 0)) as engagement_score,
+        CASE WHEN COALESCE(impressions, 0) > 0 THEN
+          ROUND(((COALESCE(likes, 0) + COALESCE(retweets, 0) + COALESCE(replies, 0) + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0))::DECIMAL / impressions::DECIMAL) * 100, 2)
+        ELSE 0 END as tweet_engagement_rate
+       FROM tweets
+       WHERE user_id = $1
+       AND ${ANALYTICS_EVENT_TS_SQL} >= $2
+       AND status = 'posted'
+       ORDER BY ${ANALYTICS_EVENT_TS_SQL} DESC, created_at DESC
+       LIMIT $3`,
+      [userId, startDate, recentTweetsLimit]
+    );
+    const { rows: recentTweets } = await pool.query(recentTweetsStatement.sql, recentTweetsStatement.params);
+
     let hourlyEngagement = [];
     let contentTypeMetrics = [];
     let previousMetrics = [];
@@ -628,6 +655,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
           overview: overviewRow,
           daily_metrics: dailyMetrics,
           tweets: tweets || [],
+          recent_tweets: recentTweets || [],
           hourly_engagement: hourlyEngagement,
           content_type_metrics: contentTypeMetrics,
           growth: {
@@ -646,6 +674,7 @@ router.get('/overview', authenticateToken, async (req, res) => {
           overview: freeOverview,
           daily_metrics: [],
           tweets: tweets || [],
+          recent_tweets: recentTweets || [],
           hourly_engagement: [],
           content_type_metrics: [],
           growth: {
@@ -915,7 +944,6 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
         FROM tweets
         ${syncWhereClause}
         AND status = 'posted'
-        AND source IN ('platform', 'external')
         AND tweet_id IS NOT NULL
         AND COALESCE(external_created_at, created_at) >= NOW() - ($${lookbackDaysIndex}::int * INTERVAL '1 day')
       ),
@@ -997,7 +1025,6 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
          FROM tweets
          ${diagWhereClause}
          AND status = 'posted'
-         AND source IN ('platform', 'external')
          AND tweet_id IS NOT NULL
          AND COALESCE(external_created_at, created_at) >= NOW() - ($${diagLookbackDaysIndex}::int * INTERVAL '1 day')`,
         diagParams

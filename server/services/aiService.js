@@ -45,18 +45,15 @@ const normalizePlanType = (planType) => {
 };
 
 const getProviderPriority = ({ preference, planType }) => {
-  // Keep BYOK users on quality-first routing since platform token cost is not impacted.
   if (preference === 'byok') {
     return ['perplexity', 'google', 'openai'];
   }
 
   const normalizedPlan = normalizePlanType(planType);
   if (normalizedPlan === 'pro' || normalizedPlan === 'enterprise') {
-    // Pro/Enterprise: prioritize higher-quality generation via Perplexity.
     return ['perplexity', 'google', 'openai'];
   }
 
-  // Free/unknown platform plans start with Gemini to control cost.
   return ['google', 'perplexity', 'openai'];
 };
 
@@ -142,6 +139,19 @@ async function getUserPreferenceAndKeys(userToken, maxRetries = 3) {
   }
 }
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+// Lower temperature = less variance = more reliable instruction following
+// 0.62 is the sweet spot: creative enough to avoid repetition, consistent
+// enough to follow instructions reliably. 0.7 causes too much drift.
+const CONTENT_TEMPERATURE = 0.62;
+
+// Higher token limit = no truncated/incomplete content
+const CONTENT_MAX_TOKENS = 1024;
+
+// Stable Gemini model for production
+const GEMINI_MODEL = 'gemini-2.0-flash';
+// ─────────────────────────────────────────────────────────────────────────────
+
 class AIService {
   constructor() {
     if (process.env.OPENAI_API_KEY) {
@@ -157,7 +167,6 @@ class AIService {
     this.googleApiKey = process.env.GOOGLE_AI_API_KEY;
   }
 
-  // FIXED: Added input validation
   validatePrompt(prompt) {
     if (!prompt || typeof prompt !== 'string') {
       throw new Error('Invalid prompt');
@@ -165,11 +174,9 @@ class AIService {
     
     const trimmed = prompt.trim();
     
-    // Length validation
     if (trimmed.length < 5) throw new Error('Prompt too short');
     if (trimmed.length > 2000) throw new Error('Prompt too long (max 2000 characters)');
     
-    // FIXED: Block obvious prompt injection
     const dangerousPatterns = [
       /ignore\s+(all\s+)?previous\s+instructions/gi,
       /disregard\s+(all\s+)?prior\s+instructions/gi,
@@ -186,10 +193,8 @@ class AIService {
   }
 
   async generateContent(prompt, style = 'casual', maxRetries = 3, userToken = null, userId = null, planType = null) {
-    // FIXED: Validate and sanitize input
     const sanitizedPrompt = this.validatePrompt(prompt);
     
-    // FIXED: Rate limiting
     if (userId) {
       const rateCheck = checkRateLimit(userId);
       if (!rateCheck.allowed) {
@@ -197,16 +202,13 @@ class AIService {
       }
     }
     
-    // Extract requested thread count
     const threadCountMatch = sanitizedPrompt.match(/generate\s+(\d+)\s+threads?/i);
     const requestedCount = threadCountMatch ? parseInt(threadCountMatch[1]) : null;
     
-    // FIXED: Limit thread count
     if (requestedCount && (requestedCount < 1 || requestedCount > 10)) {
       throw new Error('Thread count must be between 1 and 10');
     }
 
-    // Fetch user preference
     let preference = 'platform';
     let userKeys = [];
     if (userToken) {
@@ -214,11 +216,9 @@ class AIService {
         const prefResult = await getUserPreferenceAndKeys(userToken);
         preference = prefResult.preference;
         userKeys = prefResult.userKeys;
-        // FIXED: Don't log API keys
         console.log('[BYOK] Fetched keys for providers:', userKeys.map(k => k.provider).join(', '));
       } catch (err) {
         console.error('Failed to fetch user BYOK preference/keys:', err.message);
-        // Continue with platform keys
       }
     }
 
@@ -227,7 +227,6 @@ class AIService {
     const providerCandidates = {};
     const keyType = preference === 'byok' ? 'BYOK' : 'platform';
 
-    // 1. Perplexity
     const perplexityKey =
       preference === 'byok'
         ? userKeys.find((k) => k.provider === 'perplexity')?.apiKey
@@ -240,7 +239,6 @@ class AIService {
       };
     }
 
-    // 2. Google Gemini
     const googleKey =
       preference === 'byok'
         ? userKeys.find((k) => k.provider === 'gemini')?.apiKey
@@ -253,7 +251,6 @@ class AIService {
       };
     }
 
-    // 3. OpenAI
     const openaiKey =
       preference === 'byok'
         ? userKeys.find((k) => k.provider === 'openai')?.apiKey
@@ -284,7 +281,6 @@ class AIService {
     const authFailures = [];
 
     for (const provider of providers) {
-      // Attempt this provider with retries for quota/retry-after hints
       let attempts = 0;
       const maxProviderAttempts = Math.max(1, maxRetries);
       while (attempts < maxProviderAttempts) {
@@ -309,24 +305,23 @@ class AIService {
           console.error(`❌ ${provider.name} generation failed (attempt ${attempts}):`, error.message);
           lastError = error;
 
-          // Collect authorization-style failures separately
           if (/unauthoriz|token expired|invalid key/i.test(error.message || '')) {
             authFailures.push(`${provider.name} (${provider.keyType}): ${error.message}`);
-            // No point retrying auth errors on this provider
             break;
           }
 
-          // If provider indicates quota with retryAfter, wait then retry (if attempts remain)
           if (error.isQuota || error.retryAfter) {
-            const waitSec = (typeof error.retryAfter === 'number' && error.retryAfter > 0) ? error.retryAfter : Math.min(5 * attempts, 30);
+            const waitSec =
+              typeof error.retryAfter === 'number' && error.retryAfter > 0
+                ? error.retryAfter
+                : Math.min(5 * attempts, 30);
             if (attempts < maxProviderAttempts) {
-              console.log(`${provider.name} suggests retry after ${waitSec}s — waiting before retrying...`);
+              console.log(`${provider.name} suggests retry after ${waitSec}s — waiting...`);
               await new Promise(r => setTimeout(r, Math.ceil(waitSec * 1000)));
-              continue; // retry same provider
+              continue;
             }
           }
 
-          // If we've exhausted attempts for this provider, move to next provider
           break;
         }
       }
@@ -350,7 +345,6 @@ class AIService {
       }
     }
 
-    // Fetch user preference
     let preference = 'platform';
     let userKeys = [];
     if (userToken) {
@@ -453,9 +447,12 @@ class AIService {
           }
 
           if (error.isQuota || error.retryAfter) {
-            const waitSec = (typeof error.retryAfter === 'number' && error.retryAfter > 0) ? error.retryAfter : 3;
+            const waitSec =
+              typeof error.retryAfter === 'number' && error.retryAfter > 0
+                ? error.retryAfter
+                : 3;
             if (attempts < maxProviderAttempts) {
-              console.log(`[Strategy Builder] ${provider.name} suggests retry after ${waitSec}s — waiting before retrying...`);
+              console.log(`[Strategy Builder] ${provider.name} suggests retry after ${waitSec}s — waiting...`);
               await new Promise(r => setTimeout(r, Math.ceil(waitSec * 1000)));
               continue;
             }
@@ -488,7 +485,6 @@ class AIService {
       informative: 'Write in an informative, educational tone.'
     };
 
-    // FIXED: Simplified system prompt - removed aggressive "NEVER" instructions
     let systemPrompt;
     
     if (requestedCount) {
@@ -498,6 +494,7 @@ Generate EXACTLY ${requestedCount} tweets separated by "---"
 Keep each tweet under 280 characters
 Include 1-3 relevant hashtags at the end of each tweet
 Use plain text (no HTML entities like &#x27;)
+Write every tweet completely — do not cut off mid-sentence.
 
 User request: ${prompt}`;
     } else {
@@ -507,6 +504,7 @@ If user asks for "threads" without a number, generate 3-5 tweets separated by "-
 Keep under 280 characters per tweet
 Include 1-3 relevant hashtags
 Use plain text only
+Write every piece of content completely — do not cut off mid-sentence.
 
 User request: ${prompt}`;
     }
@@ -517,18 +515,18 @@ User request: ${prompt}`;
         {
           model: 'sonar',
           messages: [
-            { role: 'system', content: 'You are a creative Twitter content writer.' },
+            { role: 'system', content: 'You are a creative Twitter content writer. Always complete every sentence fully.' },
             { role: 'user', content: systemPrompt }
           ],
-          max_tokens: 800,
-          temperature: 0.7
+          max_tokens: CONTENT_MAX_TOKENS,
+          temperature: CONTENT_TEMPERATURE,
         },
         {
           headers: {
             'Authorization': `Bearer ${keyToUse}`,
             'Content-Type': 'application/json'
           },
-          timeout: 30000 // FIXED: Added timeout
+          timeout: 30000
         }
       );
 
@@ -562,7 +560,6 @@ User request: ${prompt}`;
       informative: 'informative and educational'
     };
 
-    // FIXED: Simplified prompt
     let systemPrompt;
     
     if (requestedCount) {
@@ -572,6 +569,7 @@ Generate EXACTLY ${requestedCount} tweets separated by "---"
 Keep under 280 characters per tweet
 Include 1-3 relevant hashtags
 Use plain text only
+Write every tweet fully — never cut off mid-sentence.
 
 User request: ${prompt}`;
     } else {
@@ -581,24 +579,23 @@ Generate tweet content based on the request
 If "threads" requested, generate 3-5 tweets separated by "---"
 Keep under 280 characters per tweet
 Include 1-3 relevant hashtags
+Write every piece of content completely — no unfinished sentences.
 
 User request: ${prompt}`;
     }
 
     try {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${keyToUse}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${keyToUse}`,
         {
           contents: [{
-            parts: [{
-              text: systemPrompt
-            }]
+            parts: [{ text: systemPrompt }]
           }],
           generationConfig: {
-            temperature: 0.7,
+            temperature: CONTENT_TEMPERATURE,
             topK: 1,
             topP: 1,
-            maxOutputTokens: 800,
+            maxOutputTokens: CONTENT_MAX_TOKENS,
           },
           safetySettings: [
             {
@@ -612,10 +609,8 @@ User request: ${prompt}`;
           ]
         },
         {
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          timeout: 30000 // FIXED: Added timeout
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 30000
         }
       );
 
@@ -626,23 +621,21 @@ User request: ${prompt}`;
 
       return content;
     } catch (error) {
-      // Normalize Google errors: detect quota / retry hints and attach metadata
       const gMsg = error.response?.data?.error?.message || error.message || 'Google API error';
       const normalized = new Error(`Google AI Error: ${gMsg}`);
       normalized.status = error.response?.status;
 
-      // Detect quota exceeded
       if (/quota exceeded|exceeded your current quota|quota/i.test(gMsg)) {
         normalized.isQuota = true;
       }
 
-      // Parse "Please retry in Xs" style messages
-      const retryMatch = gMsg.match(/Please retry in\s*([0-9]+(?:\.[0-9]+)?)s/i) || gMsg.match(/retry after\s*([0-9]+)s/i);
+      const retryMatch =
+        gMsg.match(/Please retry in\s*([0-9]+(?:\.[0-9]+)?)s/i) ||
+        gMsg.match(/retry after\s*([0-9]+)s/i);
       if (retryMatch) {
         normalized.retryAfter = parseFloat(retryMatch[1]);
       }
 
-      // If server responded with Retry-After header, prefer it
       const retryHeader = error.response?.headers?.['retry-after'];
       if (retryHeader) {
         const parsed = parseFloat(retryHeader);
@@ -674,7 +667,6 @@ User request: ${prompt}`;
       informative: 'Write in an informative, educational tone.'
     };
 
-    // FIXED: Simplified prompt
     let systemPrompt;
     
     if (requestedCount) {
@@ -684,6 +676,7 @@ Generate EXACTLY ${requestedCount} tweets separated by "---"
 Keep under 280 characters per tweet
 Include 1-3 relevant hashtags
 Use plain text only
+Write every tweet fully — never trail off or cut mid-sentence.
 
 User request: ${prompt}`;
     } else {
@@ -693,6 +686,7 @@ Generate tweet content based on request
 If "threads" requested, generate 3-5 tweets separated by "---"
 Keep under 280 characters per tweet
 Include 1-3 relevant hashtags
+Write every piece of content completely — no unfinished sentences.
 
 User request: ${prompt}`;
     }
@@ -703,9 +697,8 @@ User request: ${prompt}`;
         { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 800,
-      temperature: 0.7,
-      timeout: 30000 // FIXED: Added timeout
+      max_tokens: CONTENT_MAX_TOKENS,
+      temperature: CONTENT_TEMPERATURE,
     });
 
     const content = response.choices[0]?.message?.content?.trim();
@@ -760,19 +753,17 @@ User request: ${prompt}`;
       throw new Error('OpenAI API key not configured');
     }
 
-    // FIXED: Simplified prompt
     const systemPrompt = `You are a Twitter content creator. Generate engaging tweet content.
 
 Keep under 280 characters
 For threads: Only include hashtags in the FINAL tweet
 For single tweets: Include 2-3 relevant hashtags
 Be engaging and descriptive
+Write the full tweet — do not cut off.
 
 Generate tweet content for: ${prompt}`;
 
-    const messages = [
-      { role: 'system', content: systemPrompt }
-    ];
+    const messages = [{ role: 'system', content: systemPrompt }];
 
     if (imageUrl) {
       messages.push({
@@ -790,8 +781,7 @@ Generate tweet content for: ${prompt}`;
       model: imageUrl ? 'gpt-4o' : 'gpt-4o-mini',
       messages: messages,
       max_tokens: 400,
-      temperature: 0.7,
-      timeout: 30000 // FIXED: Added timeout
+      temperature: 0.7, // Image generation can stay at 0.7 — creative latitude is fine here
     });
 
     const content = response.choices[0]?.message?.content?.trim();
@@ -807,24 +797,22 @@ Generate tweet content for: ${prompt}`;
       throw new Error('Google AI API key not configured');
     }
 
-    // FIXED: Simplified prompt
     const systemPrompt = `You are a Twitter content creator. Generate engaging tweet content.
 
 Keep under 280 characters
 For threads: hashtags in FINAL tweet only
 For single tweets: include 1-2 hashtags
 Be engaging and visual
+Write the full tweet — do not cut off.
 
 Generate tweet content for: ${prompt}`;
 
     const requestBody = {
       contents: [{
-        parts: [{
-          text: systemPrompt
-        }]
+        parts: [{ text: systemPrompt }]
       }],
       generationConfig: {
-        temperature: 0.7,
+        temperature: 0.7, // Image generation can stay at 0.7
         topK: 1,
         topP: 1,
         maxOutputTokens: 400,
@@ -844,13 +832,11 @@ Generate tweet content for: ${prompt}`;
     }
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${this.googleApiKey}`,
       requestBody,
       {
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000 // FIXED: Added timeout
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 30000
       }
     );
 
@@ -914,7 +900,6 @@ Generate tweet content for: ${prompt}`;
 
     let cleaned = content;
 
-    // FIXED: Better refusal detection
     const refusalPatterns = [
       /I appreciate the detailed instructions/i,
       /I need to clarify my role/i,
@@ -948,7 +933,7 @@ Generate tweet content for: ${prompt}`;
     cleaned = cleaned.replace(/```[^`]*```/g, '');
     cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
 
-    // Remove common assistant-style lead-ins while keeping the actual content
+    // Remove common assistant-style lead-ins
     cleaned = cleaned.replace(
       /^(?:okay|ok|sure|absolutely|great)[!,. ]+\s*here(?:'s| is)\s+[^\n]{0,140}\n+/i,
       ''

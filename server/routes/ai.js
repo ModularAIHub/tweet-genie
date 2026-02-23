@@ -127,8 +127,8 @@ router.post('/generate', authenticateToken, async (req, res) => {
       });
     }
 
-    // Validate style parameter
-    const allowedStyles = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
+    // Validate style parameter — includes 'witty' for backward compatibility
+    const allowedStyles = ['casual', 'professional', 'humorous', 'inspirational', 'informative', 'witty'];
     if (!allowedStyles.includes(style)) {
       return res.status(400).json({
         success: false,
@@ -220,21 +220,29 @@ router.post('/generate', authenticateToken, async (req, res) => {
 
     if (normalizedGenerationMode === 'strategy_prompt') {
       console.log(
-        `[AI generation][strategy] source=${effectiveClientSource || 'unknown'} style=${style} thread=${Boolean(isThread)} ideaLen=${strategyPrompt?.idea?.length || 0} extraContextLen=${strategyPrompt?.extraContext?.length || 0}`
+        `[AI generation][strategy] source=${effectiveClientSource || 'unknown'} style=${style} thread=${Boolean(isThread)} ideaLen=${strategyPrompt?.idea?.length || 0} instrLen=${strategyPrompt?.instruction?.length || 0} extraContextLen=${strategyPrompt?.extraContext?.length || 0}`
       );
     } else {
       console.log(`AI generation request: "${sanitizedPrompt}" with style: ${style}`);
     }
 
-    // First generate the content to analyze thread count
+    // Generate the content, then run quality evaluation for strategy mode
     let result;
     let qualityGuard = null;
     let normalizedThreadParts = null;
+
+    // Extract instruction for quality evaluation (strategy mode only)
+    const instructionForEval =
+      normalizedGenerationMode === 'strategy_prompt'
+        ? String(strategyPrompt?.instruction || '').trim()
+        : '';
+
     try {
       const authTokenForGeneration =
         req.cookies?.accessToken ||
         (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]) ||
         null;
+
       const firstAttempt = await aiService.generateContent(
         sanitizedPrompt,
         style,
@@ -255,15 +263,23 @@ router.post('/generate', authenticateToken, async (req, res) => {
           issues: [],
         };
 
+        // --- Primary quality evaluation (now includes instruction compliance) ---
         let primaryEval = evaluateStrategyGeneratedContent({
           content: firstAttempt?.content || '',
           isThread: Boolean(isThread),
+          instruction: instructionForEval,
         });
+
         let chosenAttempt = firstAttempt;
         let chosenEval = primaryEval;
 
         if (!primaryEval.passed) {
           qualityGuard.retried = true;
+
+          console.log(
+            `[AI generation][strategy] First attempt failed quality check. Issues: ${primaryEval.issues.join(' | ')}. Retrying...`
+          );
+
           const retryPrompt = buildStrategyGenerationPrompt({
             strategyPrompt,
             isThread,
@@ -281,32 +297,47 @@ router.post('/generate', authenticateToken, async (req, res) => {
                 req.user.id,
                 resolvedPlanType
               );
+
+              // --- Retry quality evaluation ---
               const retryEval = evaluateStrategyGeneratedContent({
                 content: retryAttempt?.content || '',
                 isThread: Boolean(isThread),
+                instruction: instructionForEval,
               });
 
+              // Pick the better result
               if (
                 retryEval.passed ||
-                (!retryEval.critical && (chosenEval.critical || retryEval.issues.length <= chosenEval.issues.length))
+                (!retryEval.critical &&
+                  (chosenEval.critical || retryEval.issues.length <= chosenEval.issues.length))
               ) {
                 chosenAttempt = retryAttempt;
                 chosenEval = retryEval;
+                console.log(
+                  `[AI generation][strategy] Retry improved result. Issues remaining: ${retryEval.issues.length}`
+                );
+              } else {
+                console.log(
+                  `[AI generation][strategy] Retry did not improve result, keeping first attempt.`
+                );
               }
             } catch (retryError) {
-              console.error('[AI generation][strategy] retry attempt failed:', retryError?.message || retryError);
-              if (chosenEval.issues.length === 0) {
-                chosenEval.issues = ['Retry attempt failed'];
-              } else {
-                chosenEval.issues = Array.from(new Set([...chosenEval.issues, 'Retry attempt failed']));
-              }
+              console.error(
+                '[AI generation][strategy] retry attempt failed:',
+                retryError?.message || retryError
+              );
+              chosenEval.issues = Array.from(
+                new Set([...chosenEval.issues, 'Retry attempt failed'])
+              );
             }
           }
         }
 
         if (chosenEval.critical) {
           const qualityFailureError = new Error(
-            `Strategy generation quality check failed: ${(chosenEval.issues || []).join('; ') || 'Critical validation failure'}`
+            `Strategy generation quality check failed: ${
+              (chosenEval.issues || []).join('; ') || 'Critical validation failure'
+            }`
           );
           qualityFailureError.code = 'STRATEGY_QUALITY_FAILED';
           throw qualityFailureError;
@@ -314,7 +345,8 @@ router.post('/generate', authenticateToken, async (req, res) => {
 
         qualityGuard.passed = Boolean(chosenEval.passed);
         qualityGuard.issues = Array.isArray(chosenEval.issues) ? chosenEval.issues : [];
-        normalizedThreadParts = Array.isArray(chosenEval.threadParts) ? chosenEval.threadParts : null;
+        normalizedThreadParts =
+          Array.isArray(chosenEval.threadParts) ? chosenEval.threadParts : null;
 
         result = {
           ...chosenAttempt,
@@ -324,8 +356,14 @@ router.post('/generate', authenticateToken, async (req, res) => {
     } catch (aiError) {
       // Refund credits if AI generation fails
       console.error('AI generation failed, refunding credits:', estimatedCreditsNeeded);
-      await TeamCreditService.refundCredits(req.user.id, teamId, estimatedCreditsNeeded, 'ai_generation_failed', token);
-      throw aiError; // Re-throw to be caught by outer catch block
+      await TeamCreditService.refundCredits(
+        req.user.id,
+        teamId,
+        estimatedCreditsNeeded,
+        'ai_generation_failed',
+        token
+      );
+      throw aiError;
     }
 
     // Use the AI-generated content directly (no post-sanitization to prevent [FILTERED])
@@ -340,38 +378,42 @@ router.post('/generate', authenticateToken, async (req, res) => {
         tweets = normalizedThreadParts.map((t) => t.trim()).filter(Boolean);
         console.log(`[AI generation][strategy] Using normalized thread parts: ${threadCount}`);
       } else {
-        // Count threads by splitting on "---" separator (the actual format used by AI service)
-        const threadSeparators = sanitizedContent.split('---').filter(section => section.trim().length > 0);
+        // Count threads by splitting on "---" separator
+        const threadSeparators = sanitizedContent
+          .split('---')
+          .filter((section) => section.trim().length > 0);
         if (threadSeparators.length > 1) {
           threadCount = threadSeparators.length;
-          tweets = threadSeparators.map(t => t.trim());
+          tweets = threadSeparators.map((t) => t.trim());
           console.log(`Multiple threads detected: ${threadCount} threads (separated by ---)`);
         } else {
-          // Fallback: if no --- separators, check if it's a single long thread
-          const lines = sanitizedContent.split('\n').filter(line => line.trim().length > 0);
+          // Fallback: estimate from line count
+          const lines = sanitizedContent.split('\n').filter((line) => line.trim().length > 0);
           if (lines.length > 3) {
-            threadCount = Math.min(Math.ceil(lines.length / 3), 5); // Estimate 3 lines per tweet, cap at 5
-            // Split into tweets of 3 lines each
+            threadCount = Math.min(Math.ceil(lines.length / 3), 5);
             tweets = [];
             for (let i = 0; i < lines.length; i += 3) {
               tweets.push(lines.slice(i, i + 3).join('\n'));
             }
             tweets = tweets.slice(0, 5);
-            console.log(`Long content detected: estimated ${threadCount} tweets based on ${lines.length} lines`);
+            console.log(
+              `Long content detected: estimated ${threadCount} tweets based on ${lines.length} lines`
+            );
           }
         }
       }
     }
 
     // Calculate actual credits needed (1.2 credits per thread)
-    const actualCreditsNeeded = Math.round((threadCount * 1.2) * 100) / 100; // Round to 2 decimal places
+    const actualCreditsNeeded = Math.round(threadCount * 1.2 * 100) / 100;
 
-    // Adjust credits if there's a difference between estimated and actual
+    // Adjust credits if there's a meaningful difference between estimated and actual
     const creditDifference = Math.round((actualCreditsNeeded - estimatedCreditsNeeded) * 100) / 100;
 
-    if (creditDifference > 0.01) { // Only adjust if difference is significant (> 1 cent)
-      // Need to deduct more credits
-      console.log(`Deducting additional ${creditDifference} credits (actual: ${threadCount}, estimated: ${estimatedThreadCount})`);
+    if (creditDifference > 0.01) {
+      console.log(
+        `Deducting additional ${creditDifference} credits (actual: ${threadCount}, estimated: ${estimatedThreadCount})`
+      );
       const additionalDeductResult = await TeamCreditService.deductCredits(
         req.user.id,
         teamId,
@@ -379,32 +421,45 @@ router.post('/generate', authenticateToken, async (req, res) => {
         'ai_thread_adjustment',
         token
       );
-      
+
       if (!additionalDeductResult.success) {
-        // Refund the initial credits since we can't complete the request
-        await TeamCreditService.refundCredits(req.user.id, teamId, estimatedCreditsNeeded, 'ai_generation_failed');
-        
+        await TeamCreditService.refundCredits(
+          req.user.id,
+          teamId,
+          estimatedCreditsNeeded,
+          'ai_generation_failed'
+        );
         return res.status(402).json({
           success: false,
           error: 'Insufficient credits for actual thread count',
           creditsRequired: actualCreditsNeeded,
-          creditsAvailable: additionalDeductResult.remainingCredits ?? additionalDeductResult.creditsAvailable ?? 0,
+          creditsAvailable:
+            additionalDeductResult.remainingCredits ??
+            additionalDeductResult.creditsAvailable ??
+            0,
           threadCount: threadCount,
           estimatedThreads: estimatedThreadCount,
-          creditSource: creditCheck.source
+          creditSource: creditCheck.source,
         });
       }
-    } else if (creditDifference < -0.01) { // Only refund if difference is significant
-      // Refund excess credits
+    } else if (creditDifference < -0.01) {
       const refundAmount = Math.abs(creditDifference);
-      console.log(`Refunding ${refundAmount} excess credits (actual: ${threadCount}, estimated: ${estimatedThreadCount})`);
-      await TeamCreditService.refundCredits(req.user.id, teamId, refundAmount, 'ai_thread_adjustment');
+      console.log(
+        `Refunding ${refundAmount} excess credits (actual: ${threadCount}, estimated: ${estimatedThreadCount})`
+      );
+      await TeamCreditService.refundCredits(
+        req.user.id,
+        teamId,
+        refundAmount,
+        'ai_thread_adjustment'
+      );
     }
 
-    console.log(`Final credits used: ${actualCreditsNeeded} for ${threadCount} threads (estimated: ${estimatedThreadCount})`);
+    console.log(
+      `Final credits used: ${actualCreditsNeeded} for ${threadCount} threads (estimated: ${estimatedThreadCount})`
+    );
 
     // If scheduling is requested, schedule the tweet/thread
-
     let scheduledResult = null;
     if (schedule) {
       scheduledResult = await scheduledTweetService.scheduleTweets({
@@ -412,12 +467,19 @@ router.post('/generate', authenticateToken, async (req, res) => {
         tweets,
         options: {
           ...scheduleOptions,
-          teamId: scheduleOptions.teamId || scheduleOptions.team_id || req.headers['x-team-id'] || null,
-          accountId: scheduleOptions.accountId || scheduleOptions.account_id || null
-        }
+          teamId:
+            scheduleOptions.teamId ||
+            scheduleOptions.team_id ||
+            req.headers['x-team-id'] ||
+            null,
+          accountId: scheduleOptions.accountId || scheduleOptions.account_id || null,
+        },
       });
-      // Optionally, immediately post if scheduled time is now or in the past
-      if (scheduledResult && scheduledResult.scheduledTime && new Date(scheduledResult.scheduledTime) <= new Date()) {
+      if (
+        scheduledResult &&
+        scheduledResult.scheduledTime &&
+        new Date(scheduledResult.scheduledTime) <= new Date()
+      ) {
         await scheduledTweetService.processSingleScheduledTweetById(scheduledResult.scheduledId);
         scheduledResult.posted = true;
       } else {
@@ -437,17 +499,18 @@ router.post('/generate', authenticateToken, async (req, res) => {
       generatedAt: new Date().toISOString(),
       scheduled: schedule ? true : false,
       scheduledResult,
-      ...(Array.isArray(normalizedThreadParts) && normalizedThreadParts.length > 0 ? { threadParts: normalizedThreadParts } : {}),
-      ...(qualityGuard ? { qualityGuard } : {})
+      ...(Array.isArray(normalizedThreadParts) && normalizedThreadParts.length > 0
+        ? { threadParts: normalizedThreadParts }
+        : {}),
+      ...(qualityGuard ? { qualityGuard } : {}),
     });
-
   } catch (error) {
     console.error('AI generation error:', error);
-    
+
     res.status(500).json({
       success: false,
       error: 'Failed to generate content',
-      details: error.message
+      details: error.message,
     });
   }
 });
@@ -483,7 +546,7 @@ router.post('/generate-options', authenticateToken, async (req, res) => {
     }
 
     // Validate style parameter
-    const allowedStyles = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
+    const allowedStyles = ['casual', 'professional', 'humorous', 'inspirational', 'informative', 'witty'];
     if (!allowedStyles.includes(style)) {
       return res.status(400).json({
         success: false,
@@ -495,7 +558,6 @@ router.post('/generate-options', authenticateToken, async (req, res) => {
     const creditsRequired = count * 1.2;
 
     // Check and deduct credits before AI generation
-    // Get the JWT token from cookies or Authorization header
     let token = req.cookies?.accessToken;
     if (!token) {
       const authHeader = req.headers['authorization'];
@@ -521,7 +583,6 @@ router.post('/generate-options', authenticateToken, async (req, res) => {
       planType: resolvedPlanType,
     });
 
-    // Use AI-generated options directly (no post-sanitization to prevent [FILTERED])
     const sanitizedOptions = result.options;
 
     res.json({
@@ -555,7 +616,6 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
       });
     }
 
-    // Basic validation only (AI service handles proper validation)  
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 3) {
       return res.status(400).json({
         success: false,
@@ -565,7 +625,6 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
 
     const sanitizedPrompt = prompt.trim();
 
-    // Check if imageUrl is provided and validate it
     if (imageUrl) {
       try {
         new URL(imageUrl);
@@ -577,7 +636,6 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
       }
     }
 
-    // Check and deduct credits for image analysis
     let token = req.cookies?.accessToken;
     if (!token) {
       const authHeader = req.headers['authorization'];
@@ -598,7 +656,6 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
 
     const result = await aiService.generateImageContent(sanitizedPrompt, imageUrl);
 
-    // Use AI-generated content directly (no post-sanitization to prevent [FILTERED])
     const sanitizedContent = result.content;
 
     res.json({
@@ -618,11 +675,5 @@ router.post('/generate-image', authenticateToken, async (req, res) => {
     });
   }
 });
-
-// Bulk AI generation (multiple prompts)
-
-// New: Enqueue bulk generation jobs, return job IDs
-
-// router.post('/bulk-generate', authenticateToken, bulkGenerate);
 
 export default router;

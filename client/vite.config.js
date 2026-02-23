@@ -5,7 +5,9 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
   server: {
+    host: 'localhost',
     port: 5174,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://localhost:3002',
@@ -13,6 +15,11 @@ export default defineConfig(({ mode }) => ({
         secure: false,
       },
       '/auth': {
+        target: 'http://localhost:3002',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/imageGeneration': {
         target: 'http://localhost:3002',
         changeOrigin: true,
         secure: false,

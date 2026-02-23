@@ -10,6 +10,10 @@ const router = express.Router();
 const SCHEDULING_DEBUG = process.env.SCHEDULING_DEBUG === 'true';
 const MAX_BULK_SCHEDULE_ITEMS = 30;
 const MAX_SCHEDULING_WINDOW_DAYS = 15;
+const MIN_SCHEDULING_LEAD_MINUTES = Math.max(
+  0,
+  Number.parseFloat(process.env.MIN_SCHEDULING_LEAD_MINUTES || '0')
+);
 
 const schedulingDebug = (...args) => {
   if (SCHEDULING_DEBUG) {
@@ -225,6 +229,255 @@ function serializeScheduledTweet(row) {
   };
 }
 
+function parseJsonObject(value, fallback = {}) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...fallback, ...value };
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...fallback, ...parsed };
+      }
+    } catch {
+      return { ...fallback };
+    }
+  }
+  return { ...fallback };
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function mapLinkedInCrossScheduleStatusForX(row) {
+  const sourceStatus = String(row?.status || '').toLowerCase();
+  const metadata = parseJsonObject(row?.metadata, {});
+  const xResultStatus = String(
+    metadata?.cross_post?.last_result?.x?.status || ''
+  ).toLowerCase();
+
+  if (sourceStatus === 'cancelled' || sourceStatus === 'canceled') return 'cancelled';
+  if (sourceStatus === 'failed') return 'failed';
+  if (sourceStatus === 'processing') return 'processing';
+  if (sourceStatus === 'scheduled') return 'pending';
+
+  if (sourceStatus === 'completed') {
+    if (!xResultStatus) return 'completed';
+    if (xResultStatus === 'posted') return 'completed';
+    if (
+      [
+        'failed',
+        'failed_too_long',
+        'timeout',
+        'not_connected',
+        'skipped_not_configured',
+        'skipped_individual_only',
+      ].includes(xResultStatus)
+    ) {
+      return 'failed';
+    }
+    return 'completed';
+  }
+
+  return 'pending';
+}
+
+function buildExternalXScheduledRowFromLinkedIn(row) {
+  const metadata = parseJsonObject(row?.metadata, {});
+  const crossPostMeta =
+    metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : {};
+  const xLastResult =
+    crossPostMeta?.last_result?.x && typeof crossPostMeta.last_result.x === 'object'
+      ? crossPostMeta.last_result.x
+      : null;
+  const mappedStatus = mapLinkedInCrossScheduleStatusForX(row);
+
+  return {
+    id: `lgx-${row.id}`,
+    user_id: row.user_id,
+    team_id: null,
+    account_id: null,
+    author_id: null,
+    content: row.post_content || '',
+    media: JSON.stringify([]),
+    media_urls: row.media_urls || JSON.stringify([]),
+    thread_tweets: JSON.stringify([]),
+    thread_media: JSON.stringify([]),
+    scheduled_for: row.scheduled_time,
+    timezone: row.timezone || null,
+    status: mappedStatus,
+    posted_at: row.posted_at || null,
+    error_message:
+      row.error_message ||
+      (xLastResult?.status && xLastResult.status !== 'posted'
+        ? `LinkedIn cross-post to X status: ${xLastResult.status}`
+        : null),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+    account_username: null,
+    twitter_username: null,
+    scheduled_by_email: null,
+    scheduled_by_name: null,
+    is_external_cross_post: true,
+    external_source: 'linkedin-genie',
+    external_ref_id: row.id,
+    external_target: 'x',
+    external_read_only: true,
+    external_meta: {
+      source_status: row.status || null,
+      x_status: xLastResult?.status || null,
+      last_attempted_at: crossPostMeta?.last_attempted_at || null,
+    },
+  };
+}
+
+async function fetchExternalLinkedinCrossSchedulesForX({ userId, teamId = null, statuses = null, limit = 100 }) {
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 100));
+  const ownerClause = teamId
+    ? `company_id::text = $1`
+    : `(user_id = $1 AND (company_id IS NULL OR company_id::text = ''))`;
+  const ownerValue = teamId ? String(teamId) : userId;
+
+  const { rows } = await pool.query(
+    `SELECT *
+     FROM scheduled_linkedin_posts
+     WHERE ${ownerClause}
+     ORDER BY scheduled_time ASC
+     LIMIT $2`,
+    [ownerValue, safeLimit]
+  );
+
+  return rows
+    .filter((row) => {
+      const metadata = parseJsonObject(row?.metadata, {});
+      const targets = metadata?.cross_post?.targets;
+      return Boolean(targets?.x || targets?.twitter);
+    })
+    .map(buildExternalXScheduledRowFromLinkedIn)
+    .filter((row) => !Array.isArray(statuses) || statuses.length === 0 || statuses.includes(String(row.status || '').toLowerCase()));
+}
+
+function mapSocialThreadsCrossScheduleStatusForX(row) {
+  const sourceStatus = String(row?.status || '').toLowerCase();
+  const metadata = parseJsonObject(row?.metadata, {});
+  const xResultStatus = String(
+    metadata?.cross_post?.last_result?.x?.status || ''
+  ).toLowerCase();
+
+  if (sourceStatus === 'deleted') return 'cancelled';
+  if (sourceStatus === 'failed') return 'failed';
+  if (sourceStatus === 'publishing') return 'processing';
+  if (sourceStatus === 'scheduled') return 'pending';
+
+  if (sourceStatus === 'posted') {
+    if (!xResultStatus) return 'completed';
+    if (xResultStatus === 'posted') return 'completed';
+    if (
+      [
+        'failed',
+        'failed_too_long',
+        'timeout',
+        'not_connected',
+        'skipped_not_configured',
+        'skipped_individual_only',
+      ].includes(xResultStatus)
+    ) {
+      return 'failed';
+    }
+    return 'completed';
+  }
+
+  return 'pending';
+}
+
+function buildExternalXScheduledRowFromSocial(row) {
+  const metadata = parseJsonObject(row?.metadata, {});
+  const crossPostMeta =
+    metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : {};
+  const xLastResult =
+    crossPostMeta?.last_result?.x && typeof crossPostMeta.last_result.x === 'object'
+      ? crossPostMeta.last_result.x
+      : null;
+  const mappedStatus = mapSocialThreadsCrossScheduleStatusForX(row);
+
+  return {
+    id: `sgx-${row.id}`,
+    user_id: row.user_id,
+    team_id: row.team_id || null,
+    account_id: null,
+    author_id: null,
+    content: row.caption || '',
+    media: JSON.stringify([]),
+    media_urls: row.media_urls || JSON.stringify([]),
+    thread_tweets: JSON.stringify([]),
+    thread_media: JSON.stringify([]),
+    scheduled_for: row.scheduled_for,
+    timezone: null,
+    status: mappedStatus,
+    posted_at: row.posted_at || null,
+    error_message:
+      row.error_message ||
+      (xLastResult?.status && xLastResult.status !== 'posted'
+        ? `Threads cross-post to X status: ${xLastResult.status}`
+        : null),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+    account_username: null,
+    twitter_username: null,
+    scheduled_by_email: null,
+    scheduled_by_name: null,
+    is_external_cross_post: true,
+    external_source: 'social-genie',
+    external_ref_id: row.id,
+    external_target: 'x',
+    external_read_only: true,
+    external_meta: {
+      source_status: row.status || null,
+      x_status: xLastResult?.status || null,
+      last_attempted_at: crossPostMeta?.last_attempted_at || null,
+    },
+  };
+}
+
+async function fetchExternalSocialThreadsCrossSchedulesForX({ userId, teamId = null, statuses = null, limit = 100 }) {
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 100));
+  const ownerClause = teamId
+    ? `team_id::text = $1`
+    : `(user_id = $1 AND (team_id IS NULL OR team_id::text = ''))`;
+  const ownerValue = teamId ? String(teamId) : userId;
+
+  const { rows } = await pool.query(
+    `SELECT *
+     FROM social_posts
+     WHERE ${ownerClause}
+       AND scheduled_for IS NOT NULL
+     ORDER BY COALESCE(scheduled_for, created_at) ASC
+     LIMIT $2`,
+    [ownerValue, safeLimit]
+  );
+
+  return rows
+    .filter((row) => {
+      const normalizedPlatforms = parseJsonArray(row?.platforms)
+        .map((platform) => String(platform || '').toLowerCase());
+      if (!normalizedPlatforms.includes('threads')) return false;
+      const metadata = parseJsonObject(row?.metadata, {});
+      return Boolean(metadata?.cross_post?.targets?.x || metadata?.cross_post?.targets?.twitter);
+    })
+    .map(buildExternalXScheduledRowFromSocial)
+    .filter((row) => !Array.isArray(statuses) || statuses.length === 0 || statuses.includes(String(row.status || '').toLowerCase()));
+}
+
 function parseScheduledTimeToUtc(scheduledFor, timezone) {
   const zone = normalizeTimezoneInput(timezone) || 'UTC';
   let parsedMoment = null;
@@ -255,6 +508,23 @@ function parseScheduledTimeToUtc(scheduledFor, timezone) {
 
 function getMaxSchedulingUtcMoment() {
   return moment.utc().add(MAX_SCHEDULING_WINDOW_DAYS, 'days');
+}
+
+function getMinSchedulingLeadDate() {
+  return moment().add(MIN_SCHEDULING_LEAD_MINUTES, 'minutes').toDate();
+}
+
+function getMinSchedulingLeadError() {
+  if (MIN_SCHEDULING_LEAD_MINUTES <= 0) {
+    return 'Scheduled time must be in the future';
+  }
+
+  const rounded =
+    Number.isInteger(MIN_SCHEDULING_LEAD_MINUTES)
+      ? String(MIN_SCHEDULING_LEAD_MINUTES)
+      : String(MIN_SCHEDULING_LEAD_MINUTES);
+
+  return `Scheduled time must be at least ${rounded} minute${MIN_SCHEDULING_LEAD_MINUTES === 1 ? '' : 's'} in the future`;
 }
 
 function isQueryTimeoutError(error) {
@@ -404,8 +674,22 @@ async function fetchPersonalScheduledRows({ userId, twitterScope, statuses, safe
   }));
 }
 
+function sortScheduledRowsAsc(rows) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const aTime = new Date(a?.scheduled_for || a?.created_at || 0).getTime();
+    const bTime = new Date(b?.scheduled_for || b?.created_at || 0).getTime();
+    return aTime - bTime;
+  });
+}
+
+function mergeAndPageScheduledRows({ internalRows = [], externalRows = [], safeLimit, offset }) {
+  const merged = sortScheduledRowsAsc([...(internalRows || []), ...(externalRows || [])]);
+  return merged.slice(offset, offset + safeLimit);
+}
+
 async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimit, offset, requestedStatus, statuses }) {
   const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId });
+  const mergeWindowLimit = Math.max(safeLimit + offset, safeLimit);
 
   schedulingDebug('[ScheduledTweets] Request:', {
     userId,
@@ -425,9 +709,32 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
     }
 
     try {
-      const rows = await fetchTeamScheduledRows({ teamId, statuses, safeLimit, offset });
+      const rows = await fetchTeamScheduledRows({ teamId, statuses, safeLimit: mergeWindowLimit, offset: 0 });
       const enrichedRows = await enrichTeamScheduledRows(rows);
-      return { rows: enrichedRows, disconnected: false };
+      let externalRows = [];
+      try {
+        const [linkedInRows, socialRows] = await Promise.all([
+          fetchExternalLinkedinCrossSchedulesForX({
+            userId,
+            teamId,
+            statuses,
+            limit: Math.max(100, mergeWindowLimit),
+          }),
+          fetchExternalSocialThreadsCrossSchedulesForX({
+            userId,
+            teamId,
+            statuses,
+            limit: Math.max(100, mergeWindowLimit),
+          }),
+        ]);
+        externalRows = [...linkedInRows, ...socialRows];
+      } catch (externalError) {
+        console.warn('[ScheduledTweets] Failed to load external LinkedIn cross-schedules for X (team)', externalError?.message || externalError);
+      }
+      return {
+        rows: mergeAndPageScheduledRows({ internalRows: enrichedRows, externalRows, safeLimit, offset }),
+        disconnected: false,
+      };
     } catch (teamQueryError) {
       if (!isQueryTimeoutError(teamQueryError)) {
         throw teamQueryError;
@@ -442,27 +749,98 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
       const fallbackRows = await fetchTeamScheduledRows({
         teamId,
         statuses,
-        safeLimit: Math.min(safeLimit, 10),
+        safeLimit: Math.min(Math.max(mergeWindowLimit, safeLimit), 10),
         offset: 0,
       });
       const fallbackEnrichedRows = await enrichTeamScheduledRows(fallbackRows);
-      return { rows: fallbackEnrichedRows, disconnected: false, degraded: true };
+      let externalRows = [];
+      try {
+        const [linkedInRows, socialRows] = await Promise.all([
+          fetchExternalLinkedinCrossSchedulesForX({
+            userId,
+            teamId,
+            statuses,
+            limit: 100,
+          }),
+          fetchExternalSocialThreadsCrossSchedulesForX({
+            userId,
+            teamId,
+            statuses,
+            limit: 100,
+          }),
+        ]);
+        externalRows = [...linkedInRows, ...socialRows];
+      } catch {
+        externalRows = [];
+      }
+      return {
+        rows: mergeAndPageScheduledRows({ internalRows: fallbackEnrichedRows, externalRows, safeLimit, offset }),
+        disconnected: false,
+        degraded: true,
+      };
     }
   }
 
   if (!twitterScope.connected && twitterScope.mode === 'personal') {
-    return { rows: [], disconnected: true };
+    let externalRows = [];
+    try {
+      const [linkedInRows, socialRows] = await Promise.all([
+        fetchExternalLinkedinCrossSchedulesForX({
+          userId,
+          teamId: null,
+          statuses,
+          limit: Math.max(100, mergeWindowLimit),
+        }),
+        fetchExternalSocialThreadsCrossSchedulesForX({
+          userId,
+          teamId: null,
+          statuses,
+          limit: Math.max(100, mergeWindowLimit),
+        }),
+      ]);
+      externalRows = [...linkedInRows, ...socialRows];
+    } catch {
+      externalRows = [];
+    }
+    return {
+      rows: mergeAndPageScheduledRows({ internalRows: [], externalRows, safeLimit, offset }),
+      disconnected: true,
+    };
   }
 
   const personalRows = await fetchPersonalScheduledRows({
     userId,
     twitterScope,
     statuses,
-    safeLimit,
-    offset,
+    safeLimit: mergeWindowLimit,
+    offset: 0,
   });
 
-  return { rows: personalRows, disconnected: false };
+  let externalRows = [];
+  try {
+    const [linkedInRows, socialRows] = await Promise.all([
+      fetchExternalLinkedinCrossSchedulesForX({
+        userId,
+        teamId: null,
+        statuses,
+        limit: Math.max(100, mergeWindowLimit),
+      }),
+      fetchExternalSocialThreadsCrossSchedulesForX({
+        userId,
+        teamId: null,
+        statuses,
+        limit: Math.max(100, mergeWindowLimit),
+      }),
+    ]);
+    externalRows = [...linkedInRows, ...socialRows];
+  } catch (externalError) {
+    console.warn('[ScheduledTweets] Failed to load external LinkedIn cross-schedules for X (personal)', externalError?.message || externalError);
+  }
+
+  return {
+    rows: mergeAndPageScheduledRows({ internalRows: personalRows, externalRows, safeLimit, offset }),
+    disconnected: false,
+  };
 }
 
 async function handleScheduledTweetsList(req, res) {
@@ -822,11 +1200,11 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       return res.status(400).json({ error: 'Invalid scheduled time' });
     }
 
-    // Check if time is at least 5 minutes in the future
-    const minTime = moment().add(5, 'minutes').toDate();
+    // Check minimum lead time before scheduled publish.
+    const minTime = getMinSchedulingLeadDate();
     if (parsedSchedule.utcDate < minTime) {
       return res.status(400).json({ 
-        error: 'Scheduled time must be at least 5 minutes in the future' 
+        error: getMinSchedulingLeadError(),
       });
     }
 
@@ -1326,11 +1704,11 @@ router.put('/:scheduleId', validateRequest(scheduleSchema), async (req, res) => 
       return res.status(400).json({ error: 'Invalid scheduled time' });
     }
 
-    // Check if time is at least 5 minutes in the future
-    const minTime = moment().add(5, 'minutes').toDate();
+    // Check minimum lead time before scheduled publish.
+    const minTime = getMinSchedulingLeadDate();
     if (parsedSchedule.utcDate < minTime) {
       return res.status(400).json({ 
-        error: 'Scheduled time must be at least 5 minutes in the future' 
+        error: getMinSchedulingLeadError(),
       });
     }
 

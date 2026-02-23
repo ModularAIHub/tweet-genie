@@ -582,6 +582,7 @@ const Analytics = () => {
   const overview = analyticsData.overview || {};
   const growth = analyticsData.growth || {};
   const topTweets = analyticsData.tweets || [];
+  const recentTweets = analyticsData.recent_tweets || [];
   const dailyMetrics = analyticsData.daily_metrics || [];
   const hourlyEngagement = analyticsData.hourly_engagement || [];
   const contentTypeMetrics = analyticsData.content_type_metrics || [];
@@ -1023,6 +1024,7 @@ const Analytics = () => {
             chartData={chartData}
             hourlyData={hourlyData}
             topTweets={topTweets}
+            recentTweets={recentTweets}
             timeframe={timeframe}
             isProPlan={isProPlan}
             showAdvancedCharts={isProPlan}

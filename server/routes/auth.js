@@ -203,15 +203,7 @@ router.post('/refresh', async (req, res) => {
     if (refreshResponse.status !== 200) {
       const refreshError = refreshResponse?.data?.error || refreshResponse?.data?.message || 'unknown';
       console.warn('Platform refresh failed:', refreshResponse.status, refreshError);
-      // Clear invalid refresh token
-      const isProduction = process.env.NODE_ENV === 'production';
-      const cookieDomain = process.env.COOKIE_DOMAIN || '.suitegenie.in';
-      res.clearCookie('refreshToken', {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? 'none' : 'lax',
-        ...(isProduction ? { domain: cookieDomain } : {})
-      });
+      clearAuthCookies(res);
       return res.status(401).json({ 
         error: 'Token refresh failed', 
         code: 'REFRESH_FAILED',
@@ -229,34 +221,12 @@ router.post('/refresh', async (req, res) => {
         cookie.startsWith('refreshToken=')
       );
 
-      // Cookie options for cross-subdomain auth
-      const isProduction = process.env.NODE_ENV === 'production';
-      const cookieDomain = process.env.COOKIE_DOMAIN || '.suitegenie.in';
-      const accessTokenOptions = {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? 'none' : 'lax',
-        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-        path: '/',
-        ...(isProduction ? { domain: cookieDomain } : {})
-      };
-      const refreshTokenOptions = {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? 'none' : 'lax',
-        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-        path: '/',
-        ...(isProduction ? { domain: cookieDomain } : {})
-      };
-
       if (accessTokenCookie) {
         const newAccessToken = accessTokenCookie.split('accessToken=')[1].split(';')[0];
-        res.cookie('accessToken', newAccessToken, accessTokenOptions);
-
-        if (refreshTokenCookie) {
-          const newRefreshToken = refreshTokenCookie.split('refreshToken=')[1].split(';')[0];
-          res.cookie('refreshToken', newRefreshToken, refreshTokenOptions);
-        }
+        const newRefreshToken = refreshTokenCookie
+          ? refreshTokenCookie.split('refreshToken=')[1].split(';')[0]
+          : undefined;
+        setAuthCookies(res, newAccessToken, newRefreshToken);
 
         authLog('Token refreshed successfully');
         res.json({ success: true, message: 'Token refreshed' });

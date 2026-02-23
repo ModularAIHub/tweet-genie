@@ -333,6 +333,7 @@ async function crossPostScheduledToLinkedIn({ userId, content, tweetUrl, postMod
 
     const body = await res.json().catch(() => ({}));
     if (res.status === 404 && body?.code === 'LINKEDIN_NOT_CONNECTED') return 'not_connected';
+    if (res.status === 401 && body?.code === 'LINKEDIN_TOKEN_EXPIRED') return 'not_connected';
     if (!res.ok) return 'failed';
     return 'posted';
   } catch (error) {

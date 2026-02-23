@@ -458,6 +458,13 @@ const Scheduling = () => {
               <tbody className="divide-y divide-gray-100">
                 {scheduledTweets.map((tweet) => {
                   const mediaCount = getMediaCount(tweet.media_urls);
+                  const isExternal = Boolean(tweet.is_external_cross_post || tweet.external_read_only);
+                  const externalSourceLabel =
+                    tweet.external_source === 'linkedin-genie'
+                      ? 'LinkedIn Genie'
+                      : tweet.external_source === 'social-genie'
+                        ? 'Threads Genie'
+                        : 'External';
                   const timezoneLabel = isValidTimezone(tweet.timezone)
                     ? normalizeTimezone(tweet.timezone)
                     : null;
@@ -470,7 +477,13 @@ const Scheduling = () => {
                             {tweet.content}
                           </p>
                           <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-gray-500">
-                            <span>@{tweet.account_username || tweet.twitter_username || 'twitter'}</span>
+                            {isExternal ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-violet-50 text-violet-700 border border-violet-200">
+                                External · {externalSourceLabel} cross-post (read-only)
+                              </span>
+                            ) : (
+                              <span>@{tweet.account_username || tweet.twitter_username || 'twitter'}</span>
+                            )}
                             {tweet.scheduled_by_name && <span>By {tweet.scheduled_by_name}</span>}
                             {mediaCount > 0 && <span>{mediaCount} media</span>}
                           </div>
@@ -504,7 +517,11 @@ const Scheduling = () => {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center justify-end gap-2">
-                          {['pending', 'processing'].includes(tweet.status) && (
+                          {isExternal ? (
+                            <span className="text-xs text-gray-500 whitespace-nowrap">
+                              Managed in {externalSourceLabel}
+                            </span>
+                          ) : ['pending', 'processing'].includes(tweet.status) && (
                             <button
                               onClick={() => handleCancel(tweet.id)}
                               className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100 transition-colors"
@@ -514,7 +531,7 @@ const Scheduling = () => {
                             </button>
                           )}
 
-                          {tweet.status === 'failed' && (
+                          {!isExternal && tweet.status === 'failed' && (
                             <button
                               onClick={() => handleRetry(tweet.id)}
                               className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"

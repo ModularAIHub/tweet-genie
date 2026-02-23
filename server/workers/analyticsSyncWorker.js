@@ -315,7 +315,6 @@ const getEligibleAccounts = async () => {
          WHERE t.user_id = ta.user_id
            AND (t.account_id IS NULL OR t.account_id::text = '0')
            AND t.status = 'posted'
-           AND t.source IN ('platform', 'external')
            AND t.tweet_id IS NOT NULL
            AND COALESCE(t.external_created_at, t.created_at) >= NOW() - ($1::int * INTERVAL '1 day')
        )
@@ -364,7 +363,6 @@ const getCandidatesForUser = async ({ userId, twitterUserId }) => {
           AND (account_id IS NULL OR account_id::text = '0')
           AND (author_id = $2 OR (author_id IS NULL AND user_id = $1))
           AND status = 'posted'
-          AND source IN ('platform', 'external')
           AND tweet_id IS NOT NULL
           AND COALESCE(external_created_at, created_at) >= NOW() - ($3::int * INTERVAL '1 day')
       ),

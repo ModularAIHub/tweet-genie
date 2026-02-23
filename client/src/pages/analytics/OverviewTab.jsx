@@ -49,6 +49,7 @@ const OverviewTab = ({
   chartData,
   hourlyData,
   topTweets,
+  recentTweets = [],
   timeframe,
   isProPlan = true,
   showAdvancedCharts = true,
@@ -270,6 +271,62 @@ const OverviewTab = ({
             <p className="text-sm text-gray-500 mt-2">Post tweets and run sync to populate this section.</p>
           </div>
         )}
+
+        <div className="mt-8 pt-6 border-t border-gray-200">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-sm font-semibold text-gray-900">Recent Posts (Tracking Check)</h4>
+            <span className="text-xs text-gray-500">{isProPlan ? 'Latest 10' : 'Latest 5'}</span>
+          </div>
+
+          {recentTweets.length > 0 ? (
+            <div className="space-y-3">
+              {recentTweets.map((tweet) => {
+                const content = String(tweet.content || '');
+                const preview = content.split('---')[0].slice(0, 180);
+                const tweetId = tweet.tweet_id ? String(tweet.tweet_id) : null;
+                const xUrl = toXStatusUrl(tweetId);
+                const engagement = Number(tweet.likes || 0) + Number(tweet.retweets || 0) + Number(tweet.replies || 0);
+
+                return (
+                  <div key={`recent-${tweet.id}`} className="p-3 rounded-lg border border-gray-200 bg-gray-50">
+                    <div className="flex items-center justify-between gap-3 mb-1">
+                      <span className="text-xs text-gray-500">
+                        {tweet.created_at ? new Date(tweet.created_at).toLocaleString() : 'Unknown date'}
+                      </span>
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-700">
+                          {engagement} engagement
+                        </span>
+                        {tweet.source && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                            {String(tweet.source)}
+                          </span>
+                        )}
+                        {xUrl && (
+                          <a
+                            href={xUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700"
+                          >
+                            View
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-700 line-clamp-2">
+                      {preview}
+                      {content.length > preview.length ? '...' : ''}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">No recent posts found in this analytics window yet.</p>
+          )}
+        </div>
       </div>
     </div>
   );
