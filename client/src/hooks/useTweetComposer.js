@@ -611,11 +611,33 @@ export const useTweetComposer = () => {
             linkedin: Boolean(crossPostInput.linkedin),
             threads: Boolean(crossPostInput.threads),
             optimizeCrossPost: crossPostInput.optimizeCrossPost !== false,
+            crossPostTargetAccountIds:
+              crossPostInput.crossPostTargetAccountIds &&
+              typeof crossPostInput.crossPostTargetAccountIds === 'object' &&
+              !Array.isArray(crossPostInput.crossPostTargetAccountIds)
+                ? {
+                    ...(crossPostInput.crossPostTargetAccountIds.linkedin
+                      ? { linkedin: String(crossPostInput.crossPostTargetAccountIds.linkedin).trim() }
+                      : {}),
+                  }
+                : {},
+            crossPostTargetAccountLabels:
+              crossPostInput.crossPostTargetAccountLabels &&
+              typeof crossPostInput.crossPostTargetAccountLabels === 'object' &&
+              !Array.isArray(crossPostInput.crossPostTargetAccountLabels)
+                ? {
+                    ...(crossPostInput.crossPostTargetAccountLabels.linkedin
+                      ? { linkedin: String(crossPostInput.crossPostTargetAccountLabels.linkedin).trim() }
+                      : {}),
+                  }
+                : {},
           }
         : {
             linkedin: Boolean(crossPostInput),
             threads: false,
             optimizeCrossPost: true,
+            crossPostTargetAccountIds: {},
+            crossPostTargetAccountLabels: {},
           };
     const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
 
@@ -668,6 +690,12 @@ export const useTweetComposer = () => {
             linkedin: normalizedCrossPost.linkedin,
             threads: normalizedCrossPost.threads,
           },
+          ...(Object.keys(normalizedCrossPost.crossPostTargetAccountIds || {}).length > 0 && {
+            crossPostTargetAccountIds: normalizedCrossPost.crossPostTargetAccountIds,
+          }),
+          ...(Object.keys(normalizedCrossPost.crossPostTargetAccountLabels || {}).length > 0 && {
+            crossPostTargetAccountLabels: normalizedCrossPost.crossPostTargetAccountLabels,
+          }),
           optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
         }),
       };
@@ -708,6 +736,9 @@ export const useTweetComposer = () => {
 
             const statusMessages = {
               not_connected: `${platform.label} not connected — X post succeeded.`,
+              target_not_found: `${platform.label} target account not found — X post succeeded.`,
+              permission_revoked: `${platform.label} target permission denied — X post succeeded.`,
+              missing_target_route: `${platform.label} target selection missing — X post succeeded.`,
               timeout: `${platform.label} cross-post timed out — X post succeeded.`,
               skipped_individual_only: `${platform.label} cross-post is available only for personal Twitter accounts right now.`,
               skipped_not_configured: `${platform.label} cross-post is not configured yet.`,
@@ -885,11 +916,33 @@ export const useTweetComposer = () => {
             linkedin: Boolean(crossPostInput.linkedin),
             threads: Boolean(crossPostInput.threads),
             optimizeCrossPost: crossPostInput.optimizeCrossPost !== false,
+            crossPostTargetAccountIds:
+              crossPostInput.crossPostTargetAccountIds &&
+              typeof crossPostInput.crossPostTargetAccountIds === 'object' &&
+              !Array.isArray(crossPostInput.crossPostTargetAccountIds)
+                ? {
+                    ...(crossPostInput.crossPostTargetAccountIds.linkedin
+                      ? { linkedin: String(crossPostInput.crossPostTargetAccountIds.linkedin).trim() }
+                      : {}),
+                  }
+                : {},
+            crossPostTargetAccountLabels:
+              crossPostInput.crossPostTargetAccountLabels &&
+              typeof crossPostInput.crossPostTargetAccountLabels === 'object' &&
+              !Array.isArray(crossPostInput.crossPostTargetAccountLabels)
+                ? {
+                    ...(crossPostInput.crossPostTargetAccountLabels.linkedin
+                      ? { linkedin: String(crossPostInput.crossPostTargetAccountLabels.linkedin).trim() }
+                      : {}),
+                  }
+                : {},
           }
         : {
             linkedin: Boolean(crossPostInput),
             threads: false,
             optimizeCrossPost: true,
+            crossPostTargetAccountIds: {},
+            crossPostTargetAccountLabels: {},
           };
     const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
     if (isThread) {
@@ -975,6 +1028,12 @@ export const useTweetComposer = () => {
               linkedin: normalizedCrossPost.linkedin,
               threads: normalizedCrossPost.threads,
             },
+            ...(Object.keys(normalizedCrossPost.crossPostTargetAccountIds || {}).length > 0 && {
+              crossPostTargetAccountIds: normalizedCrossPost.crossPostTargetAccountIds,
+            }),
+            ...(Object.keys(normalizedCrossPost.crossPostTargetAccountLabels || {}).length > 0 && {
+              crossPostTargetAccountLabels: normalizedCrossPost.crossPostTargetAccountLabels,
+            }),
             optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
           }),
           scheduled_for: dateString,
@@ -1002,6 +1061,12 @@ export const useTweetComposer = () => {
               linkedin: normalizedCrossPost.linkedin,
               threads: normalizedCrossPost.threads,
             },
+            ...(Object.keys(normalizedCrossPost.crossPostTargetAccountIds || {}).length > 0 && {
+              crossPostTargetAccountIds: normalizedCrossPost.crossPostTargetAccountIds,
+            }),
+            ...(Object.keys(normalizedCrossPost.crossPostTargetAccountLabels || {}).length > 0 && {
+              crossPostTargetAccountLabels: normalizedCrossPost.crossPostTargetAccountLabels,
+            }),
             optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
           }),
           scheduled_for: dateString,

@@ -259,6 +259,11 @@ function parseScheduledCrossPostConfig(scheduledTweet) {
   }
 
   const targets = crossPost?.targets && typeof crossPost.targets === 'object' ? crossPost.targets : {};
+  const routing = crossPost?.routing && typeof crossPost.routing === 'object' ? crossPost.routing : {};
+  const linkedinRoute =
+    routing?.linkedin && typeof routing.linkedin === 'object' && !Array.isArray(routing.linkedin)
+      ? routing.linkedin
+      : null;
   const linkedin = Boolean(targets.linkedin);
   const threads = Boolean(targets.threads);
 
@@ -273,6 +278,16 @@ function parseScheduledCrossPostConfig(scheduledTweet) {
       linkedin,
       threads,
       optimizeCrossPost: crossPost.optimizeCrossPost !== false,
+      routing: {
+        linkedinTargetAccountId:
+          linkedinRoute?.targetAccountId !== undefined && linkedinRoute?.targetAccountId !== null
+            ? String(linkedinRoute.targetAccountId).trim() || null
+            : null,
+        linkedinTargetLabel:
+          linkedinRoute?.targetLabel !== undefined && linkedinRoute?.targetLabel !== null
+            ? String(linkedinRoute.targetLabel).trim() || null
+            : null,
+      },
     },
   };
 }
@@ -301,7 +316,15 @@ function getTweetPermalink({ username, tweetId }) {
   return `https://twitter.com/${safeUsername}/status/${safeTweetId}`;
 }
 
-async function crossPostScheduledToLinkedIn({ userId, content, tweetUrl, postMode = 'single', mediaDetected = false }) {
+async function crossPostScheduledToLinkedIn({
+  userId,
+  teamId = null,
+  targetLinkedinTeamAccountId = null,
+  content,
+  tweetUrl,
+  postMode = 'single',
+  mediaDetected = false,
+}) {
   const linkedinGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
 
@@ -319,6 +342,7 @@ async function crossPostScheduledToLinkedIn({ userId, content, tweetUrl, postMod
         'x-internal-api-key': internalApiKey,
         'x-internal-caller': 'tweet-genie',
         'x-platform-user-id': String(userId),
+        ...(teamId ? { 'x-platform-team-id': String(teamId) } : {}),
       },
       body: JSON.stringify({
         content,
@@ -326,6 +350,7 @@ async function crossPostScheduledToLinkedIn({ userId, content, tweetUrl, postMod
         sourcePlatform: 'x',
         postMode,
         mediaDetected: Boolean(mediaDetected),
+        ...(targetLinkedinTeamAccountId ? { targetLinkedinTeamAccountId: String(targetLinkedinTeamAccountId) } : {}),
       }),
       signal: controller.signal,
     });
@@ -333,7 +358,9 @@ async function crossPostScheduledToLinkedIn({ userId, content, tweetUrl, postMod
 
     const body = await res.json().catch(() => ({}));
     if (res.status === 404 && body?.code === 'LINKEDIN_NOT_CONNECTED') return 'not_connected';
+    if (res.status === 404 && body?.code === 'CROSSPOST_TARGET_ACCOUNT_NOT_FOUND') return 'target_not_found';
     if (res.status === 401 && body?.code === 'LINKEDIN_TOKEN_EXPIRED') return 'not_connected';
+    if (res.status === 403 && body?.code === 'CROSSPOST_TARGET_ACCOUNT_FORBIDDEN') return 'permission_revoked';
     if (!res.ok) return 'failed';
     return 'posted';
   } catch (error) {
@@ -1193,7 +1220,7 @@ class ScheduledTweetService {
       }
 
       let crossPostResult = null;
-      if (!scheduledTweet.isTeamAccount && scheduledCrossPost.enabled) {
+      if (scheduledCrossPost.enabled) {
         const mediaDetected = detectCrossPostMedia({
           media: mediaIds,
           threadMedia: threadMediaArr,
@@ -1221,25 +1248,38 @@ class ScheduledTweetService {
           });
 
           if (crossPostResult.linkedin.enabled) {
-            crossPostResult.linkedin.status = await crossPostScheduledToLinkedIn({
-              userId: scheduledTweet.user_id,
-              content: crossPostPayloads.linkedin.content,
-              tweetUrl,
-              postMode: crossPostPayloads.linkedin.postMode,
-              mediaDetected,
-            });
+            const isTeamLinkedInCrossPost = Boolean(scheduledTweet.isTeamAccount);
+            const linkedInTargetRouteId = scheduledCrossPost.config?.routing?.linkedinTargetAccountId || null;
+
+            if (isTeamLinkedInCrossPost && !linkedInTargetRouteId) {
+              crossPostResult.linkedin.status = 'missing_target_route';
+            } else {
+              crossPostResult.linkedin.status = await crossPostScheduledToLinkedIn({
+                userId: scheduledTweet.user_id,
+                teamId: isTeamLinkedInCrossPost ? scheduledTweet.team_id || null : null,
+                targetLinkedinTeamAccountId: isTeamLinkedInCrossPost ? linkedInTargetRouteId : null,
+                content: crossPostPayloads.linkedin.content,
+                tweetUrl,
+                postMode: crossPostPayloads.linkedin.postMode,
+                mediaDetected,
+              });
+            }
           }
 
           if (crossPostResult.threads.enabled) {
-            crossPostResult.threads.status = await crossPostScheduledToThreads({
-              userId: scheduledTweet.user_id,
-              content: crossPostPayloads.threads.content,
-              threadParts: crossPostPayloads.threads.threadParts,
-              postMode: crossPostPayloads.threads.postMode,
-              tweetUrl,
-              mediaDetected,
-              optimizeCrossPost: scheduledCrossPost.config.optimizeCrossPost,
-            });
+            if (scheduledTweet.isTeamAccount) {
+              crossPostResult.threads.status = 'skipped_individual_only';
+            } else {
+              crossPostResult.threads.status = await crossPostScheduledToThreads({
+                userId: scheduledTweet.user_id,
+                content: crossPostPayloads.threads.content,
+                threadParts: crossPostPayloads.threads.threadParts,
+                postMode: crossPostPayloads.threads.postMode,
+                tweetUrl,
+                mediaDetected,
+                optimizeCrossPost: scheduledCrossPost.config.optimizeCrossPost,
+              });
+            }
           }
         }
       }

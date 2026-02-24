@@ -17,7 +17,7 @@ import {
   Target,
   Layers,
 } from 'lucide-react';
-import { analytics as analyticsAPI, tweets, credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
+import { dashboard, credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
 import { useAccount } from '../contexts/AccountContext';
 import { useAuth } from '../contexts/AuthContext';
 import { hasProPlanAccess } from '../utils/planAccess';
@@ -61,61 +61,37 @@ const Dashboard = () => {
       setLoading(true);
       setHasAttemptedFetch(true);
       
-      // For team users, use account-aware API calls
-      // For individual users, use original API calls
+      // For team users, use account-aware API calls.
+      // For individual users, use axios API helpers.
       const isTeamUser = accounts.length > 0;
       
       try {
-        const [analyticsRes, tweetsRes, creditsRes] = await Promise.allSettled([
-          isTeamUser
-            ? accountAPI.getAnalytics('50d').catch(() => ({ error: true }))
-            : analyticsAPI.getOverviewCached({ days: 50 }).catch(() => ({ error: true })),
-          isTeamUser ? accountAPI.getTweetHistory(1, 5).catch(e => ({ error: true })) : tweets.list({ limit: 5 }).catch(e => ({ error: true })),
-          credits.getBalanceCached({ ttlMs: 60000 }).catch(() => ({ error: true })), // Credits are user-level, not account-specific
-        ]);
+        let payload = null;
 
-        if (analyticsRes.status === 'fulfilled' && analyticsRes.value && !analyticsRes.value.error) {
-          if (isTeamUser) {
-            try {
-              const analyticsResponse = await analyticsRes.value.json();
-              setAnalyticsData(analyticsResponse.data || analyticsResponse);
-            } catch (e) {
-              setAnalyticsData(null);
-            }
-          } else {
-            setAnalyticsData(analyticsRes.value.data);
+        if (isTeamUser) {
+          const bootstrapResponse = await accountAPI.fetchForCurrentAccount('/api/dashboard/bootstrap?days=50', {
+            cacheTtlMs: 20000,
+          });
+
+          if (!bootstrapResponse?.ok) {
+            throw new Error(`Dashboard bootstrap failed (${bootstrapResponse?.status || 'unknown'})`);
           }
+
+          payload = await bootstrapResponse.json();
         } else {
-          setAnalyticsData(null);
+          const bootstrapResponse = await dashboard.bootstrapCached({ days: 50 }, { ttlMs: 20000 });
+          payload = bootstrapResponse?.data || null;
         }
 
-        if (tweetsRes.status === 'fulfilled' && tweetsRes.value && !tweetsRes.value.error) {
-          if (isTeamUser) {
-            try {
-              const tweetsResponse = await tweetsRes.value.json();
-              setRecentTweets(tweetsResponse.data?.tweets || tweetsResponse.tweets || []);
-            } catch {
-              setRecentTweets([]);
-            }
-          } else {
-            try {
-              setRecentTweets(tweetsRes.value.data.tweets || []);
-            } catch {
-              setRecentTweets([]);
-            }
-          }
-        } else {
-          setRecentTweets([]);
-        }
+        const normalizedPayload = payload && typeof payload === 'object' ? payload : null;
+        const isDisconnected = Boolean(normalizedPayload?.disconnected);
 
-        if (creditsRes.status === 'fulfilled' && creditsRes.value && !creditsRes.value.error) {
-          setCreditBalance(creditsRes.value.data);
-        } else {
-          setCreditBalance(null);
-        }
+        setAnalyticsData(isDisconnected ? null : normalizedPayload);
+        setRecentTweets(Array.isArray(normalizedPayload?.recent_tweets) ? normalizedPayload.recent_tweets : []);
+        setCreditBalance(normalizedPayload?.credits || null);
       } catch (error) {
         console.error('Dashboard data fetch error:', error?.message || error);
-        // Don't throw - allow dashboard to display even if fetches fail
+        // Don't throw - allow dashboard to display even if fetch fails
         setAnalyticsData(null);
         setRecentTweets([]);
         setCreditBalance(null);

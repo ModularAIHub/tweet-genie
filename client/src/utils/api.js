@@ -368,6 +368,8 @@ export const analytics = {
 // Dashboard endpoints
 export const dashboard = {
   bootstrap: (params) => api.get('/api/dashboard/bootstrap', { params }),
+  bootstrapCached: (params, { ttlMs = 20000, bypass = false } = {}) =>
+    cachedGet({ url: '/api/dashboard/bootstrap', params, scope: 'dashboard_bootstrap', ttlMs, bypass }),
 };
 
 // Credits endpoints

@@ -191,6 +191,18 @@ const normalizeCrossPostTargets = ({ postToLinkedin = false, crossPostTargets = 
   return { linkedin, threads };
 };
 
+const normalizeCrossPostTargetAccountIds = ({ crossPostTargetAccountIds = null } = {}) => {
+  const raw =
+    crossPostTargetAccountIds && typeof crossPostTargetAccountIds === 'object' && !Array.isArray(crossPostTargetAccountIds)
+      ? crossPostTargetAccountIds
+      : {};
+
+  const linkedin = raw.linkedin === undefined || raw.linkedin === null ? null : String(raw.linkedin).trim();
+  return {
+    linkedin: linkedin || null,
+  };
+};
+
 const buildCrossPostResultShape = ({ linkedinEnabled = false, threadsEnabled = false, mediaDetected = false } = {}) => ({
   linkedin: {
     enabled: Boolean(linkedinEnabled),
@@ -209,7 +221,15 @@ const buildCrossPostResultShape = ({ linkedinEnabled = false, threadsEnabled = f
 const mapLinkedInLegacyStatus = (crossPostResult) =>
   crossPostResult?.linkedin?.enabled ? (crossPostResult.linkedin.status ?? 'failed') : null;
 
-async function crossPostToLinkedIn({ userId, content, tweetUrl, postMode = 'single', mediaDetected = false }) {
+async function crossPostToLinkedIn({
+  userId,
+  teamId = null,
+  targetLinkedinTeamAccountId = null,
+  content,
+  tweetUrl,
+  postMode = 'single',
+  mediaDetected = false,
+}) {
   const linkedinGenieUrl = process.env.LINKEDIN_GENIE_URL;
   const internalApiKey = process.env.INTERNAL_API_KEY;
 
@@ -229,7 +249,9 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl, postMode = 'sing
 
     logger.info('[LinkedIn Cross-post] Sending request', { 
       url: `${linkedinGenieUrl}/api/internal/cross-post`,
-      userId 
+      userId,
+      teamId: teamId || null,
+      targetLinkedinTeamAccountId: targetLinkedinTeamAccountId || null,
     });
 
     const liRes = await fetch(`${linkedinGenieUrl}/api/internal/cross-post`, {
@@ -239,6 +261,7 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl, postMode = 'sing
         'x-internal-api-key': internalApiKey,
         'x-internal-caller': 'tweet-genie',
         'x-platform-user-id': String(userId),
+        ...(teamId ? { 'x-platform-team-id': String(teamId) } : {}),
       },
       body: JSON.stringify({
         content,
@@ -246,6 +269,7 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl, postMode = 'sing
         sourcePlatform: 'x',
         postMode,
         mediaDetected: Boolean(mediaDetected),
+        ...(targetLinkedinTeamAccountId ? { targetLinkedinTeamAccountId: String(targetLinkedinTeamAccountId) } : {}),
       }),
       signal: controller.signal,
     });
@@ -289,6 +313,24 @@ async function crossPostToLinkedIn({ userId, content, tweetUrl, postMode = 'sing
     if (liRes.status === 401 && liBody.code === 'LINKEDIN_TOKEN_EXPIRED') {
       logger.warn('[LinkedIn Cross-post] LinkedIn token expired/revoked', { userId });
       return 'not_connected';
+    }
+
+    if (liRes.status === 404 && liBody.code === 'CROSSPOST_TARGET_ACCOUNT_NOT_FOUND') {
+      logger.warn('[LinkedIn Cross-post] Target LinkedIn team account not found', {
+        userId,
+        teamId,
+        targetLinkedinTeamAccountId,
+      });
+      return 'target_not_found';
+    }
+
+    if (liRes.status === 403 && liBody.code === 'CROSSPOST_TARGET_ACCOUNT_FORBIDDEN') {
+      logger.warn('[LinkedIn Cross-post] Team permission denied for LinkedIn target', {
+        userId,
+        teamId,
+        targetLinkedinTeamAccountId,
+      });
+      return 'permission_revoked';
     }
 
     if (!liRes.ok) {
@@ -422,11 +464,35 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       threadMedia,
       postToLinkedin,
       crossPostTargets,
+      crossPostTargetAccountIds = null,
       optimizeCrossPost = true,
     } = req.body;
     const userId = req.user.id;
     let twitterAccount = req.twitterAccount;
     const normalizedCrossPostTargets = normalizeCrossPostTargets({ postToLinkedin, crossPostTargets });
+    const normalizedCrossPostTargetAccountIds = normalizeCrossPostTargetAccountIds({ crossPostTargetAccountIds });
+    const requestTeamId = String(req.headers['x-team-id'] || '').trim() || null;
+
+    if (twitterAccount?.isTeamAccount && normalizedCrossPostTargets.linkedin) {
+      if (!requestTeamId) {
+        return res.status(400).json({
+          error: 'Team context missing for LinkedIn team cross-post.',
+          code: 'CROSSPOST_TARGET_ACCOUNT_INVALID',
+        });
+      }
+      if (!normalizedCrossPostTargetAccountIds.linkedin) {
+        return res.status(400).json({
+          error: 'Select a target LinkedIn team account before cross-posting in team mode.',
+          code: 'CROSSPOST_TARGET_ACCOUNT_REQUIRED',
+        });
+      }
+      if (!/^\d+$/.test(normalizedCrossPostTargetAccountIds.linkedin)) {
+        return res.status(400).json({
+          error: 'Invalid target LinkedIn team account id.',
+          code: 'CROSSPOST_TARGET_ACCOUNT_INVALID',
+        });
+      }
+    }
 
     logger.info('[POST /tweets] Tweet request', { 
       userId, 
@@ -437,6 +503,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       threadLength: thread?.length,
       postToLinkedin: !!postToLinkedin,
       crossPostTargets: normalizedCrossPostTargets,
+      crossPostTargetAccountIds: normalizedCrossPostTargetAccountIds,
       optimizeCrossPost: optimizeCrossPost !== false,
       tokenExpiresAt: twitterAccount?.token_expires_at,
       hasAccessToken: !!twitterAccount?.access_token,
@@ -688,20 +755,23 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       const tweetUrl = `https://twitter.com/${twitterUsername}/status/${tweetResponse.data.id}`;
 
       if (normalizedCrossPostTargets.linkedin || normalizedCrossPostTargets.threads) {
-        if (twitterAccount.isTeamAccount) {
-          if (normalizedCrossPostTargets.linkedin) crossPostResult.linkedin.status = 'skipped_individual_only';
-          if (normalizedCrossPostTargets.threads) crossPostResult.threads.status = 'skipped_individual_only';
-        } else {
-          const formattedCrossPost = buildCrossPostPayloads({
-            content,
-            thread,
-            optimizeCrossPost,
-          });
+        const formattedCrossPost = buildCrossPostPayloads({
+          content,
+          thread,
+          optimizeCrossPost,
+        });
 
-          if (normalizedCrossPostTargets.linkedin) {
+        if (normalizedCrossPostTargets.linkedin) {
+          if (twitterAccount.isTeamAccount && !normalizedCrossPostTargetAccountIds.linkedin) {
+            crossPostResult.linkedin.status = 'missing_target_route';
+          } else {
             try {
               crossPostResult.linkedin.status = await crossPostToLinkedIn({
                 userId,
+                teamId: twitterAccount.isTeamAccount ? requestTeamId : null,
+                targetLinkedinTeamAccountId: twitterAccount.isTeamAccount
+                  ? normalizedCrossPostTargetAccountIds.linkedin
+                  : null,
                 content: formattedCrossPost.linkedin.content,
                 tweetUrl,
                 postMode: formattedCrossPost.linkedin.postMode,
@@ -712,8 +782,12 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
               crossPostResult.linkedin.status = 'failed';
             }
           }
+        }
 
-          if (normalizedCrossPostTargets.threads) {
+        if (normalizedCrossPostTargets.threads) {
+          if (twitterAccount.isTeamAccount) {
+            crossPostResult.threads.status = 'skipped_individual_only';
+          } else {
             try {
               crossPostResult.threads.status = await crossPostToThreads({
                 userId,

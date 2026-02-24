@@ -158,7 +158,24 @@ function normalizeScheduledCrossPostTargets({ postToLinkedin = false, crossPostT
   return { linkedin, threads };
 }
 
-function buildScheduledCrossPostMetadata({ targets, optimizeCrossPost = true } = {}) {
+function normalizeScheduledCrossPostTargetAccountIds({ crossPostTargetAccountIds = null } = {}) {
+  const raw =
+    crossPostTargetAccountIds && typeof crossPostTargetAccountIds === 'object' && !Array.isArray(crossPostTargetAccountIds)
+      ? crossPostTargetAccountIds
+      : {};
+
+  const linkedin = raw.linkedin === undefined || raw.linkedin === null ? null : String(raw.linkedin).trim();
+  return {
+    linkedin: linkedin || null,
+  };
+}
+
+function buildScheduledCrossPostMetadata({
+  targets,
+  optimizeCrossPost = true,
+  routing = null,
+  sourceSnapshot = null,
+} = {}) {
   const linkedin = Boolean(targets?.linkedin);
   const threads = Boolean(targets?.threads);
 
@@ -168,11 +185,13 @@ function buildScheduledCrossPostMetadata({ targets, optimizeCrossPost = true } =
 
   return {
     cross_post: {
-      version: 1,
+      version: 2,
       targets: {
         linkedin,
         threads,
       },
+      ...(routing && typeof routing === 'object' ? { routing } : {}),
+      ...(sourceSnapshot && typeof sourceSnapshot === 'object' ? { source_snapshot: sourceSnapshot } : {}),
       optimizeCrossPost: optimizeCrossPost !== false,
       source: 'tweet_genie_schedule',
       createdAt: new Date().toISOString(),
@@ -1135,6 +1154,8 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       timezone = 'UTC',
       postToLinkedin = false,
       crossPostTargets = null,
+      crossPostTargetAccountIds = null,
+      crossPostTargetAccountLabels = null,
       optimizeCrossPost = true,
     } = req.body;
     const userId = req.user.id;
@@ -1153,7 +1174,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     if (teamId) {
       const teamAccountQuery = selectedAccountId
         ? {
-            sql: `SELECT id, twitter_user_id
+            sql: `SELECT id, twitter_user_id, twitter_username
                   FROM team_accounts
                   WHERE id::text = $1::text
                     AND team_id = $2
@@ -1162,7 +1183,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
             params: [selectedAccountId, teamId],
           }
         : {
-            sql: `SELECT id, twitter_user_id
+            sql: `SELECT id, twitter_user_id, twitter_username
                   FROM team_accounts
                   WHERE team_id = $1
                     AND active = true
@@ -1290,9 +1311,65 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       postToLinkedin,
       crossPostTargets,
     });
+    const normalizedCrossPostTargetAccountIds = normalizeScheduledCrossPostTargetAccountIds({
+      crossPostTargetAccountIds,
+    });
+
+    if (teamId && normalizedCrossPostTargets.linkedin) {
+      if (!normalizedCrossPostTargetAccountIds.linkedin) {
+        return res.status(400).json({
+          error: 'Select a target LinkedIn team account before cross-posting in team mode.',
+          code: 'CROSSPOST_TARGET_ACCOUNT_REQUIRED',
+        });
+      }
+      if (!/^\d+$/.test(normalizedCrossPostTargetAccountIds.linkedin)) {
+        return res.status(400).json({
+          error: 'Invalid target LinkedIn team account id.',
+          code: 'CROSSPOST_TARGET_ACCOUNT_INVALID',
+        });
+      }
+    }
+
+    const linkedinTargetLabel =
+      crossPostTargetAccountLabels &&
+      typeof crossPostTargetAccountLabels === 'object' &&
+      !Array.isArray(crossPostTargetAccountLabels) &&
+      crossPostTargetAccountLabels.linkedin !== undefined &&
+      crossPostTargetAccountLabels.linkedin !== null
+        ? String(crossPostTargetAccountLabels.linkedin).trim().slice(0, 255) || null
+        : null;
+
+    const crossPostRouting =
+      normalizedCrossPostTargets.linkedin && normalizedCrossPostTargetAccountIds.linkedin
+        ? {
+            linkedin: {
+              targetAccountId: normalizedCrossPostTargetAccountIds.linkedin,
+              ...(linkedinTargetLabel ? { targetLabel: linkedinTargetLabel } : {}),
+            },
+          }
+        : null;
+
+    const sourceSnapshot =
+      teamId || req.twitterAccount?.id
+        ? {
+            platform: 'x',
+            teamId: teamId || null,
+            sourceAccountId: req.twitterAccount?.id ? String(req.twitterAccount.id) : null,
+            sourceLabel:
+              String(
+                req.twitterAccount?.account_username ||
+                  req.twitterAccount?.username ||
+                  req.twitterAccount?.display_name ||
+                  ''
+              ).trim() || null,
+          }
+        : null;
+
     const scheduledMetadata = buildScheduledCrossPostMetadata({
       targets: normalizedCrossPostTargets,
       optimizeCrossPost,
+      routing: crossPostRouting,
+      sourceSnapshot,
     });
     const canStoreMetadata = scheduledMetadata ? await hasScheduledMetadataColumn() : false;
 

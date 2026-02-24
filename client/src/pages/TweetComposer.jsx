@@ -1,6 +1,7 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Sparkles, Wand2 } from 'lucide-react';
+import toast from 'react-hot-toast';
 import LoadingSpinner from '../components/LoadingSpinner';
 import {
   TwitterAccountInfo,
@@ -28,6 +29,10 @@ const TweetComposer = () => {
   const [threadsConnected, setThreadsConnected] = useState(null);
   const [threadsConnectionReason, setThreadsConnectionReason] = useState('');
   const [optimizeCrossPost, setOptimizeCrossPost] = useState(true);
+  const [linkedinTeamTargets, setLinkedinTeamTargets] = useState([]);
+  const [isLoadingLinkedinTeamTargets, setIsLoadingLinkedinTeamTargets] = useState(false);
+  const [linkedinTeamTargetsError, setLinkedinTeamTargetsError] = useState('');
+  const [selectedLinkedinTargetAccountId, setSelectedLinkedinTargetAccountId] = useState('');
   const _modalDialogRef = useRef(null);
   const _modalCloseRef = useRef(null);
   const isTeamTwitterAccountSelected = Boolean(selectedAccount?.team_id || selectedAccount?.teamId);
@@ -74,6 +79,89 @@ const TweetComposer = () => {
 
     return () => { mounted = false; };
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const selectedTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
+    const selectedTwitterAccountId = selectedAccount?.id || null;
+
+    if (!isTeamTwitterAccountSelected || !selectedTeamId || !selectedTwitterAccountId) {
+      setLinkedinTeamTargets([]);
+      setIsLoadingLinkedinTeamTargets(false);
+      setLinkedinTeamTargetsError('');
+      setSelectedLinkedinTargetAccountId('');
+      return () => { mounted = false; };
+    }
+
+    (async () => {
+      setIsLoadingLinkedinTeamTargets(true);
+      setLinkedinTeamTargetsError('');
+
+      try {
+        const res = await fetch('/api/cross-post/targets/linkedin', {
+          credentials: 'include',
+          headers: {
+            'X-Selected-Account-Id': String(selectedTwitterAccountId),
+            'x-team-id': String(selectedTeamId),
+          },
+        });
+
+        const data = await res.json().catch(() => ({ targets: [] }));
+        if (!mounted) return;
+
+        if (!res.ok) {
+          setLinkedinTeamTargets([]);
+          setLinkedinTeamTargetsError(data?.error || 'Failed to load team LinkedIn targets');
+          setPostToLinkedin(false);
+          return;
+        }
+
+        const targets = Array.isArray(data?.targets) ? data.targets : [];
+        setLinkedinTeamTargets(targets);
+        if (targets.length === 0) {
+          setPostToLinkedin(false);
+        }
+      } catch (err) {
+        if (!mounted) return;
+        console.error('Failed to fetch LinkedIn team cross-post targets:', err);
+        setLinkedinTeamTargets([]);
+        setLinkedinTeamTargetsError('Failed to load team LinkedIn targets');
+        setPostToLinkedin(false);
+      } finally {
+        if (mounted) setIsLoadingLinkedinTeamTargets(false);
+      }
+    })();
+
+    return () => { mounted = false; };
+  }, [
+    isTeamTwitterAccountSelected,
+    selectedAccount?.id,
+    selectedAccount?.team_id,
+    selectedAccount?.teamId,
+  ]);
+
+  useEffect(() => {
+    if (!isTeamTwitterAccountSelected) {
+      setSelectedLinkedinTargetAccountId('');
+      return;
+    }
+
+    if (!Array.isArray(linkedinTeamTargets) || linkedinTeamTargets.length === 0) {
+      setSelectedLinkedinTargetAccountId('');
+      return;
+    }
+
+    if (linkedinTeamTargets.length === 1) {
+      setSelectedLinkedinTargetAccountId(String(linkedinTeamTargets[0].id));
+      return;
+    }
+
+    setSelectedLinkedinTargetAccountId((current) => {
+      const currentId = String(current || '').trim();
+      if (!currentId) return '';
+      return linkedinTeamTargets.some((target) => String(target?.id) === currentId) ? currentId : '';
+    });
+  }, [isTeamTwitterAccountSelected, linkedinTeamTargets]);
 
   // Focus the modal's close button when modal opens for keyboard users
   useEffect(() => {
@@ -237,8 +325,35 @@ const TweetComposer = () => {
   const hasAnyImagesForCurrentDraft =
     (Array.isArray(selectedImages) && selectedImages.length > 0) ||
     (Array.isArray(threadImages) && threadImages.some((items) => Array.isArray(items) && items.length > 0));
-  const linkedinToggleDisabled = linkedinConnected !== true || isTeamTwitterAccountSelected;
+  const selectedLinkedinTarget = Array.isArray(linkedinTeamTargets)
+    ? linkedinTeamTargets.find((target) => String(target?.id) === String(selectedLinkedinTargetAccountId))
+    : null;
+  const linkedinToggleDisabled = isTeamTwitterAccountSelected
+    ? isLoadingLinkedinTeamTargets || linkedinTeamTargets.length === 0
+    : linkedinConnected !== true;
   const threadsToggleDisabled = threadsConnected !== true || isTeamTwitterAccountSelected;
+
+  const ensureTeamLinkedinTargetSelected = () => {
+    if (isTeamTwitterAccountSelected && postToLinkedin && !selectedLinkedinTarget) {
+      toast.error('Select a target LinkedIn team account for cross-posting.');
+      return false;
+    }
+    return true;
+  };
+
+  const buildCrossPostInput = () => ({
+    linkedin: postToLinkedin,
+    threads: postToThreads,
+    optimizeCrossPost,
+    ...(isTeamTwitterAccountSelected && postToLinkedin && selectedLinkedinTarget && {
+      crossPostTargetAccountIds: {
+        linkedin: String(selectedLinkedinTarget.id),
+      },
+      crossPostTargetAccountLabels: {
+        linkedin: String(selectedLinkedinTarget.label || '').trim(),
+      },
+    }),
+  });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -366,16 +481,14 @@ const TweetComposer = () => {
                 isPosting={isPosting}
                 isScheduling={isScheduling}
                 postToLinkedin={postToLinkedin}
-                onPost={() => handlePost({
-                  linkedin: postToLinkedin,
-                  threads: postToThreads,
-                  optimizeCrossPost,
-                })}
-                onSchedule={(dateString, timezone) => handleSchedule(dateString, timezone, {
-                  linkedin: postToLinkedin,
-                  threads: postToThreads,
-                  optimizeCrossPost,
-                })}
+                onPost={() => {
+                  if (!ensureTeamLinkedinTargetSelected()) return;
+                  handlePost(buildCrossPostInput());
+                }}
+                onSchedule={(dateString, timezone) => {
+                  if (!ensureTeamLinkedinTargetSelected()) return;
+                  handleSchedule(dateString, timezone, buildCrossPostInput());
+                }}
               />
             </div>
           </div>
@@ -414,8 +527,16 @@ const TweetComposer = () => {
                   {
                     key: 'linkedin',
                     label: 'LinkedIn',
-                    statusText: linkedinConnected === null ? 'Checking...' : linkedinConnected ? 'Connected' : 'Not connected',
-                    connected: linkedinConnected === true,
+                    statusText: isTeamTwitterAccountSelected
+                      ? isLoadingLinkedinTeamTargets
+                        ? 'Loading team targets...'
+                        : linkedinTeamTargetsError
+                          ? 'Target lookup failed'
+                          : linkedinTeamTargets.length > 0
+                            ? `${linkedinTeamTargets.length} eligible team target${linkedinTeamTargets.length === 1 ? '' : 's'}`
+                            : 'No eligible team accounts'
+                      : linkedinConnected === null ? 'Checking...' : linkedinConnected ? 'Connected' : 'Not connected',
+                    connected: isTeamTwitterAccountSelected ? linkedinTeamTargets.length > 0 : linkedinConnected === true,
                     enabled: !!postToLinkedin,
                     toggleable: true,
                     disabled: linkedinToggleDisabled,
@@ -423,7 +544,7 @@ const TweetComposer = () => {
                     bg: '#0A66C2',
                     icon: 'in',
                     disabledTitle: isTeamTwitterAccountSelected
-                      ? 'Cross-post is available for personal account posting only in Phase 1'
+                      ? (linkedinTeamTargetsError || 'No eligible LinkedIn team accounts available for this team.')
                       : 'Connect LinkedIn in settings first',
                   },
                   {
@@ -522,7 +643,9 @@ const TweetComposer = () => {
                           flexShrink: 0,
                           transition: 'background 0.2s ease',
                           opacity:
-                            (platform.key === 'linkedin' && linkedinConnected === null) ||
+                            (platform.key === 'linkedin' &&
+                              ((isTeamTwitterAccountSelected && isLoadingLinkedinTeamTargets) ||
+                                (!isTeamTwitterAccountSelected && linkedinConnected === null))) ||
                             (platform.key === 'threads' && threadsConnected === null)
                               ? 0.5
                               : 1,
@@ -559,6 +682,63 @@ const TweetComposer = () => {
                   </div>
                 ))}
               </div>
+
+              {isTeamTwitterAccountSelected && postToLinkedin && (
+                <div style={{
+                  marginTop: '12px',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '10px',
+                  padding: '12px',
+                  background: '#ffffff',
+                }}>
+                  <label
+                    htmlFor="linkedin-crosspost-target"
+                    style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#111827', marginBottom: '8px' }}
+                  >
+                    Target LinkedIn Account
+                  </label>
+                  <select
+                    id="linkedin-crosspost-target"
+                    value={selectedLinkedinTargetAccountId}
+                    onChange={(e) => setSelectedLinkedinTargetAccountId(e.target.value)}
+                    disabled={isLoadingLinkedinTeamTargets || linkedinTeamTargets.length === 0}
+                    style={{
+                      width: '100%',
+                      border: '1px solid #d1d5db',
+                      borderRadius: '8px',
+                      padding: '10px 12px',
+                      fontSize: '13px',
+                      color: '#111827',
+                      background: isLoadingLinkedinTeamTargets ? '#f9fafb' : '#fff',
+                    }}
+                  >
+                    <option value="">
+                      {isLoadingLinkedinTeamTargets
+                        ? 'Loading LinkedIn team targets...'
+                        : linkedinTeamTargets.length === 0
+                          ? 'No eligible LinkedIn team accounts'
+                          : linkedinTeamTargets.length === 1
+                            ? 'Auto-selected target'
+                            : 'Select a LinkedIn target account'}
+                    </option>
+                    {linkedinTeamTargets.map((target) => (
+                      <option key={String(target.id)} value={String(target.id)}>
+                        {target.label || `LinkedIn account #${target.id}`}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ marginTop: '8px', fontSize: '11px', color: selectedLinkedinTarget ? '#374151' : '#92400e' }}>
+                    {selectedLinkedinTarget
+                      ? `Cross-post target: ${selectedLinkedinTarget.label || `LinkedIn account #${selectedLinkedinTarget.id}`}`
+                      : 'Choose exactly one LinkedIn team account for this X post.'}
+                  </div>
+                  {linkedinTeamTargetsError && (
+                    <div style={{ marginTop: '8px', fontSize: '11px', color: '#b91c1c' }}>
+                      {linkedinTeamTargetsError}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div style={{
                 marginTop: '12px',
@@ -616,7 +796,7 @@ const TweetComposer = () => {
                   borderRadius: '10px',
                   padding: '10px 12px',
                 }}>
-                  Cross-post is available for personal account posting only in Phase 1.
+                  Team mode v1 supports X to LinkedIn cross-post with explicit target selection. Threads cross-post remains personal-only.
                 </div>
               )}
 
