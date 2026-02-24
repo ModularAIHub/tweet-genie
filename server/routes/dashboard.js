@@ -102,16 +102,16 @@ router.get('/bootstrap', async (req, res) => {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    const scopeParams = [userId, startDate];
-    const { clause: scopeClause, params: scopeFilterParams } = buildTwitterScopeFilter({
+    const metricsScopeParams = [userId, startDate];
+    const { clause: metricsScopeClause, params: metricsScopeFilterParams } = buildTwitterScopeFilter({
       scope: twitterScope,
       alias: 't',
-      startIndex: scopeParams.length + 1,
+      startIndex: metricsScopeParams.length + 1,
       includeLegacyPersonalFallback: true,
       includeTeamOrphanFallback: true,
       orphanUserId: userId,
     });
-    scopeParams.push(...scopeFilterParams);
+    metricsScopeParams.push(...metricsScopeFilterParams);
 
     const metricsQuery = `
       SELECT
@@ -123,12 +123,23 @@ router.get('/bootstrap', async (req, res) => {
         COALESCE(SUM(t.likes + t.retweets + t.replies + COALESCE(t.quote_count, 0) + COALESCE(t.bookmark_count, 0)), 0)::bigint AS total_engagement
       FROM tweets t
       WHERE t.user_id = $1
-        AND (t.created_at >= $2 OR t.external_created_at >= $2)
+        AND COALESCE(t.external_created_at, t.created_at) >= $2
         AND t.status = 'posted'
-        ${scopeClause}
+        ${metricsScopeClause}
     `;
 
-    const recentLimitIndex = scopeParams.length + 1;
+    const recentScopeParams = [userId];
+    const { clause: recentScopeClause, params: recentScopeFilterParams } = buildTwitterScopeFilter({
+      scope: twitterScope,
+      alias: 't',
+      startIndex: recentScopeParams.length + 1,
+      includeLegacyPersonalFallback: true,
+      includeTeamOrphanFallback: true,
+      orphanUserId: userId,
+    });
+    recentScopeParams.push(...recentScopeFilterParams);
+
+    const recentLimitIndex = recentScopeParams.length + 1;
     const recentTweetsQuery = `
       SELECT
         t.id,
@@ -145,12 +156,12 @@ router.get('/bootstrap', async (req, res) => {
       LEFT JOIN team_accounts ta ON t.account_id::text = ta.id::text
       LEFT JOIN twitter_auth pa ON t.user_id = pa.user_id
       WHERE t.user_id = $1
-        ${scopeClause}
+        ${recentScopeClause}
       ORDER BY COALESCE(t.external_created_at, t.created_at) DESC
       LIMIT $${recentLimitIndex}
     `;
 
-    const recentTweetsParams = [...scopeParams, recentLimit];
+    const recentTweetsParams = [...recentScopeParams, recentLimit];
 
     const creditsPromise = pool.query(
       `SELECT credits_remaining FROM users WHERE id = $1 LIMIT 1`,
@@ -188,7 +199,7 @@ router.get('/bootstrap', async (req, res) => {
     }
 
     const [metricsResult, recentTweetsResult, creditsResult, tokenStatus] = await Promise.all([
-      pool.query(metricsQuery, scopeParams),
+      pool.query(metricsQuery, metricsScopeParams),
       pool.query(recentTweetsQuery, recentTweetsParams),
       creditsPromise,
       tokenStatusPromise,
