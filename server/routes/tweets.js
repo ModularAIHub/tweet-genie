@@ -230,8 +230,9 @@ async function crossPostToLinkedIn({
   postMode = 'single',
   mediaDetected = false,
 }) {
-  const linkedinGenieUrl = process.env.LINKEDIN_GENIE_URL;
-  const internalApiKey = process.env.INTERNAL_API_KEY;
+  const linkedinGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
+  const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
+  const endpoint = linkedinGenieUrl ? `${linkedinGenieUrl.replace(/\/$/, '')}/api/internal/cross-post` : '';
 
   logger.info('[LinkedIn Cross-post] Config check', { 
     url: linkedinGenieUrl, 
@@ -248,13 +249,13 @@ async function crossPostToLinkedIn({
     const timeoutId = setTimeout(() => controller.abort(), LINKEDIN_CROSSPOST_TIMEOUT_MS);
 
     logger.info('[LinkedIn Cross-post] Sending request', { 
-      url: `${linkedinGenieUrl}/api/internal/cross-post`,
+      url: endpoint,
       userId,
       teamId: teamId || null,
       targetLinkedinTeamAccountId: targetLinkedinTeamAccountId || null,
     });
 
-    const liRes = await fetch(`${linkedinGenieUrl}/api/internal/cross-post`, {
+    const liRes = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -291,6 +292,9 @@ async function crossPostToLinkedIn({
       if (liBody.id) safeFields.id = liBody.id;
       if (liBody.status) safeFields.status = liBody.status;
       if (liBody.code) safeFields.code = liBody.code;
+      if (liBody.error && typeof liBody.error === 'string') {
+        safeFields.error = liBody.error.length > 200 ? liBody.error.slice(0, 197) + '...' : liBody.error;
+      }
       if (liBody.message && typeof liBody.message === 'string') {
         safeFields.message = liBody.message.length > 200 ? liBody.message.slice(0, 197) + '...' : liBody.message;
       }
