@@ -236,7 +236,8 @@ async function crossPostToLinkedIn({
 
   logger.info('[LinkedIn Cross-post] Config check', { 
     url: linkedinGenieUrl, 
-    hasKey: !!internalApiKey 
+    hasKey: !!internalApiKey,
+    endpoint,
   });
 
   if (!linkedinGenieUrl || !internalApiKey) {
@@ -304,6 +305,7 @@ async function crossPostToLinkedIn({
     logger.info('[LinkedIn Cross-post] Response received', {
       status: liRes.status,
       ok: liRes.ok,
+      contentType: liRes.headers.get('content-type') || null,
       bodyLength,
       safeFields,
       sanitizedSummary
@@ -338,7 +340,15 @@ async function crossPostToLinkedIn({
     }
 
     if (!liRes.ok) {
-      logger.warn('[LinkedIn Cross-post] Failed', { status: liRes.status, bodyLength, safeFields });
+      logger.warn('[LinkedIn Cross-post] Failed', {
+        status: liRes.status,
+        endpoint,
+        userId,
+        teamId: teamId || null,
+        targetLinkedinTeamAccountId: targetLinkedinTeamAccountId || null,
+        bodyLength,
+        safeFields,
+      });
       return 'failed';
     }
 
@@ -346,10 +356,18 @@ async function crossPostToLinkedIn({
     return 'posted';
   } catch (err) {
     if (err.name === 'AbortError') {
-      logger.warn('[LinkedIn Cross-post] Timeout reached', { timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS, userId });
+      logger.warn('[LinkedIn Cross-post] Timeout reached', {
+        timeoutMs: LINKEDIN_CROSSPOST_TIMEOUT_MS,
+        endpoint,
+        userId,
+        teamId: teamId || null,
+      });
       return 'timeout';
     }
     logger.error('[LinkedIn Cross-post] Request error', { 
+      endpoint,
+      userId,
+      teamId: teamId || null,
       name: err?.name, 
       message: err?.message 
     });
