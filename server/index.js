@@ -15,6 +15,7 @@ import authRoutes from './routes/auth.js';
 import secureAuthRoutes from './routes/secure-auth.js';
 import ssoRoutes from './routes/sso.js';
 import twitterRoutes from './routes/twitter.js';
+import postingPrefsRoutes from './routes/twitterPostingPreferences.js';
 import tweetsRoutes from './routes/tweets.js';
 import schedulingRoutes from './routes/scheduling.js';
 import linkedinStatusRoutes from './routes/linkedinStatus.js';
@@ -278,6 +279,8 @@ app.use(
   },
   twitterRoutes
 );
+// Twitter posting preferences (per-user or per-account)
+app.use('/api/twitter/posting-preferences', authenticateToken, postingPrefsRoutes);
 app.use('/api/pro-team', proTeamRoutes); // <-- Register proTeam routes here
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);

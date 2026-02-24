@@ -10,23 +10,32 @@ import {
 } from '../utils/sanitization';
 import toast from 'react-hot-toast';
 
+// ── Character limit constants ─────────────────────────────────────────────────
+export const DEFAULT_CHAR_LIMIT = 280;
+export const PREMIUM_CHAR_LIMIT = 2000;
+
 // Utility function to calculate base64 image size in bytes
 const getBase64Size = (base64String) => {
   const base64Data = base64String.replace(/^data:image\/[a-z]+;base64,/, '');
   return (base64Data.length * 3) / 4;
 };
-// Maximum image size in bytes (5MB)
+
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+const MAX_CROSSPOST_MEDIA_ITEMS = 4;
+const MAX_CROSSPOST_MEDIA_TOTAL_BYTES = 6 * 1024 * 1024;
 const COMPOSE_DRAFT_STORAGE_KEY = 'tweetComposerDraft';
 const COMPOSE_DRAFT_VERSION = 1;
 const COMPOSE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ALLOWED_AI_STYLES = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
 
+// Use a generous ceiling for draft restore — actual limit enforced by setters at runtime
+const DRAFT_RESTORE_MAX_CHARS = PREMIUM_CHAR_LIMIT;
+
 const normalizeComposeDraftTweets = (tweets = []) => {
   if (!Array.isArray(tweets) || tweets.length === 0) return [''];
   const cleaned = tweets
     .map((tweet) => String(tweet || ''))
-    .map((tweet) => (tweet === '---' ? tweet : tweet.slice(0, 300)))
+    .map((tweet) => (tweet === '---' ? tweet : tweet.slice(0, DRAFT_RESTORE_MAX_CHARS)))
     .slice(0, 10);
 
   return cleaned.length > 0 ? cleaned : [''];
@@ -115,16 +124,20 @@ const parseStrategyPromptDetails = (prompt = '') => {
   };
 };
 
-const buildSingleTweetAIPrompt = (rawPrompt) => {
+// ── charLimit-aware AI prompt builder ────────────────────────────────────────
+const buildSingleTweetAIPrompt = (rawPrompt, charLimit = DEFAULT_CHAR_LIMIT) => {
   const { idea, instruction } = parseStrategyPromptDetails(rawPrompt);
   const safeIdea = idea || normalizeIdeaPrompt(String(rawPrompt || ''));
+
+  // Leave ~20 char headroom so the LLM doesn't trim mid-word right at the boundary
+  const safeLimit = Math.max(240, charLimit - 20);
 
   const promptLines = [
     'Create ONE original, complete tweet for X (Twitter) inspired by the idea below.',
     'Return only the final tweet text.',
     'No labels, no quotes, no preface (for example: no "Here is", no "Okay").',
     'Use a fresh hook and wording (do not copy the idea text directly).',
-    'Keep it under 260 characters.',
+    `Keep it under ${safeLimit} characters.`,
     'Do not end mid-sentence or with an unfinished example.',
     `Idea: ${safeIdea}`,
   ];
@@ -170,7 +183,6 @@ const sanitizeStrategyPromptContext = (context = {}) => {
   return normalized;
 };
 
-// Helper function to convert File to base64 data URL
 const fileToBase64 = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -186,6 +198,10 @@ export const useTweetComposer = () => {
   const hasSkippedComposeDraftAutosaveRef = useRef(false);
   const lastTokenStatusToastAtRef = useRef(0);
   const lastTokenStatusCheckAtRef = useRef(0);
+
+  // ── Character limit state ─────────────────────────────────────────────────
+  const [charLimit, setCharLimit] = useState(DEFAULT_CHAR_LIMIT);
+  const [xLongPostEnabled, setXLongPostEnabled] = useState(false);
 
   // State
   const [content, setContentState] = useState('');
@@ -212,11 +228,65 @@ export const useTweetComposer = () => {
   const [scheduledTweets, setScheduledTweets] = useState([]);
   const [isLoadingScheduled, setIsLoadingScheduled] = useState(false);
 
-  // Sanitized setters with proper space preservation
-  const setContent = (value) => {
-    const cleaned = value.length > 500 ? value.substring(0, 500) : value;
-    setContentState(cleaned);
+  // ── Fetch posting preferences for the selected account ───────────────────
+  const fetchPostingPreferences = async () => {
+    try {
+      const res = await fetch('/api/twitter/posting-preferences', {
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const enabled = Boolean(data.x_long_post_enabled);
+      const limit = enabled ? (Number(data.x_char_limit) || PREMIUM_CHAR_LIMIT) : DEFAULT_CHAR_LIMIT;
+      setXLongPostEnabled(enabled);
+      setCharLimit(limit);
+    } catch {
+      // Non-critical — fall back to 280
+    }
   };
+
+  const buildCrossPostMediaPayload = async (images = []) => {
+    const sourceImages = Array.isArray(images) ? images : [];
+    const payload = [];
+    let totalBytes = 0;
+
+    for (const img of sourceImages) {
+      if (payload.length >= MAX_CROSSPOST_MEDIA_ITEMS) break;
+
+      let dataUrl = '';
+      if (img?.isAIGenerated && typeof img?.preview === 'string' && img.preview.startsWith('data:image/')) {
+        dataUrl = img.preview;
+      } else if (img?.file) {
+        const encoded = await fileToBase64(img.file);
+        dataUrl = typeof encoded === 'string' ? encoded : '';
+      } else if (typeof img?.preview === 'string' && img.preview.startsWith('data:image/')) {
+        dataUrl = img.preview;
+      }
+
+      if (!dataUrl || !dataUrl.startsWith('data:image/')) continue;
+
+      const nextBytes = getBase64Size(dataUrl);
+      if (!Number.isFinite(nextBytes) || nextBytes <= 0) continue;
+      if (totalBytes + nextBytes > MAX_CROSSPOST_MEDIA_TOTAL_BYTES) break;
+
+      payload.push(dataUrl);
+      totalBytes += nextBytes;
+    }
+
+    return payload;
+  };
+
+    // Helper to determine the effective char limit depending on thread mode
+    const getEffectiveCharLimit = () => (isThread ? DEFAULT_CHAR_LIMIT : Math.max(charLimit, DEFAULT_CHAR_LIMIT));
+
+    // ── Sanitized setters — all respect effective char limit for single tweets
+    const setContent = (value) => {
+      const ceiling = getEffectiveCharLimit();
+      let cleaned = value.length > ceiling ? value.substring(0, ceiling) : value;
+      // Remove em-dash and en-dash characters from user input
+      cleaned = cleaned.replace(/[—–]/g, '');
+      setContentState(cleaned);
+    };
 
   const setAiPrompt = (value) => {
     const cleaned = value.length > 2000 ? value.substring(0, 2000) : value;
@@ -242,12 +312,18 @@ export const useTweetComposer = () => {
   };
 
   const setThreadTweets = (tweets) => {
-    const cleanedTweets = tweets.map(tweet => 
-      tweet === '---' ? tweet : (tweet.length > 300 ? tweet.substring(0, 300) : tweet)
+    const ceiling = DEFAULT_CHAR_LIMIT;
+    const cleanedTweets = tweets.map((tweet) =>
+      tweet === '---'
+        ? tweet
+        : (() => {
+            let t = tweet.length > ceiling ? tweet.substring(0, ceiling) : tweet;
+            return t.replace(/[—–]/g, '');
+          })()
     );
     setThreadTweetsState(cleanedTweets);
-    
-    setThreadImages(prev => {
+
+    setThreadImages((prev) => {
       const newImages = [...prev];
       while (newImages.length < cleanedTweets.length) {
         newImages.push([]);
@@ -259,15 +335,16 @@ export const useTweetComposer = () => {
   // Initialize
   useEffect(() => {
     fetchTwitterAccounts();
-    
+    fetchPostingPreferences();
+
     return () => {
-      selectedImages.forEach(img => {
+      selectedImages.forEach((img) => {
         if (img.preview && img.preview.startsWith('blob:')) {
           URL.revokeObjectURL(img.preview);
         }
       });
-      threadImages.forEach(tweetImages => {
-        tweetImages.forEach(img => {
+      threadImages.forEach((tweetImages) => {
+        tweetImages.forEach((img) => {
           if (img.preview && img.preview.startsWith('blob:')) {
             URL.revokeObjectURL(img.preview);
           }
@@ -311,7 +388,7 @@ export const useTweetComposer = () => {
     const draft = loaded?.data;
     if (draft && typeof draft === 'object' && !Array.isArray(draft)) {
       if (typeof draft.content === 'string') {
-        setContent(draft.content);
+        setContentState(draft.content); // use raw setter here — charLimit not fetched yet
       }
 
       const restoredThreadTweets = normalizeComposeDraftTweets(draft.threadTweets);
@@ -365,7 +442,6 @@ export const useTweetComposer = () => {
   useEffect(() => {
     if (!isComposeDraftHydrated) return;
 
-    // Skip the first autosave pass after hydration to avoid overwriting a just-restored draft.
     if (!hasSkippedComposeDraftAutosaveRef.current) {
       hasSkippedComposeDraftAutosaveRef.current = true;
       return;
@@ -413,9 +489,12 @@ export const useTweetComposer = () => {
   ]);
 
   // Computed values
-  const characterCount = isThread 
+  const characterCount = isThread
     ? threadTweets.reduce((total, tweet) => total + tweet.length, 0)
     : content.length;
+
+  // Effective char limit: threads always use DEFAULT_CHAR_LIMIT, single tweets use user's charLimit (min DEFAULT_CHAR_LIMIT)
+  const effectiveCharLimit = isThread ? DEFAULT_CHAR_LIMIT : Math.max(charLimit, DEFAULT_CHAR_LIMIT);
 
   const persistSelectedTwitterAccount = (accounts) => {
     if (!Array.isArray(accounts) || accounts.length === 0) {
@@ -449,7 +528,6 @@ export const useTweetComposer = () => {
       }
 
       try {
-        // Use default api timeout (30s) instead of a shorter per-call override
         const personalRes = await twitter.getStatus();
         personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
         mergedAccounts = [...personalAccounts];
@@ -556,19 +634,19 @@ export const useTweetComposer = () => {
 
     for (const file of files) {
       const validation = validateFileUpload(file);
-      
+
       if (!validation.isValid) {
-        validation.errors.forEach(error => toast.error(error));
+        validation.errors.forEach((error) => toast.error(error));
         continue;
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast(warning, { icon: '⚠️' }));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
       const isValidSize = file.size <= MAX_IMAGE_SIZE;
-      
+
       if (!isValidType) {
         toast.error(`${file.name} is not a valid image type`);
         continue;
@@ -577,7 +655,7 @@ export const useTweetComposer = () => {
         toast.error(`${file.name} is too large (max 5MB)`);
         continue;
       }
-      
+
       validFiles.push(file);
     }
 
@@ -586,13 +664,13 @@ export const useTweetComposer = () => {
       return;
     }
 
-    const newImages = validFiles.map(file => ({
+    const newImages = validFiles.map((file) => ({
       file,
       preview: URL.createObjectURL(file),
-      id: Math.random().toString(36).substr(2, 9)
+      id: Math.random().toString(36).substr(2, 9),
     }));
 
-    setSelectedImages(prev => [...prev, ...newImages]);
+    setSelectedImages((prev) => [...prev, ...newImages]);
   };
 
   const handleImageRemove = (index) => {
@@ -600,10 +678,9 @@ export const useTweetComposer = () => {
     if (imageToRemove.preview && imageToRemove.preview.startsWith('blob:')) {
       URL.revokeObjectURL(imageToRemove.preview);
     }
-    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+    setSelectedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // ── FIXED: now accepts postToLinkedin as a parameter ──
   const handlePost = async (crossPostInput = false) => {
     const normalizedCrossPost =
       crossPostInput && typeof crossPostInput === 'object' && !Array.isArray(crossPostInput)
@@ -641,9 +718,8 @@ export const useTweetComposer = () => {
           };
     const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
 
-    // Validate content before posting
     if (isThread) {
-      const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
+      const validTweets = threadTweets.filter((tweet) => tweet.trim().length > 0 && tweet !== '---');
       for (let i = 0; i < validTweets.length; i++) {
         const validation = validateTweetContent(validTweets[i]);
         if (!validation.isValid) {
@@ -651,7 +727,7 @@ export const useTweetComposer = () => {
           return;
         }
         if (validation.warnings.length > 0) {
-          validation.warnings.forEach(warning => toast(`Tweet ${i + 1}: ${warning}`, { icon: '⚠️' }));
+          validation.warnings.forEach((warning) => toast(`Tweet ${i + 1}: ${warning}`, { icon: '⚠️' }));
         }
       }
       if (validTweets.length === 0 && selectedImages.length === 0) {
@@ -665,7 +741,7 @@ export const useTweetComposer = () => {
         return;
       }
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach(warning => toast(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast(warning, { icon: '⚠️' }));
       }
       if (!content.trim() && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -683,6 +759,9 @@ export const useTweetComposer = () => {
 
     setIsPosting(true);
     try {
+      const crossPostMediaPayload = hasAnyCrossPostTarget
+        ? await buildCrossPostMediaPayload(isThread ? (threadImages[0] || []) : selectedImages)
+        : [];
       const crossPostRequestFields = {
         ...(normalizedCrossPost.linkedin && { postToLinkedin: true }),
         ...(hasAnyCrossPostTarget && {
@@ -698,6 +777,7 @@ export const useTweetComposer = () => {
           }),
           optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
         }),
+        ...(crossPostMediaPayload.length > 0 && { crossPostMedia: crossPostMediaPayload }),
       };
 
       const showPostResultToast = ({ response, isThreadPost, validTweetsCount = 1 }) => {
@@ -735,52 +815,61 @@ export const useTweetComposer = () => {
             }
 
             const statusMessages = {
-              not_connected: `${platform.label} not connected — X post succeeded.`,
-              target_not_found: `${platform.label} target account not found — X post succeeded.`,
-              permission_revoked: `${platform.label} target permission denied — X post succeeded.`,
-              missing_target_route: `${platform.label} target selection missing — X post succeeded.`,
-              timeout: `${platform.label} cross-post timed out — X post succeeded.`,
+              not_connected: `${platform.label} not connected - X post succeeded.`,
+              target_not_found: `${platform.label} target account not found - X post succeeded.`,
+              permission_revoked: `${platform.label} target permission denied - X post succeeded.`,
+              missing_target_route: `${platform.label} target selection missing - X post succeeded.`,
+              timeout: `${platform.label} cross-post timed out - X post succeeded.`,
               skipped_individual_only: `${platform.label} cross-post is available only for personal Twitter accounts right now.`,
               skipped_not_configured: `${platform.label} cross-post is not configured yet.`,
               skipped: `${platform.label} cross-post was skipped.`,
-              failed: `${platform.label} cross-post failed — X post succeeded.`,
+              failed: `${platform.label} cross-post failed - X post succeeded.`,
               disabled: null,
               '': null,
               null: null,
             };
 
-            const issue = statusMessages[status] ?? `${platform.label} cross-post did not complete (${status}). X post succeeded.`;
+            const issue =
+              statusMessages[status] ??
+              `${platform.label} cross-post did not complete (${status}). X post succeeded.`;
             if (issue) issues.push(issue);
           }
 
           if (successful.length > 0 && issues.length === 0) {
-            toast.success(`${baseSuccessMessage.replace(/!$/, '')} & cross-posted to ${successful.join(' + ')}!`);
+            toast.success(
+              `${baseSuccessMessage.replace(/!$/, '')} & cross-posted to ${successful.join(' + ')}!`
+            );
           } else {
             toast.success(baseSuccessMessage);
             issues.forEach((message) => toast(message, { icon: '⚠️' }));
           }
 
           if (mediaFallbackShown) {
-            toast('Images were posted to X only. Cross-posts used text-only content (Phase 1).', { icon: 'ℹ️' });
+            toast('Images were posted to X only. Cross-posts used text-only content (Phase 1).', {
+              icon: 'ℹ️',
+            });
           }
           return;
         }
 
         const linkedinStatus = response?.data?.linkedin;
         if (normalizedCrossPost.linkedin && linkedinStatus === 'posted') {
-          toast.success(isThreadPost ? 'Thread posted & cross-posted to LinkedIn! ✓' : 'Tweet posted & cross-posted to LinkedIn! ✓');
+          toast.success(
+            isThreadPost
+              ? 'Thread posted & cross-posted to LinkedIn! ✓'
+              : 'Tweet posted & cross-posted to LinkedIn! ✓'
+          );
         } else if (normalizedCrossPost.linkedin && linkedinStatus === 'failed') {
           toast.success(baseSuccessMessage);
-          toast.error('LinkedIn cross-post failed — check your connection.');
+          toast.error('LinkedIn cross-post failed - check your connection.');
         } else if (normalizedCrossPost.linkedin && linkedinStatus === 'not_connected') {
           toast.success(baseSuccessMessage);
-          toast.error('LinkedIn not connected — post was X only.');
+          toast.error('LinkedIn not connected - post was X only.');
         } else {
           toast.success(baseSuccessMessage);
         }
       };
 
-      // Upload main tweet images
       let mediaIds = [];
       if (selectedImages.length > 0) {
         const mediaFiles = [];
@@ -802,7 +891,6 @@ export const useTweetComposer = () => {
         }
       }
 
-      // For threads, upload images for each tweet
       let threadMedia = [];
       if (isThread) {
         for (let i = 0; i < threadTweets.length; i++) {
@@ -837,7 +925,7 @@ export const useTweetComposer = () => {
       }
 
       if (isThread) {
-        const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
+        const validTweets = threadTweets.filter((tweet) => tweet.trim().length > 0 && tweet !== '---');
         const response = await tweets.create({
           thread: validTweets,
           threadMedia,
@@ -858,30 +946,29 @@ export const useTweetComposer = () => {
         setContent('');
       }
 
-      // Cleanup previews
-      selectedImages.forEach(img => {
+      selectedImages.forEach((img) => {
         if (img.preview && img.preview.startsWith('blob:')) {
           URL.revokeObjectURL(img.preview);
         }
       });
       setSelectedImages([]);
 
-      threadImages.forEach(tweetImages => {
-        tweetImages.forEach(img => {
+      threadImages.forEach((tweetImages) => {
+        tweetImages.forEach((img) => {
           if (img.preview && img.preview.startsWith('blob:')) {
             URL.revokeObjectURL(img.preview);
           }
         });
       });
       clearDraft(COMPOSE_DRAFT_STORAGE_KEY);
-
     } catch (error) {
       console.error('Post tweet error:', error);
 
       if (error.response?.data?.code === 'TWITTER_RATE_LIMIT') {
-        toast.error('⏰ Twitter rate limit reached. Please try again in 15-30 minutes. Your credits have been refunded.', {
-          duration: 8000
-        });
+        toast.error(
+          '⏰ Twitter rate limit reached. Please try again in 15-30 minutes. Your credits have been refunded.',
+          { duration: 8000 }
+        );
         return;
       }
 
@@ -893,7 +980,7 @@ export const useTweetComposer = () => {
 
       if (error.response?.data?.code === 'TWITTER_PERMISSIONS_ERROR') {
         toast.error('Twitter permissions expired. Please reconnect your Twitter account.', {
-          duration: 6000
+          duration: 6000,
         });
         setTimeout(() => {
           window.location.href = '/settings';
@@ -908,7 +995,6 @@ export const useTweetComposer = () => {
     }
   };
 
-  // Accepts a date string/timezone and optional cross-post settings
   const handleSchedule = async (dateString, timezone, crossPostInput = false) => {
     const normalizedCrossPost =
       crossPostInput && typeof crossPostInput === 'object' && !Array.isArray(crossPostInput)
@@ -945,8 +1031,9 @@ export const useTweetComposer = () => {
             crossPostTargetAccountLabels: {},
           };
     const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
+
     if (isThread) {
-      const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
+      const validTweets = threadTweets.filter((tweet) => tweet.trim().length > 0 && tweet !== '---');
       if (validTweets.length === 0) {
         toast.error('Please enter some content for the thread');
         return;
@@ -961,10 +1048,15 @@ export const useTweetComposer = () => {
       toast.error('Please select a date and time');
       return;
     }
+
     setIsScheduling(true);
     try {
+      const crossPostMediaPayload = hasAnyCrossPostTarget
+        ? await buildCrossPostMediaPayload(isThread ? (threadImages[0] || []) : selectedImages)
+        : [];
       let mediaIds = [];
       let threadMedia = [];
+
       if (isThread) {
         for (let i = 0; i < threadTweets.length; i++) {
           const tweet = threadTweets[i];
@@ -1018,7 +1110,7 @@ export const useTweetComposer = () => {
       }
 
       if (isThread) {
-        const validTweets = threadTweets.filter(tweet => tweet.trim().length > 0 && tweet !== '---');
+        const validTweets = threadTweets.filter((tweet) => tweet.trim().length > 0 && tweet !== '---');
         await scheduling.create({
           thread: validTweets,
           threadMedia,
@@ -1035,9 +1127,12 @@ export const useTweetComposer = () => {
               crossPostTargetAccountLabels: normalizedCrossPost.crossPostTargetAccountLabels,
             }),
             optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
+            ...(crossPostMediaPayload.length > 0 && {
+              crossPostMedia: crossPostMediaPayload,
+            }),
           }),
           scheduled_for: dateString,
-          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
         });
         if (hasAnyCrossPostTarget) {
           const labels = [
@@ -1068,16 +1163,21 @@ export const useTweetComposer = () => {
               crossPostTargetAccountLabels: normalizedCrossPost.crossPostTargetAccountLabels,
             }),
             optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
+            ...(crossPostMediaPayload.length > 0 && {
+              crossPostMedia: crossPostMediaPayload,
+            }),
           }),
           scheduled_for: dateString,
-          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
         });
         if (hasAnyCrossPostTarget) {
           const labels = [
             normalizedCrossPost.linkedin ? 'LinkedIn' : null,
             normalizedCrossPost.threads ? 'Threads' : null,
           ].filter(Boolean);
-          toast.success(`Tweet scheduled. Cross-post to ${labels.join(' + ')} will run at publish time.`);
+          toast.success(
+            `Tweet scheduled. Cross-post to ${labels.join(' + ')} will run at publish time.`
+          );
         } else {
           toast.success('Tweet scheduled successfully!');
         }
@@ -1085,7 +1185,7 @@ export const useTweetComposer = () => {
       }
 
       setScheduledFor('');
-      selectedImages.forEach(img => {
+      selectedImages.forEach((img) => {
         if (img.preview && img.preview.startsWith('blob:')) {
           URL.revokeObjectURL(img.preview);
         }
@@ -1102,11 +1202,12 @@ export const useTweetComposer = () => {
     }
   };
 
+  // ── AI Generation — uses charLimit throughout ─────────────────────────────
   const handleAIGenerate = async (promptOverride = null) => {
     const promptSource = typeof promptOverride === 'string' ? promptOverride : aiPrompt;
-    let sanitizedPrompt = sanitizeUserInput(promptSource.trim(), { 
+    let sanitizedPrompt = sanitizeUserInput(promptSource.trim(), {
       maxLength: 2000,
-      encodeHTML: false
+      encodeHTML: false,
     });
 
     if (!sanitizedPrompt) {
@@ -1120,13 +1221,14 @@ export const useTweetComposer = () => {
     const normalizedSeedPrompt = normalizePromptComparisonText(strategyPromptSeedText);
     const canUseStrategyMode = Boolean(
       strategyPromptContext &&
-      strategyPromptContext.idea &&
-      normalizedCurrentPrompt &&
-      normalizedCurrentPrompt === normalizedSeedPrompt
+        strategyPromptContext.idea &&
+        normalizedCurrentPrompt &&
+        normalizedCurrentPrompt === normalizedSeedPrompt
     );
 
     if (!isThread) {
-      aiRequestPrompt = buildSingleTweetAIPrompt(sanitizedPrompt);
+      // Pass effective char limit so the LLM instruction matches the user's actual limit
+      aiRequestPrompt = buildSingleTweetAIPrompt(sanitizedPrompt, getEffectiveCharLimit());
       aiRequestIsThread = false;
     }
 
@@ -1155,7 +1257,7 @@ export const useTweetComposer = () => {
       if (response.data && response.data.content) {
         const sanitizedContent = sanitizeAIContent(response.data.content, {
           maxLength: 5000,
-          preserveFormatting: true
+          preserveFormatting: true,
         });
 
         if (!sanitizedContent || sanitizedContent.length < 10) {
@@ -1164,12 +1266,12 @@ export const useTweetComposer = () => {
         }
 
         if (isThread) {
-          const content = sanitizedContent;
-          const aiTweets = splitIntoTweets(content);
-          setThreadTweets(aiTweets.length > 0 ? aiTweets : [content]);
+          const aiTweets = splitIntoTweets(sanitizedContent, DEFAULT_CHAR_LIMIT);
+          setThreadTweets(aiTweets.length > 0 ? aiTweets : [sanitizedContent]);
         } else {
-          let tweet = sanitizedContent.replace(/---/g, '').replace(/^["']+|["']+$/g, '').trim();
-          if (tweet.length > 280) tweet = tweet.substring(0, 280);
+          let tweet = sanitizedContent.replace(/---/g, '').replace(/^['"]+|['"]+$/g, '').trim();
+          // Respect the user's effective char limit
+          if (tweet.length > getEffectiveCharLimit()) tweet = tweet.substring(0, getEffectiveCharLimit());
           setContent(tweet);
         }
 
@@ -1178,7 +1280,9 @@ export const useTweetComposer = () => {
         clearStrategyPromptContext();
 
         if (response.data.creditsUsed && response.data.threadCount) {
-          toast.success(`Content generated successfully! Used ${response.data.creditsUsed} credits for ${response.data.threadCount} thread(s).`);
+          toast.success(
+            `Content generated successfully! Used ${response.data.creditsUsed} credits for ${response.data.threadCount} thread(s).`
+          );
         } else {
           toast.success('Content generated successfully!');
         }
@@ -1195,9 +1299,13 @@ export const useTweetComposer = () => {
         const creditsAvailable = errorData.creditsAvailable ?? errorData.available ?? 0;
 
         if (threadCount > 1) {
-          toast.error(`Insufficient credits: Need ${creditsRequired} credits for ${threadCount} threads. Available: ${creditsAvailable}`);
+          toast.error(
+            `Insufficient credits: Need ${creditsRequired} credits for ${threadCount} threads. Available: ${creditsAvailable}`
+          );
         } else {
-          toast.error(`Insufficient credits: Need ${creditsRequired} credits. Available: ${creditsAvailable}`);
+          toast.error(
+            `Insufficient credits: Need ${creditsRequired} credits. Available: ${creditsAvailable}`
+          );
         }
       } else {
         toast.error('Failed to generate content');
@@ -1207,71 +1315,80 @@ export const useTweetComposer = () => {
     }
   };
 
-  const splitIntoTweets = (content) => {
+  // ── Tweet splitter — charLimit-aware ─────────────────────────────────────
+  const splitIntoTweets = (content, limit = DEFAULT_CHAR_LIMIT) => {
+    const charLimit = Math.max(limit, DEFAULT_CHAR_LIMIT);
+
     if (content.includes('---')) {
-      const tweets = content.split('---')
-        .map(tweet => tweet.trim())
-        .filter(tweet => tweet.length > 0);
+      const tweets = content
+        .split('---')
+        .map((tweet) => tweet.trim())
+        .filter((tweet) => tweet.length > 0);
       return tweets;
     }
-    
-    let sections = content.split(/\n\n+/).filter(s => s.trim().length > 0);
-    
+
+    let sections = content.split(/\n\n+/).filter((s) => s.trim().length > 0);
+
     if (sections.length === 1) {
-      sections = content.split(/\n/).filter(s => s.trim().length > 0);
+      sections = content.split(/\n/).filter((s) => s.trim().length > 0);
     }
-    
+
     if (sections.length === 1) {
-      sections = content.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0);
+      sections = content.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
     }
-    
-    const tweets = [];
+
+    const tweetParts = [];
     let currentTweet = '';
-    
+
     sections.forEach((section) => {
       const trimmed = section.trim();
-      
-      if (trimmed.length > 280) {
+
+      if (trimmed.length > charLimit) {
         if (currentTweet.trim()) {
-          tweets.push(currentTweet.trim());
+          tweetParts.push(currentTweet.trim());
           currentTweet = '';
         }
-        
+
         const words = trimmed.split(' ');
-        words.forEach(word => {
-          if (currentTweet.length + word.length + 1 <= 280) {
+        words.forEach((word) => {
+          if (currentTweet.length + word.length + 1 <= charLimit) {
             currentTweet += (currentTweet ? ' ' : '') + word;
           } else {
-            if (currentTweet.trim()) tweets.push(currentTweet.trim());
+            if (currentTweet.trim()) tweetParts.push(currentTweet.trim());
             currentTweet = word;
           }
         });
       } else {
-        const separator = currentTweet && !currentTweet.endsWith('.') && !currentTweet.endsWith('!') && !currentTweet.endsWith('?') ? '. ' : (currentTweet ? ' ' : '');
-        
-        if (currentTweet.length + separator.length + trimmed.length <= 280) {
+        const separator =
+          currentTweet && !currentTweet.endsWith('.') && !currentTweet.endsWith('!') && !currentTweet.endsWith('?')
+            ? '. '
+            : currentTweet
+            ? ' '
+            : '';
+
+        if (currentTweet.length + separator.length + trimmed.length <= charLimit) {
           currentTweet += separator + trimmed;
         } else {
-          if (currentTweet.trim()) tweets.push(currentTweet.trim());
+          if (currentTweet.trim()) tweetParts.push(currentTweet.trim());
           currentTweet = trimmed;
         }
       }
     });
-    
+
     if (currentTweet.trim()) {
-      tweets.push(currentTweet.trim());
+      tweetParts.push(currentTweet.trim());
     }
-    
-    if (tweets.length === 0 && content.trim()) {
-      tweets.push(content.trim().substring(0, 280));
+
+    if (tweetParts.length === 0 && content.trim()) {
+      tweetParts.push(content.trim().substring(0, charLimit));
     }
-    
-    return tweets;
+
+    return tweetParts;
   };
 
   const handleImageGenerate = async () => {
     const sanitizedPrompt = sanitizeImagePrompt(imagePrompt.trim());
-    
+
     if (!sanitizedPrompt) {
       toast.error('Please enter a valid image description');
       return;
@@ -1284,35 +1401,36 @@ export const useTweetComposer = () => {
     setIsGeneratingImage(true);
     try {
       const response = await imageGeneration.generate(sanitizedPrompt, imageStyle);
-      
+
       if (response.data && response.data.success && response.data.imageUrl) {
         const imageSize = getBase64Size(response.data.imageUrl);
-        
+
         if (imageSize > MAX_IMAGE_SIZE) {
-          toast.error(`Generated image is too large (${(imageSize / (1024 * 1024)).toFixed(1)}MB). Max allowed is 5MB. Please try a different prompt.`);
+          toast.error(
+            `Generated image is too large (${(imageSize / (1024 * 1024)).toFixed(1)}MB). Max allowed is 5MB. Please try a different prompt.`
+          );
           return;
         }
-        
+
         const newImage = {
           file: null,
           preview: response.data.imageUrl,
           id: Math.random().toString(36).substr(2, 9),
           isAIGenerated: true,
           prompt: sanitizedPrompt,
-          provider: response.data.provider || 'AI'
+          provider: response.data.provider || 'AI',
         };
-        
-        setSelectedImages(prev => [...prev, newImage]);
+
+        setSelectedImages((prev) => [...prev, newImage]);
         setShowImagePrompt(false);
         setImagePrompt('');
         toast.success('Image generated successfully!');
       } else {
         toast.error('Failed to generate image - invalid response');
       }
-      
     } catch (error) {
       console.error('Image generation error:', error);
-      
+
       if (error.code === 'ECONNABORTED') {
         toast.error('Image generation timed out. Please try again.');
       } else if (error.response?.status === 413) {
@@ -1338,12 +1456,15 @@ export const useTweetComposer = () => {
     }
   };
 
-  // Thread handlers
   const handleThreadTweetChange = (index, value) => {
-    const sanitizedValue = value === '---' ? value : sanitizeUserInput(value, { 
-      maxLength: 300,
-      encodeHTML: false
-    });
+    const ceiling = DEFAULT_CHAR_LIMIT;
+    const sanitizedValue =
+      value === '---'
+        ? value
+        : sanitizeUserInput(value, {
+            maxLength: ceiling,
+            encodeHTML: false,
+          });
     const newTweets = [...threadTweets];
     newTweets[index] = sanitizedValue;
     setThreadTweets(newTweets);
@@ -1355,19 +1476,19 @@ export const useTweetComposer = () => {
 
     for (const file of files) {
       const validation = validateFileUpload(file);
-      
+
       if (!validation.isValid) {
-        validation.errors.forEach(error => toast.error(error));
+        validation.errors.forEach((error) => toast.error(error));
         continue;
       }
 
-        if (validation.warnings.length > 0) {
-          validation.warnings.forEach(warning => toast(warning, { icon: '⚠️' }));
-        }
+      if (validation.warnings.length > 0) {
+        validation.warnings.forEach((warning) => toast(warning, { icon: '⚠️' }));
+      }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
       const isValidSize = file.size <= MAX_IMAGE_SIZE;
-      
+
       if (!isValidType) {
         toast.error(`${file.name} is not a valid image type`);
         continue;
@@ -1376,7 +1497,7 @@ export const useTweetComposer = () => {
         toast.error(`${file.name} is too large (max 5MB)`);
         continue;
       }
-      
+
       validFiles.push(file);
     }
 
@@ -1386,13 +1507,13 @@ export const useTweetComposer = () => {
       return;
     }
 
-    const newImages = validFiles.map(file => ({
+    const newImages = validFiles.map((file) => ({
       file,
       preview: URL.createObjectURL(file),
-      id: Math.random().toString(36).substr(2, 9)
+      id: Math.random().toString(36).substr(2, 9),
     }));
 
-    setThreadImages(prev => {
+    setThreadImages((prev) => {
       const updated = [...prev];
       if (!updated[threadIndex]) {
         updated[threadIndex] = [];
@@ -1405,7 +1526,7 @@ export const useTweetComposer = () => {
   };
 
   const handleThreadImageRemove = (threadIndex, imageIndex) => {
-    setThreadImages(prev => {
+    setThreadImages((prev) => {
       const updated = [...prev];
       if (updated[threadIndex]) {
         const imageToRemove = updated[threadIndex][imageIndex];
@@ -1427,14 +1548,14 @@ export const useTweetComposer = () => {
   const handleRemoveTweet = (index) => {
     if (threadTweets.length > 1) {
       if (threadImages[index]) {
-        threadImages[index].forEach(img => {
+        threadImages[index].forEach((img) => {
           if (img.preview && img.preview.startsWith('blob:')) {
             URL.revokeObjectURL(img.preview);
           }
         });
       }
       setThreadTweets(threadTweets.filter((_, i) => i !== index));
-      setThreadImages(prev => prev.filter((_, i) => i !== index));
+      setThreadImages((prev) => prev.filter((_, i) => i !== index));
     }
   };
 
@@ -1484,7 +1605,12 @@ export const useTweetComposer = () => {
     scheduledTweets,
     isLoadingScheduled,
     characterCount,
-    
+    // ── New exports ──
+    charLimit,
+    effectiveCharLimit,
+    xLongPostEnabled,
+    fetchPostingPreferences,
+
     // Handlers
     handleImageUpload,
     handleImageRemove,
@@ -1500,6 +1626,6 @@ export const useTweetComposer = () => {
     handleRemoveTweet,
     handleAIButtonClick,
     handleImageButtonClick,
-    fetchScheduledTweets
+    fetchScheduledTweets,
   };
 };

@@ -203,6 +203,14 @@ const normalizeCrossPostTargetAccountIds = ({ crossPostTargetAccountIds = null }
   };
 };
 
+const normalizeCrossPostMediaPayload = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 4);
+};
+
 const buildCrossPostResultShape = ({ linkedinEnabled = false, threadsEnabled = false, mediaDetected = false } = {}) => ({
   linkedin: {
     enabled: Boolean(linkedinEnabled),
@@ -229,6 +237,7 @@ async function crossPostToLinkedIn({
   tweetUrl,
   postMode = 'single',
   mediaDetected = false,
+  media = [],
 }) {
   const linkedinGenieUrl = String(process.env.LINKEDIN_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
@@ -242,7 +251,7 @@ async function crossPostToLinkedIn({
 
   if (!linkedinGenieUrl || !internalApiKey) {
     logger.warn('[LinkedIn Cross-post] Skipped: missing LINKEDIN_GENIE_URL or INTERNAL_API_KEY');
-    return 'skipped';
+    return { status: 'skipped' };
   }
 
   try {
@@ -271,6 +280,7 @@ async function crossPostToLinkedIn({
         sourcePlatform: 'x',
         postMode,
         mediaDetected: Boolean(mediaDetected),
+        media: Array.isArray(media) ? media : [],
         ...(targetLinkedinTeamAccountId ? { targetLinkedinTeamAccountId: String(targetLinkedinTeamAccountId) } : {}),
       }),
       signal: controller.signal,
@@ -313,12 +323,12 @@ async function crossPostToLinkedIn({
 
     if (liRes.status === 404 && liBody.code === 'LINKEDIN_NOT_CONNECTED') {
       logger.warn('[LinkedIn Cross-post] User has no LinkedIn account connected', { userId });
-      return 'not_connected';
+      return { status: 'not_connected' };
     }
 
     if (liRes.status === 401 && liBody.code === 'LINKEDIN_TOKEN_EXPIRED') {
       logger.warn('[LinkedIn Cross-post] LinkedIn token expired/revoked', { userId });
-      return 'not_connected';
+      return { status: 'not_connected' };
     }
 
     if (liRes.status === 404 && liBody.code === 'CROSSPOST_TARGET_ACCOUNT_NOT_FOUND') {
@@ -327,7 +337,7 @@ async function crossPostToLinkedIn({
         teamId,
         targetLinkedinTeamAccountId,
       });
-      return 'target_not_found';
+      return { status: 'target_not_found' };
     }
 
     if (liRes.status === 403 && liBody.code === 'CROSSPOST_TARGET_ACCOUNT_FORBIDDEN') {
@@ -336,7 +346,7 @@ async function crossPostToLinkedIn({
         teamId,
         targetLinkedinTeamAccountId,
       });
-      return 'permission_revoked';
+      return { status: 'permission_revoked' };
     }
 
     if (!liRes.ok) {
@@ -349,11 +359,19 @@ async function crossPostToLinkedIn({
         bodyLength,
         safeFields,
       });
-      return 'failed';
+      return {
+        status: 'failed',
+        mediaStatus: typeof liBody?.mediaStatus === 'string' ? liBody.mediaStatus : undefined,
+        mediaCount: Number.isFinite(Number(liBody?.mediaCount)) ? Number(liBody.mediaCount) : undefined,
+      };
     }
 
     logger.info('[LinkedIn Cross-post] Success', { userId });
-    return 'posted';
+    return {
+      status: 'posted',
+      mediaStatus: typeof liBody?.mediaStatus === 'string' ? liBody.mediaStatus : (mediaDetected ? 'posted' : 'none'),
+      mediaCount: Number.isFinite(Number(liBody?.mediaCount)) ? Number(liBody.mediaCount) : (mediaDetected ? undefined : 0),
+    };
   } catch (err) {
     if (err.name === 'AbortError') {
       logger.warn('[LinkedIn Cross-post] Timeout reached', {
@@ -362,7 +380,7 @@ async function crossPostToLinkedIn({
         userId,
         teamId: teamId || null,
       });
-      return 'timeout';
+      return { status: 'timeout' };
     }
     logger.error('[LinkedIn Cross-post] Request error', { 
       endpoint,
@@ -371,7 +389,7 @@ async function crossPostToLinkedIn({
       name: err?.name, 
       message: err?.message 
     });
-    return 'failed';
+    return { status: 'failed' };
   }
 }
 
@@ -410,13 +428,14 @@ async function crossPostToThreads({
   tweetUrl = '',
   mediaDetected = false,
   optimizeCrossPost = true,
+  media = [],
 }) {
   const socialGenieUrl = String(process.env.SOCIAL_GENIE_URL || '').trim();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
 
   if (!socialGenieUrl || !internalApiKey) {
     logger.warn('[Threads Cross-post] Skipped: missing SOCIAL_GENIE_URL or INTERNAL_API_KEY');
-    return 'skipped_not_configured';
+    return { status: 'skipped_not_configured' };
   }
 
   const endpoint = `${socialGenieUrl.replace(/\/$/, '')}/api/internal/threads/cross-post`;
@@ -440,6 +459,7 @@ async function crossPostToThreads({
         sourcePlatform: 'x',
         optimizeCrossPost: optimizeCrossPost !== false,
         mediaDetected: Boolean(mediaDetected),
+        media: Array.isArray(media) ? media : [],
       }),
       signal: controller.signal,
     });
@@ -453,25 +473,33 @@ async function crossPostToThreads({
         code: body?.code,
       });
       if (res.status === 404 && String(body?.code || '').toUpperCase().includes('NOT_CONNECTED')) {
-        return 'not_connected';
+        return { status: 'not_connected' };
       }
       if (res.status === 401 && String(body?.code || '').toUpperCase().includes('TOKEN_EXPIRED')) {
-        return 'not_connected';
+        return { status: 'not_connected' };
       }
-      return 'failed';
+      return {
+        status: 'failed',
+        mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : undefined,
+        mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : undefined,
+      };
     }
 
-    return 'posted';
+    return {
+      status: 'posted',
+      mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : (mediaDetected ? 'posted' : 'none'),
+      mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : (mediaDetected ? undefined : 0),
+    };
   } catch (err) {
     if (err?.name === 'AbortError') {
       logger.warn('[Threads Cross-post] Timeout reached', { timeoutMs: THREADS_CROSSPOST_TIMEOUT_MS, userId });
-      return 'timeout';
+      return { status: 'timeout' };
     }
     logger.error('[Threads Cross-post] Request error', {
       name: err?.name,
       message: err?.message,
     });
-    return 'failed';
+    return { status: 'failed' };
   }
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,11 +516,13 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       crossPostTargets,
       crossPostTargetAccountIds = null,
       optimizeCrossPost = true,
+      crossPostMedia = [],
     } = req.body;
     const userId = req.user.id;
     let twitterAccount = req.twitterAccount;
     const normalizedCrossPostTargets = normalizeCrossPostTargets({ postToLinkedin, crossPostTargets });
     const normalizedCrossPostTargetAccountIds = normalizeCrossPostTargetAccountIds({ crossPostTargetAccountIds });
+    const normalizedCrossPostMedia = normalizeCrossPostMediaPayload(crossPostMedia);
     const requestTeamId = String(req.headers['x-team-id'] || '').trim() || null;
 
     if (twitterAccount?.isTeamAccount && normalizedCrossPostTargets.linkedin) {
@@ -782,13 +812,21 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           thread,
           optimizeCrossPost,
         });
+        const crossPostSourceMedia =
+          normalizedCrossPostMedia.length > 0
+            ? normalizedCrossPostMedia
+            : (
+                Array.isArray(thread) && thread.length > 0
+                  ? (Array.isArray(threadMedia?.[0]) ? threadMedia[0] : [])
+                  : (Array.isArray(media) ? media : [])
+              );
 
         if (normalizedCrossPostTargets.linkedin) {
           if (twitterAccount.isTeamAccount && !normalizedCrossPostTargetAccountIds.linkedin) {
             crossPostResult.linkedin.status = 'missing_target_route';
           } else {
             try {
-              crossPostResult.linkedin.status = await crossPostToLinkedIn({
+              const linkedInCrossPost = await crossPostToLinkedIn({
                 userId,
                 teamId: twitterAccount.isTeamAccount ? requestTeamId : null,
                 targetLinkedinTeamAccountId: twitterAccount.isTeamAccount
@@ -798,7 +836,13 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 tweetUrl,
                 postMode: formattedCrossPost.linkedin.postMode,
                 mediaDetected,
+                media: crossPostSourceMedia,
               });
+              crossPostResult.linkedin = {
+                ...crossPostResult.linkedin,
+                ...linkedInCrossPost,
+                status: linkedInCrossPost?.status || 'failed',
+              };
             } catch (err) {
               logger.error('LinkedIn cross-post error', { userId, error: err?.message || String(err) });
               crossPostResult.linkedin.status = 'failed';
@@ -811,7 +855,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
             crossPostResult.threads.status = 'skipped_individual_only';
           } else {
             try {
-              crossPostResult.threads.status = await crossPostToThreads({
+              const threadsCrossPost = await crossPostToThreads({
                 userId,
                 content: formattedCrossPost.threads.content,
                 threadParts: formattedCrossPost.threads.threadParts,
@@ -819,7 +863,13 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 tweetUrl,
                 mediaDetected,
                 optimizeCrossPost,
+                media: crossPostSourceMedia,
               });
+              crossPostResult.threads = {
+                ...crossPostResult.threads,
+                ...threadsCrossPost,
+                status: threadsCrossPost?.status || 'failed',
+              };
             } catch (err) {
               logger.error('Threads cross-post error', { userId, error: err?.message || String(err) });
               crossPostResult.threads.status = 'failed';

@@ -2,11 +2,14 @@ import express from 'express';
 import { TwitterApi } from 'twitter-api-v2';
 import { pool } from '../config/database.js';
 import { validateTwitterConnection } from '../middleware/auth.js';
+import { mediaService } from '../services/mediaService.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
 const TWITTER_OAUTH1_APP_SECRET = process.env.TWITTER_API_SECRET || process.env.TWITTER_CONSUMER_SECRET || null;
+const INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS = 4;
+const INTERNAL_CROSSPOST_REMOTE_MEDIA_MAX_BYTES = 8 * 1024 * 1024;
 
 const ensureInternalRequest = (req, res, next) => {
   const configuredKey = String(process.env.INTERNAL_API_KEY || '').trim();
@@ -78,6 +81,75 @@ const isTokenExpired = (tokenExpiresAt) => {
 };
 
 const trimText = (value, maxLength = 5000) => String(value || '').trim().slice(0, maxLength);
+
+const normalizeCrossPostMediaInputs = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, INTERNAL_CROSSPOST_MAX_MEDIA_ITEMS);
+};
+
+const isHttpUrl = (value) => /^https?:\/\//i.test(String(value || '').trim());
+
+const fetchRemoteMediaAsDataUrl = async (value) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch(String(value || '').trim(), { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      throw new Error(`Unsupported content-type: ${contentType || 'unknown'}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    if (buffer.length > INTERNAL_CROSSPOST_REMOTE_MEDIA_MAX_BYTES) {
+      throw new Error(`Remote media too large (${buffer.length} bytes)`);
+    }
+    return `data:${contentType};base64,${buffer.toString('base64')}`;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+const resolveUploadableCrossPostMedia = async (mediaInputs = [], { userId, teamId } = {}) => {
+  const normalized = normalizeCrossPostMediaInputs(mediaInputs);
+  const uploadable = [];
+  let skippedCount = 0;
+  let hadErrors = false;
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const item = normalized[index];
+    try {
+      if (item.startsWith('data:image/')) {
+        uploadable.push(item);
+        continue;
+      }
+
+      if (isHttpUrl(item)) {
+        uploadable.push(await fetchRemoteMediaAsDataUrl(item));
+        continue;
+      }
+
+      skippedCount += 1;
+    } catch (error) {
+      hadErrors = true;
+      skippedCount += 1;
+      logger.warn('[internal/twitter/cross-post] Skipping one media item', {
+        userId,
+        teamId: teamId || null,
+        index,
+        error: error?.message || String(error),
+      });
+    }
+  }
+
+  return { uploadable, skippedCount, hadErrors, requestedCount: normalized.length };
+};
 
 const hasOauth1Credentials = (account) =>
   Boolean(account?.oauth1_access_token && account?.oauth1_access_token_secret);
@@ -180,6 +252,8 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     content = '',
     mediaDetected = false,
     postMode = 'single',
+    media = [],
+    mediaUrls = [],
   } = req.body || {};
 
   if (!platformUserId) {
@@ -244,7 +318,53 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     }
 
     const twitterClient = createTwitterClientForPosting(account);
-    const tweetResponse = await twitterClient.v2.tweet({ text: normalizedContent });
+    const incomingMedia = normalizeCrossPostMediaInputs(
+      Array.isArray(media) && media.length > 0 ? media : mediaUrls
+    );
+    const effectiveMediaDetected = Boolean(mediaDetected) || incomingMedia.length > 0;
+    let mediaStatus = incomingMedia.length > 0 ? 'text_only_unsupported' : 'none';
+    let mediaCount = 0;
+    let tweetMediaIds = [];
+
+    if (incomingMedia.length > 0) {
+      const hasOauth1 = hasOauth1Credentials(account) && Boolean(TWITTER_OAUTH1_APP_KEY && TWITTER_OAUTH1_APP_SECRET);
+      if (!hasOauth1) {
+        mediaStatus = 'text_only_requires_oauth1';
+      } else {
+        const preparedMedia = await resolveUploadableCrossPostMedia(incomingMedia, {
+          userId: platformUserId,
+          teamId: platformTeamId || null,
+        });
+
+        if (preparedMedia.uploadable.length === 0) {
+          mediaStatus = preparedMedia.hadErrors ? 'text_only_upload_failed' : 'text_only_unsupported';
+        } else {
+          try {
+            tweetMediaIds = await mediaService.uploadMedia(preparedMedia.uploadable, twitterClient, {
+              accessToken: account.oauth1_access_token,
+              accessTokenSecret: account.oauth1_access_token_secret,
+            });
+            mediaCount = Array.isArray(tweetMediaIds) ? tweetMediaIds.length : 0;
+            mediaStatus =
+              preparedMedia.skippedCount > 0 ? 'posted_partial' : (mediaCount > 0 ? 'posted' : 'text_only_upload_failed');
+          } catch (uploadError) {
+            logger.warn('[internal/twitter/cross-post] Media upload failed, falling back to text-only', {
+              userId: platformUserId,
+              teamId: platformTeamId || null,
+              error: uploadError?.message || String(uploadError),
+            });
+            mediaStatus = 'text_only_upload_failed';
+            mediaCount = 0;
+            tweetMediaIds = [];
+          }
+        }
+      }
+    }
+
+    const tweetResponse = await twitterClient.v2.tweet({
+      text: normalizedContent,
+      ...(tweetMediaIds.length > 0 ? { media: { media_ids: tweetMediaIds } } : {}),
+    });
     const tweetId = tweetResponse?.data?.id || null;
     const username = account.twitter_username || 'i/web';
     const tweetUrl = tweetId ? `https://twitter.com/${username}/status/${tweetId}` : null;
@@ -254,7 +374,9 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
       teamId: platformTeamId || null,
       accountScope,
       tweetId,
-      mediaDetected: Boolean(mediaDetected),
+      mediaDetected: Boolean(effectiveMediaDetected),
+      mediaStatus,
+      mediaCount,
       length: normalizedContent.length,
     });
 
@@ -262,9 +384,11 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
       success: true,
       status: 'posted',
       mode: 'single',
-      mediaDetected: Boolean(mediaDetected),
+      mediaDetected: Boolean(effectiveMediaDetected),
       tweetId,
       tweetUrl,
+      mediaStatus,
+      mediaCount,
     });
   } catch (error) {
     if (error?.payload?.code === 'TWITTER_RECONNECT_REQUIRED') {
@@ -293,6 +417,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     return res.status(500).json({
       error: message,
       code: 'TWITTER_CROSSPOST_FAILED',
+      mediaStatus: 'unknown',
     });
   }
 });

@@ -42,6 +42,7 @@ export const tweetSchema = Joi.object({
     linkedin: Joi.string().trim().max(255).allow('').optional(),
   }).optional(),
   optimizeCrossPost: Joi.boolean().optional(),
+  crossPostMedia: Joi.array().items(Joi.string()).max(4).optional(),
   media: Joi.array().items(Joi.string()).max(4).optional(),
   scheduled_for: Joi.date().greater('now').optional(),
   thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
@@ -79,6 +80,7 @@ export const scheduleSchema = Joi.object({
     linkedin: Joi.string().trim().max(255).allow('').optional(),
   }).optional(),
   optimizeCrossPost: Joi.boolean().optional(),
+  crossPostMedia: Joi.array().items(Joi.string()).max(4).optional(),
   media: Joi.array().items(Joi.string()).max(4).optional().allow(null),
   thread: Joi.array().items(Joi.string().min(1).max(280)).max(25).optional(),
   threadMedia: Joi.array().items(

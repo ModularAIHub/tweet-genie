@@ -1,27 +1,49 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 
-const TweetContentEditor = ({ content, setContent, isThread, characterCount, onAIButtonClick, onImageButtonClick, showAIPrompt, showImagePrompt }) => {
+const TweetContentEditor = ({
+  content,
+  setContent,
+  isThread,
+  characterCount,
+  charLimit = 280,
+  onAIButtonClick,
+  onImageButtonClick,
+  showAIPrompt,
+  showImagePrompt,
+}) => {
+  const isOverLimit = characterCount > charLimit;
+  const isNearLimit = !isOverLimit && characterCount > charLimit * 0.9;
+
+  const counterColor = isOverLimit
+    ? 'text-red-500 font-semibold'
+    : isNearLimit
+    ? 'text-amber-500'
+    : 'text-gray-500';
+
   return (
-    <div className="p-4 bg-white rounded shadow">
-      <h3 className="text-lg font-semibold mb-2">Compose Tweet</h3>
+    <div className="space-y-2">
       <textarea
-        className="w-full border rounded p-2 mb-2"
+        className={`w-full border rounded-lg p-3 resize-none focus:outline-none focus:ring-2 transition-colors ${
+          isOverLimit
+            ? 'border-red-400 focus:ring-red-300'
+            : 'border-gray-300 focus:ring-blue-300'
+        }`}
         value={content}
-        onChange={e => setContent(e.target.value)}
-        placeholder={isThread ? 'Compose thread...' : 'Compose tweet...'}
-        rows={4}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder={isThread ? 'Compose your thread...' : "What's happening?"}
+        rows={6}
       />
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm text-gray-500">Characters: {characterCount}</span>
-        <div className="flex gap-2">
-          <button className="px-3 py-1 bg-blue-500 text-white rounded" onClick={onAIButtonClick}>AI</button>
-          <button className="px-3 py-1 bg-green-500 text-white rounded" onClick={onImageButtonClick}>Image</button>
-        </div>
+      <div className="flex items-center justify-between">
+        <span className={`text-sm ${counterColor}`}>
+          {characterCount}/{charLimit} characters
+        </span>
+        {isOverLimit && (
+          <span className="text-xs text-red-500">
+            {characterCount - charLimit} characters over limit
+          </span>
+        )}
       </div>
-      {/* Optionally show AI/Image prompts */}
-      {showAIPrompt && <div className="text-xs text-blue-700">AI prompt active</div>}
-      {showImagePrompt && <div className="text-xs text-green-700">Image prompt active</div>}
     </div>
   );
 };
@@ -31,6 +53,7 @@ TweetContentEditor.propTypes = {
   setContent: PropTypes.func,
   isThread: PropTypes.bool,
   characterCount: PropTypes.number,
+  charLimit: PropTypes.number,
   onAIButtonClick: PropTypes.func,
   onImageButtonClick: PropTypes.func,
   showAIPrompt: PropTypes.bool,

@@ -1,9 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Twitter, 
-  Settings as SettingsIcon, 
   Key, 
-  Sparkles,
   Link as LinkIcon,
   Unlink,
   Check,
@@ -21,12 +19,14 @@ const Settings = () => {
   const [activeTab, setActiveTab] = useState('twitter');
   const [twitterAccounts, setTwitterAccounts] = useState([]);
   const [twitterTokenStatus, setTwitterTokenStatus] = useState(null);
-  const [aiProviders, setAiProviders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showApiKey, setShowApiKey] = useState({});
   const oauthMessageReceivedRef = useRef(false);
   const OAUTH_RESULT_STORAGE_KEY = 'suitegenie_oauth_result';
   const teamModeLockMessage = 'You are in Team mode. Personal Twitter connections are disabled.';
+
+  // ── X Premium / posting preference state ─────────────────────────────────
+  const [xLongPostEnabled, setXLongPostEnabled] = useState(false);
+  const [isUpdatingPreference, setIsUpdatingPreference] = useState(false);
 
   const getAllowedPopupOrigins = () => {
     const allowed = new Set([window.location.origin]);
@@ -43,10 +43,23 @@ const Settings = () => {
     await fetchData();
   };
 
+  // ── Fetch posting preferences ─────────────────────────────────────────────
+  const fetchPostingPreferences = async () => {
+    try {
+      const res = await fetch('/api/twitter/posting-preferences', {
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setXLongPostEnabled(Boolean(data.x_long_post_enabled));
+    } catch {
+      // Non-critical — default stays false
+    }
+  };
+
   useEffect(() => {
     fetchData();
-    
-    // Check for OAuth success/failure parameters from callback redirects
+
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('twitter_connected') === 'true') {
       toast.success('Twitter account connected successfully!');
@@ -57,11 +70,10 @@ const Settings = () => {
 
     if (urlParams.get('oauth1_connected') === 'true') {
       toast.success('Media upload permissions enabled successfully!');
-      // Clean URL
       window.history.replaceState({}, document.title, window.location.pathname);
       return;
     }
-    
+
     const callbackError = urlParams.get('error');
     if (callbackError) {
       const errorMessages = {
@@ -133,11 +145,48 @@ const Settings = () => {
       if (accountsRes.status === 'rejected') {
         throw accountsRes.reason;
       }
+
+      // Fetch posting preferences in parallel with accounts
+      await fetchPostingPreferences();
     } catch (error) {
       console.error('Failed to fetch settings data:', error);
       toast.error('Failed to load settings');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ── Toggle X Premium extended posts ──────────────────────────────────────
+  const handleToggleXPremium = async () => {
+    if (isTeamMode) {
+      toast.error('Posting preferences are managed per team account in team mode.');
+      return;
+    }
+
+    const next = !xLongPostEnabled;
+    setIsUpdatingPreference(true);
+    try {
+      const res = await fetch('/api/twitter/posting-preferences', {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ xLongPostEnabled: next }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to update preference');
+      }
+
+      setXLongPostEnabled(next);
+      toast.success(
+        next
+          ? 'X Premium enabled - posts can now be up to 2,000 characters.'
+          : 'Reverted to standard 280 character limit.'
+      );
+    } catch {
+      toast.error('Failed to update preference. Please try again.');
+    } finally {
+      setIsUpdatingPreference(false);
     }
   };
 
@@ -151,13 +200,8 @@ const Settings = () => {
       oauthMessageReceivedRef.current = false;
       const response = await twitter.connectOAuth1();
       const { url } = response.data;
-      
-      // Open OAuth 1.0a auth in new popup window
-      const popup = window.open(
-        url,
-        'twitter-oauth1-auth',
-        'width=600,height=600,scrollbars=yes,resizable=yes'
-      );
+
+      const popup = window.open(url, 'twitter-oauth1-auth', 'width=600,height=600,scrollbars=yes,resizable=yes');
 
       if (!popup) {
         toast.error('Popup was blocked. Please allow popups and try again.');
@@ -184,8 +228,7 @@ const Settings = () => {
         }
       };
       window.addEventListener('message', handleMessage);
-      
-      // Listen for popup completion
+
       const checkClosed = setInterval(() => {
         if (popup.closed) {
           clearInterval(checkClosed);
@@ -195,7 +238,6 @@ const Settings = () => {
           }
         }
       }, 1000);
-      
     } catch (error) {
       console.error('OAuth 1.0a connect error:', error);
       toast.error(error?.response?.data?.error || 'Failed to initiate OAuth 1.0a connection');
@@ -259,17 +301,12 @@ const Settings = () => {
     try {
       oauthMessageReceivedRef.current = false;
       const response = await twitter.connect();
-      const { url, oauth_token, state, oauth_token_secret } = response.data;
-      // Store oauth_token_secret in sessionStorage for the callback (if needed)
+      const { url, oauth_token_secret } = response.data;
       if (oauth_token_secret) {
         sessionStorage.setItem('oauth_token_secret', oauth_token_secret);
       }
-      // Open Twitter auth in new popup window
-      const popup = window.open(
-        url,
-        'twitter-auth',
-        'width=600,height=600,scrollbars=yes,resizable=yes'
-      );
+
+      const popup = window.open(url, 'twitter-auth', 'width=600,height=600,scrollbars=yes,resizable=yes');
 
       if (!popup) {
         toast.error('Popup was blocked. Please allow popups and try again.');
@@ -277,11 +314,9 @@ const Settings = () => {
       }
 
       const allowedOrigins = getAllowedPopupOrigins();
-      
-      // Listen for messages from the popup
+
       const handleMessage = async (event) => {
         if (!allowedOrigins.has(event.origin)) return;
-        // Ensure message is from our popup
         if (event.source !== popup) return;
 
         const type = event.data?.type;
@@ -298,10 +333,9 @@ const Settings = () => {
           if (!popup.closed) popup.close();
         }
       };
-      
+
       window.addEventListener('message', handleMessage);
-      
-      // Handle popup being closed manually
+
       const checkClosed = setInterval(() => {
         if (popup.closed) {
           clearInterval(checkClosed);
@@ -312,7 +346,6 @@ const Settings = () => {
           }
         }
       }, 1000);
-      
     } catch (error) {
       console.error('Twitter connect error:', error);
       toast.error(error?.response?.data?.error || 'Failed to initiate Twitter connection');
@@ -339,35 +372,7 @@ const Settings = () => {
     }
   };
 
-  const handleProviderConfigure = async (providerName, apiKey) => {
-    try {
-      await providers.configure(providerName, { api_key: apiKey });
-      toast.success(`${providerName} configured successfully`);
-      fetchData();
-    } catch (error) {
-      console.error('Provider configure error:', error);
-      toast.error(`Failed to configure ${providerName}`);
-    }
-  };
-
-  const handleProviderRemove = async (providerName) => {
-    if (!confirm(`Are you sure you want to remove ${providerName}?`)) {
-      return;
-    }
-
-    try {
-      await providers.remove(providerName);
-      toast.success(`${providerName} removed successfully`);
-      fetchData();
-    } catch (error) {
-      console.error('Provider remove error:', error);
-      toast.error(`Failed to remove ${providerName}`);
-    }
-  };
-
-  const tabs = [
-    { id: 'twitter', name: 'Twitter Account', icon: Twitter },
-  ];
+  const tabs = [{ id: 'twitter', name: 'Twitter Account', icon: Twitter }];
 
   if (loading) {
     return (
@@ -385,7 +390,9 @@ const Settings = () => {
     !isTeamMode &&
     (
       (!!twitterTokenStatus?.connected && !!twitterTokenStatus?.isExpired) ||
-      (twitterTokenStatus && twitterTokenStatus.connected === false && !twitterTokenStatus.requiresTeamAccountSelection)
+      (twitterTokenStatus &&
+        twitterTokenStatus.connected === false &&
+        !twitterTokenStatus.requiresTeamAccountSelection)
     );
 
   return (
@@ -393,9 +400,7 @@ const Settings = () => {
       {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-        <p className="mt-2 text-gray-600">
-          Manage your Twitter connections
-        </p>
+        <p className="mt-2 text-gray-600">Manage your Twitter connections</p>
       </div>
 
       {/* Tabs */}
@@ -425,22 +430,18 @@ const Settings = () => {
       {activeTab === 'twitter' && (
         <div className="space-y-6">
           <div className="card">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Twitter Account Connection
-            </h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Twitter Account Connection</h3>
 
             {isTeamMode && (
               <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-4">
-                <p className="text-sm font-semibold text-amber-900">
-                  Team mode is active
-                </p>
+                <p className="text-sm font-semibold text-amber-900">Team mode is active</p>
                 <p className="mt-1 text-sm text-amber-800">
-                  Personal Twitter account connect/disconnect is locked while you are posting as a team account.
-                  Connect a Twitter account in your team settings to continue.
+                  Personal Twitter account connect/disconnect is locked while you are posting as a
+                  team account. Connect a Twitter account in your team settings to continue.
                 </p>
               </div>
             )}
-            
+
             {twitterAccounts.length > 0 ? (
               <div className="space-y-4">
                 {twitterAccounts.map((account) => (
@@ -454,23 +455,17 @@ const Settings = () => {
                           className="h-12 w-12 rounded-full"
                         />
                         <div>
-                          <h4 className="font-medium text-gray-900">
-                            {account.display_name}
-                          </h4>
-                          <p className="text-sm text-gray-600">
-                            @{account.username}
-                          </p>
+                          <h4 className="font-medium text-gray-900">{account.display_name}</h4>
+                          <p className="text-sm text-gray-600">@{account.username}</p>
                           <p className="text-xs text-gray-500">
-                            {account.followers_count?.toLocaleString()} followers • 
+                            {account.followers_count?.toLocaleString()} followers •{' '}
                             {account.following_count?.toLocaleString()} following
                           </p>
                           <p className={`text-xs font-medium ${oauth2StatusUI.text}`}>
                             {oauth2StatusUI.label}
                           </p>
                           {oauth2StatusUI.detail ? (
-                            <p className="text-xs text-gray-600 mt-1">
-                              {oauth2StatusUI.detail}
-                            </p>
+                            <p className="text-xs text-gray-600 mt-1">{oauth2StatusUI.detail}</p>
                           ) : null}
                         </div>
                       </div>
@@ -501,7 +496,13 @@ const Settings = () => {
                     </div>
 
                     {/* OAuth 1.0a Status */}
-                    <div className={`p-4 rounded-lg border ${account.has_oauth1 ? 'bg-green-50 border-green-200' : 'bg-blue-50 border-blue-200'}`}>
+                    <div
+                      className={`p-4 rounded-lg border ${
+                        account.has_oauth1
+                          ? 'bg-green-50 border-green-200'
+                          : 'bg-blue-50 border-blue-200'
+                      }`}
+                    >
                       <div className="flex items-center justify-between">
                         <div>
                           <h4 className="font-medium text-gray-900 mb-1">
@@ -538,6 +539,96 @@ const Settings = () => {
                         )}
                       </div>
                     </div>
+
+                    {/* ── X Premium / Extended Posts Toggle ──────────────────── */}
+                    <div
+                      className={`p-4 rounded-lg border transition-colors ${
+                        xLongPostEnabled
+                          ? 'bg-purple-50 border-purple-200'
+                          : 'bg-gray-50 border-gray-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <h4 className="font-medium text-gray-900 mb-1">
+                            X Premium - Extended Posts
+                          </h4>
+                          <p className="text-sm text-gray-600 mb-1">
+                            Enable posts up to 2,000 characters. Only turn this on if your X
+                            account has an active Premium subscription.
+                          </p>
+                          {xLongPostEnabled ? (
+                            <p className="text-xs text-purple-700 flex items-center gap-1">
+                              <Check className="h-3 w-3" />
+                              Extended limit active - AI will also generate longer content
+                            </p>
+                          ) : (
+                            <p className="text-xs text-gray-500">
+                              Currently using standard 280 character limit
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Toggle button */}
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={xLongPostEnabled}
+                          aria-label="Enable X Premium extended posts"
+                          disabled={isTeamMode || isUpdatingPreference}
+                          onClick={handleToggleXPremium}
+                          className="relative flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
+                          style={{
+                            width: '44px',
+                            height: '24px',
+                            borderRadius: '999px',
+                            background: xLongPostEnabled ? '#7c3aed' : '#d1d5db',
+                            border: 'none',
+                            padding: 0,
+                            cursor: isTeamMode || isUpdatingPreference ? 'not-allowed' : 'pointer',
+                            transition: 'background 0.2s ease',
+                          }}
+                        >
+                          {isUpdatingPreference ? (
+                            // Subtle spinner inside toggle while saving
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: '4px',
+                                left: '13px',
+                                width: '16px',
+                                height: '16px',
+                                borderRadius: '50%',
+                                border: '2px solid rgba(255,255,255,0.4)',
+                                borderTopColor: 'white',
+                                animation: 'spin 0.6s linear infinite',
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: '3px',
+                                left: xLongPostEnabled ? '23px' : '3px',
+                                width: '18px',
+                                height: '18px',
+                                borderRadius: '50%',
+                                background: 'white',
+                                boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+                                transition: 'left 0.2s ease',
+                              }}
+                            />
+                          )}
+                        </button>
+                      </div>
+
+                      {isTeamMode && (
+                        <p className="mt-2 text-xs text-amber-700">
+                          Posting preferences are per-account and managed individually outside of team mode.
+                        </p>
+                      )}
+                    </div>
+                    {/* ────────────────────────────────────────────────────────── */}
                   </div>
                 ))}
               </div>
@@ -545,7 +636,9 @@ const Settings = () => {
               <div className="text-center py-8">
                 <Twitter className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <h4 className="text-lg font-medium text-gray-900 mb-2">
-                  {isTeamMode ? 'Personal Twitter Is Locked In Team Mode' : 'No Twitter Account Connected'}
+                  {isTeamMode
+                    ? 'Personal Twitter Is Locked In Team Mode'
+                    : 'No Twitter Account Connected'}
                 </h4>
                 <p className="text-gray-600 mb-6">
                   {isTeamMode
@@ -565,111 +658,13 @@ const Settings = () => {
           </div>
         </div>
       )}
-    </div>
-  );
-};
 
-// Provider Card Component
-const ProviderCard = ({ provider, onConfigure, onRemove, showApiKey, onToggleApiKey }) => {
-  const [apiKey, setApiKey] = useState('');
-  const [isConfiguring, setIsConfiguring] = useState(false);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!apiKey.trim()) return;
-
-    setIsConfiguring(true);
-    try {
-      await onConfigure(provider.name, apiKey);
-      setApiKey('');
-    } catch (error) {
-      // Error handled in parent
-    } finally {
-      setIsConfiguring(false);
-    }
-  };
-
-  return (
-    <div className="border border-gray-200 rounded-lg p-6">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h4 className="text-lg font-medium text-gray-900">
-            {provider.display_name}
-          </h4>
-          <p className="text-sm text-gray-600">
-            Models: {provider.models?.join(', ')}
-          </p>
-        </div>
-        <div className="flex items-center space-x-2">
-          {provider.hub_available && (
-            <span className="badge badge-success">Hub Available</span>
-          )}
-          {provider.user_configured && (
-            <span className="badge badge-info">BYOK Configured</span>
-          )}
-        </div>
-      </div>
-
-      {!provider.user_configured ? (
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              API Key
-            </label>
-            <div className="relative">
-              <input
-                type={showApiKey ? 'text' : 'password'}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={`Enter your ${provider.display_name} API key`}
-                className="input pr-10"
-              />
-              <button
-                type="button"
-                onClick={onToggleApiKey}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center"
-              >
-                {showApiKey ? (
-                  <EyeOff className="h-4 w-4 text-gray-400" />
-                ) : (
-                  <Eye className="h-4 w-4 text-gray-400" />
-                )}
-              </button>
-            </div>
-          </div>
-          <button
-            type="submit"
-            disabled={!apiKey.trim() || isConfiguring}
-            className="btn btn-primary btn-sm"
-          >
-            {isConfiguring ? (
-              <>
-                <LoadingSpinner size="sm" className="mr-2" />
-                Configuring...
-              </>
-            ) : (
-              <>
-                <Key className="h-4 w-4 mr-2" />
-                Configure
-              </>
-            )}
-          </button>
-        </form>
-      ) : (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-green-600 flex items-center">
-            <Check className="h-4 w-4 mr-1" />
-            API key configured
-          </span>
-          <button
-            onClick={() => onRemove(provider.name)}
-            className="btn btn-secondary btn-sm"
-          >
-            <X className="h-4 w-4 mr-1" />
-            Remove
-          </button>
-        </div>
-      )}
+      {/* Spinner keyframe — inline so no CSS file dependency */}
+      <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 };

@@ -15,7 +15,7 @@ function checkRateLimit(userId) {
     rateLimits.set(key, { count: 1, resetTime: now + limit.windowMs });
     return { allowed: true };
   }
-  
+
   const userLimit = rateLimits.get(key);
   if (now >= userLimit.resetTime) {
     userLimit.count = 1;
@@ -45,14 +45,14 @@ const normalizePlanType = (planType) => {
 };
 
 const getProviderPriority = ({ preference, planType }) => {
-  if (preference === 'byok') {
-    return ['perplexity', 'google', 'openai'];
-  }
+    if (preference === 'byok') {
+      return ['perplexity', 'google', 'openai'];
+    }
 
   const normalizedPlan = normalizePlanType(planType);
-  if (normalizedPlan === 'pro' || normalizedPlan === 'enterprise') {
-    return ['perplexity', 'google', 'openai'];
-  }
+    if (normalizedPlan === 'pro' || normalizedPlan === 'enterprise') {
+      return ['google', 'perplexity', 'openai'];
+    }
 
   return ['google', 'perplexity', 'openai'];
 };
@@ -227,6 +227,8 @@ class AIService {
     const providerCandidates = {};
     const keyType = preference === 'byok' ? 'BYOK' : 'platform';
 
+    
+
     const perplexityKey =
       preference === 'byok'
         ? userKeys.find((k) => k.provider === 'perplexity')?.apiKey
@@ -334,6 +336,8 @@ class AIService {
     throw new Error(`All AI providers failed. Last error: ${lastError?.message || 'Unknown error'}`);
   }
 
+  
+
   // Strategy Builder specific generation with plan-aware provider routing.
   async generateStrategyContent(prompt, style = 'professional', userToken = null, userId = null, planType = null) {
     const sanitizedPrompt = this.validatePrompt(prompt);
@@ -362,6 +366,8 @@ class AIService {
     const providerPriority = getProviderPriority({ preference, planType: resolvedPlanType });
     const providerCandidates = {};
     const keyType = preference === 'byok' ? 'BYOK' : 'platform';
+
+    
 
     const perplexityKey =
       preference === 'byok'

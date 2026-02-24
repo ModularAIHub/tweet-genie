@@ -5,6 +5,7 @@ import { requireProPlan, resolveRequestPlanType } from '../middleware/planAccess
 import { creditService } from '../services/creditService.js';
 import { TeamCreditService } from '../services/teamCreditService.js';
 import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/sanitization.js';
+import { getTwitterPostingPreferences } from '../utils/twitterPostingPreferences.js';
 import {
   normalizeStrategyPromptPayload,
   buildStrategyGenerationPrompt,
@@ -172,8 +173,22 @@ router.post('/generate', authenticateToken, async (req, res) => {
           : String(prompt || '').match(/generate\s+(\d+)\s+threads?/i);
       estimatedThreadCount = threadCountMatch ? parseInt(threadCountMatch[1]) : 1;
     }
-    // Calculate estimated credits needed (1.2 credits per thread)
-    const estimatedCreditsNeeded = estimatedThreadCount * 1.2;
+    // Calculate estimated credits needed.
+    // Default: 1.2 credits per thread. If the selected account/user has X Premium enabled
+    // and this is a single (non-thread) generation, charge a flat 5 credits.
+    let estimatedCreditsNeeded = estimatedThreadCount * 1.2;
+    try {
+      const accountId = req.headers['x-selected-account-id'] || null;
+      const isTeamAccount = Boolean(req.headers['x-team-id']);
+      const prefs = await getTwitterPostingPreferences({ userId: req.user.id, accountId, isTeamAccount });
+      const premiumEnabled = Boolean(prefs?.x_long_post_enabled);
+      if (!isThread && premiumEnabled) {
+        estimatedCreditsNeeded = 5;
+      }
+    } catch (prefErr) {
+      // If preference check fails, fall back to default estimated credits
+      console.warn('Failed to resolve posting preferences for credit estimation', prefErr?.message || prefErr);
+    }
 
     // Get team context from header
     const teamId = req.headers['x-team-id'] || null;

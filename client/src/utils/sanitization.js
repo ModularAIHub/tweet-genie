@@ -76,6 +76,10 @@ export const sanitizeUserInput = (input, options = {}) => {
     sanitized = sanitized.substring(0, maxLength);
   }
 
+  // Remove em-dash and en-dash characters (normalize to nothing)
+  // U+2014 (—) and U+2013 (–)
+  sanitized = sanitized.replace(/[—–]/g, '');
+
   // 3. Remove dangerous HTML/script patterns
   DANGEROUS_PATTERNS.forEach(pattern => {
     sanitized = sanitized.replace(pattern, '');
@@ -229,6 +233,9 @@ export const sanitizeAIContent = (content, options = {}) => {
   sanitized = sanitized
     .replace(/\s{3,}/g, '  ')
     .trim();
+
+  // Remove em-dash and en-dash characters from AI output as well
+  sanitized = sanitized.replace(/[—–]/g, '');
 
   // 7. Limit length
   if (sanitized.length > maxLength) {

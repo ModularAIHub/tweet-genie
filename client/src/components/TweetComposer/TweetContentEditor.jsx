@@ -5,7 +5,8 @@ const TweetContentEditor = ({
   content,
   setContent,
   isThread,
-  characterCount
+  characterCount,
+  charLimit = 280,
 }) => {
   return (
     <div className="space-y-4">
@@ -21,8 +22,8 @@ const TweetContentEditor = ({
             style={{ minHeight: '200px' }}
           />
           <div className="flex justify-between items-center mt-2">
-            <span className={`text-sm font-medium ${characterCount > 280 ? 'text-red-500' : 'text-gray-500'}`}>
-              {characterCount}/280 characters
+            <span className={`text-sm font-medium ${characterCount > charLimit ? 'text-red-500' : 'text-gray-500'}`}>
+              {characterCount}/{charLimit} characters
             </span>
           </div>
         </div>

@@ -170,11 +170,20 @@ function normalizeScheduledCrossPostTargetAccountIds({ crossPostTargetAccountIds
   };
 }
 
+function normalizeScheduledCrossPostMedia({ crossPostMedia = null } = {}) {
+  const raw = Array.isArray(crossPostMedia) ? crossPostMedia : [];
+  return raw
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
 function buildScheduledCrossPostMetadata({
   targets,
   optimizeCrossPost = true,
   routing = null,
   sourceSnapshot = null,
+  media = null,
 } = {}) {
   const linkedin = Boolean(targets?.linkedin);
   const threads = Boolean(targets?.threads);
@@ -191,6 +200,7 @@ function buildScheduledCrossPostMetadata({
         threads,
       },
       ...(routing && typeof routing === 'object' ? { routing } : {}),
+      ...(Array.isArray(media) && media.length > 0 ? { media } : {}),
       ...(sourceSnapshot && typeof sourceSnapshot === 'object' ? { source_snapshot: sourceSnapshot } : {}),
       optimizeCrossPost: optimizeCrossPost !== false,
       source: 'tweet_genie_schedule',
@@ -1157,6 +1167,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       crossPostTargetAccountIds = null,
       crossPostTargetAccountLabels = null,
       optimizeCrossPost = true,
+      crossPostMedia = [],
     } = req.body;
     const userId = req.user.id;
     let teamId = req.headers['x-team-id'] || null;
@@ -1314,6 +1325,9 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
     const normalizedCrossPostTargetAccountIds = normalizeScheduledCrossPostTargetAccountIds({
       crossPostTargetAccountIds,
     });
+    const normalizedCrossPostMedia = normalizeScheduledCrossPostMedia({
+      crossPostMedia,
+    });
 
     if (teamId && normalizedCrossPostTargets.linkedin) {
       if (!normalizedCrossPostTargetAccountIds.linkedin) {
@@ -1370,6 +1384,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       optimizeCrossPost,
       routing: crossPostRouting,
       sourceSnapshot,
+      media: normalizedCrossPostMedia,
     });
     const canStoreMetadata = scheduledMetadata ? await hasScheduledMetadataColumn() : false;
 

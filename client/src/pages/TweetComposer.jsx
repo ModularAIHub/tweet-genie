@@ -208,6 +208,8 @@ const TweetComposer = () => {
     scheduledTweets,
     isLoadingScheduled,
     characterCount,
+    charLimit,
+    effectiveCharLimit,
     handleImageUpload,
     handleImageRemove,
     handlePost,
@@ -224,6 +226,8 @@ const TweetComposer = () => {
     handleImageButtonClick,
     fetchScheduledTweets
   } = useTweetComposer();
+  
+  // Added: char limit for TweetContentEditor
 
   // Check for prompt from Strategy Builder
   useEffect(() => {
@@ -409,6 +413,7 @@ const TweetComposer = () => {
                   setContent={setContent}
                   isThread={isThread}
                   characterCount={characterCount}
+                  charLimit={effectiveCharLimit}
                 />
               </div>
 
