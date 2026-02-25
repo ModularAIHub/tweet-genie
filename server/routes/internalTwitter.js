@@ -199,6 +199,52 @@ const runValidateTwitterConnection = async (platformUserId) => {
   });
 };
 
+/**
+ * Posts an X thread by chaining replies.
+ * First part is a normal tweet; each subsequent part replies to the previous.
+ * Returns { firstTweetId, firstTweetUrl, tweetIds[] }
+ */
+const postXThread = async (twitterClient, parts, username, mediaIds = []) => {
+  if (!parts || parts.length === 0) throw new Error('No thread parts provided');
+
+  const tweetIds = [];
+
+  // Post first tweet (optionally with media on the first tweet only)
+  const firstPayload = {
+    text: parts[0],
+    ...(mediaIds.length > 0 ? { media: { media_ids: mediaIds } } : {}),
+  };
+  const firstResponse = await twitterClient.v2.tweet(firstPayload);
+  const firstTweetId = firstResponse?.data?.id;
+  if (!firstTweetId) throw new Error('Failed to get tweet ID from first thread part');
+  tweetIds.push(firstTweetId);
+
+  let lastTweetId = firstTweetId;
+
+  // Chain remaining parts as replies
+  for (let i = 1; i < parts.length; i++) {
+    const replyResponse = await twitterClient.v2.tweet({
+      text: parts[i],
+      reply: { in_reply_to_tweet_id: lastTweetId },
+    });
+    const replyId = replyResponse?.data?.id;
+    if (!replyId) {
+      logger.warn('[internal/twitter/cross-post] Thread part missing tweet ID, stopping chain', {
+        partIndex: i,
+        lastTweetId,
+      });
+      break;
+    }
+    tweetIds.push(replyId);
+    lastTweetId = replyId;
+  }
+
+  const safeUsername = username || 'i/web';
+  const firstTweetUrl = `https://twitter.com/${safeUsername}/status/${firstTweetId}`;
+
+  return { firstTweetId, firstTweetUrl, tweetIds };
+};
+
 router.get('/status', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
 
@@ -252,6 +298,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     content = '',
     mediaDetected = false,
     postMode = 'single',
+    threadParts = [],
     media = [],
     mediaUrls = [],
   } = req.body || {};
@@ -264,25 +311,36 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   }
 
   const normalizedMode = String(postMode || 'single').toLowerCase();
-  if (normalizedMode !== 'single') {
-    return res.status(400).json({
-      error: 'Only single post cross-post is supported for X in Phase 1',
-      code: 'UNSUPPORTED_TWITTER_POST_MODE',
-    });
-  }
+  const isThreadMode = normalizedMode === 'thread';
 
-  const normalizedContent = trimText(content, 1000);
-  if (!normalizedContent) {
+  // Resolve which parts to post
+  const normalizedThreadParts = isThreadMode
+    ? (Array.isArray(threadParts) ? threadParts : []).map((p) => trimText(p, 280)).filter(Boolean)
+    : [];
+
+  // Validate content
+  const normalizedContent = trimText(content, isThreadMode ? 280 : 1000);
+  if (!normalizedContent && normalizedThreadParts.length === 0) {
     return res.status(400).json({
       error: 'content is required',
       code: 'TWITTER_CONTENT_REQUIRED',
     });
   }
-  if (normalizedContent.length > 280) {
+
+  // Single mode length guard
+  if (!isThreadMode && normalizedContent.length > 280) {
     return res.status(400).json({
       error: 'X post exceeds 280 characters',
       code: 'X_POST_TOO_LONG',
       length: normalizedContent.length,
+    });
+  }
+
+  // Thread mode needs at least 1 part
+  if (isThreadMode && normalizedThreadParts.length === 0) {
+    return res.status(400).json({
+      error: 'threadParts is required for thread mode',
+      code: 'TWITTER_THREAD_PARTS_REQUIRED',
     });
   }
 
@@ -292,9 +350,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
 
     if (platformTeamId) {
       account = await getTeamTwitterAccountForMember(platformUserId, platformTeamId);
-      if (account) {
-        accountScope = 'team';
-      }
+      if (account) accountScope = 'team';
     }
 
     if (!account) {
@@ -318,6 +374,9 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     }
 
     const twitterClient = createTwitterClientForPosting(account);
+    const username = account.twitter_username || 'i/web';
+
+    // --- Media handling (first tweet only for threads) ---
     const incomingMedia = normalizeCrossPostMediaInputs(
       Array.isArray(media) && media.length > 0 ? media : mediaUrls
     );
@@ -361,35 +420,70 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
       }
     }
 
-    const tweetResponse = await twitterClient.v2.tweet({
-      text: normalizedContent,
-      ...(tweetMediaIds.length > 0 ? { media: { media_ids: tweetMediaIds } } : {}),
-    });
-    const tweetId = tweetResponse?.data?.id || null;
-    const username = account.twitter_username || 'i/web';
-    const tweetUrl = tweetId ? `https://twitter.com/${username}/status/${tweetId}` : null;
+    // --- Post: thread or single ---
+    if (isThreadMode) {
+      const { firstTweetId, firstTweetUrl, tweetIds } = await postXThread(
+        twitterClient,
+        normalizedThreadParts,
+        username,
+        tweetMediaIds
+      );
 
-    logger.info('[internal/twitter/cross-post] Posted to X', {
-      userId: platformUserId,
-      teamId: platformTeamId || null,
-      accountScope,
-      tweetId,
-      mediaDetected: Boolean(effectiveMediaDetected),
-      mediaStatus,
-      mediaCount,
-      length: normalizedContent.length,
-    });
+      logger.info('[internal/twitter/cross-post] Posted X thread', {
+        userId: platformUserId,
+        teamId: platformTeamId || null,
+        accountScope,
+        firstTweetId,
+        partCount: tweetIds.length,
+        mediaStatus,
+        mediaCount,
+      });
 
-    return res.json({
-      success: true,
-      status: 'posted',
-      mode: 'single',
-      mediaDetected: Boolean(effectiveMediaDetected),
-      tweetId,
-      tweetUrl,
-      mediaStatus,
-      mediaCount,
-    });
+      return res.json({
+        success: true,
+        status: 'posted',
+        mode: 'thread',
+        partCount: tweetIds.length,
+        tweetId: firstTweetId,
+        tweetUrl: firstTweetUrl,
+        tweetIds,
+        mediaDetected: Boolean(effectiveMediaDetected),
+        mediaStatus,
+        mediaCount,
+      });
+
+    } else {
+      // Single tweet
+      const tweetResponse = await twitterClient.v2.tweet({
+        text: normalizedContent,
+        ...(tweetMediaIds.length > 0 ? { media: { media_ids: tweetMediaIds } } : {}),
+      });
+      const tweetId = tweetResponse?.data?.id || null;
+      const tweetUrl = tweetId ? `https://twitter.com/${username}/status/${tweetId}` : null;
+
+      logger.info('[internal/twitter/cross-post] Posted to X', {
+        userId: platformUserId,
+        teamId: platformTeamId || null,
+        accountScope,
+        tweetId,
+        mediaDetected: Boolean(effectiveMediaDetected),
+        mediaStatus,
+        mediaCount,
+        length: normalizedContent.length,
+      });
+
+      return res.json({
+        success: true,
+        status: 'posted',
+        mode: 'single',
+        mediaDetected: Boolean(effectiveMediaDetected),
+        tweetId,
+        tweetUrl,
+        mediaStatus,
+        mediaCount,
+      });
+    }
+
   } catch (error) {
     if (error?.payload?.code === 'TWITTER_RECONNECT_REQUIRED') {
       const reconnectReason = String(error?.payload?.reason || '').toLowerCase();
