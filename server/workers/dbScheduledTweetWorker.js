@@ -199,25 +199,30 @@ async function schedulerTick() {
     workerStats.processedRows += dueRows.length;
     lastTickSummary.claimed = dueRows.length;
 
-    for (const row of dueRows) {
-      try {
-        const result = await scheduledTweetService.processSingleScheduledTweetById(row.id);
-        const outcome = result?.outcome || 'succeeded';
+    // Process all due tweets in parallel — independent jobs, no reason to serialize
+    const batchResults = await Promise.allSettled(
+      dueRows.map((row) =>
+        scheduledTweetService.processSingleScheduledTweetById(row.id)
+          .then((result) => ({ rowId: row.id, result }))
+          .catch((error) => {
+            // Return error shape so we can handle it below without stopping other rows
+            return { rowId: row.id, error };
+          })
+      )
+    );
 
-        if (outcome === 'retry') {
-          workerStats.retriedRows += 1;
-          lastTickSummary.retried += 1;
-        } else if (outcome === 'failed') {
-          workerStats.failedRows += 1;
-          lastTickSummary.failed += 1;
-        } else if (outcome === 'skipped') {
-          workerStats.skippedRows += 1;
-          lastTickSummary.skipped += 1;
-        } else {
-          workerStats.succeededRows += 1;
-          lastTickSummary.succeeded += 1;
-        }
-      } catch (error) {
+    for (const settlement of batchResults) {
+      // allSettled means each item is either fulfilled or rejected
+      // Our .catch above means all will be fulfilled — but guard anyway
+      if (settlement.status === 'rejected') {
+        workerStats.failedRows += 1;
+        lastTickSummary.failed += 1;
+        continue;
+      }
+
+      const { rowId, result, error } = settlement.value;
+
+      if (error) {
         const errorMessage = safeErrorMessage(error);
         workerStats.failedRows += 1;
         lastTickSummary.failed += 1;
@@ -231,11 +236,27 @@ async function schedulerTick() {
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $1
                AND status = 'processing'`,
-            [row.id, errorMessage]
+            [rowId, errorMessage]
           );
         } catch (updateError) {
           console.error('[DBScheduledTweetWorker] Failed to mark row as failed:', updateError?.message || updateError);
         }
+        continue;
+      }
+
+      const outcome = result?.outcome || 'succeeded';
+      if (outcome === 'retry') {
+        workerStats.retriedRows += 1;
+        lastTickSummary.retried += 1;
+      } else if (outcome === 'failed') {
+        workerStats.failedRows += 1;
+        lastTickSummary.failed += 1;
+      } else if (outcome === 'skipped') {
+        workerStats.skippedRows += 1;
+        lastTickSummary.skipped += 1;
+      } else {
+        workerStats.succeededRows += 1;
+        lastTickSummary.succeeded += 1;
       }
     }
 

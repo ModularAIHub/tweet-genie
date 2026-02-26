@@ -118,33 +118,46 @@ const fetchRemoteMediaAsDataUrl = async (value) => {
 
 const resolveUploadableCrossPostMedia = async (mediaInputs = [], { userId, teamId } = {}) => {
   const normalized = normalizeCrossPostMediaInputs(mediaInputs);
+  if (!normalized.length) {
+    return { uploadable: [], skippedCount: 0, hadErrors: false, requestedCount: 0 };
+  }
+
+  // Resolve all items in parallel — remote fetches and data URL passthrough run simultaneously
+  const results = await Promise.allSettled(
+    normalized.map(async (item, index) => {
+      if (item.startsWith('data:image/')) {
+        return { item, skipped: false };
+      }
+      if (isHttpUrl(item)) {
+        const dataUrl = await fetchRemoteMediaAsDataUrl(item);
+        return { item: dataUrl, skipped: false };
+      }
+      return { item: null, skipped: true };
+    })
+  );
+
   const uploadable = [];
   let skippedCount = 0;
   let hadErrors = false;
 
-  for (let index = 0; index < normalized.length; index += 1) {
-    const item = normalized[index];
-    try {
-      if (item.startsWith('data:image/')) {
-        uploadable.push(item);
-        continue;
-      }
-
-      if (isHttpUrl(item)) {
-        uploadable.push(await fetchRemoteMediaAsDataUrl(item));
-        continue;
-      }
-
-      skippedCount += 1;
-    } catch (error) {
+  for (let index = 0; index < results.length; index++) {
+    const settlement = results[index];
+    if (settlement.status === 'rejected') {
       hadErrors = true;
       skippedCount += 1;
       logger.warn('[internal/twitter/cross-post] Skipping one media item', {
         userId,
         teamId: teamId || null,
         index,
-        error: error?.message || String(error),
+        error: settlement.reason?.message || String(settlement.reason),
       });
+      continue;
+    }
+    const { item, skipped } = settlement.value;
+    if (skipped || !item) {
+      skippedCount += 1;
+    } else {
+      uploadable.push(item);
     }
   }
 

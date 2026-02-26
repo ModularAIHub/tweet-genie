@@ -796,7 +796,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         ]
       );
 
-      // ── LinkedIn cross-post (awaited so Vercel doesn't kill it) ─────────────
+      // ── Parallel cross-post: LinkedIn + Threads fire simultaneously ──────────
       const mediaDetected = detectCrossPostMedia({ media, threadMedia });
       const crossPostResult = buildCrossPostResultShape({
         linkedinEnabled: normalizedCrossPostTargets.linkedin,
@@ -812,6 +812,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           thread,
           optimizeCrossPost,
         });
+
         const crossPostSourceMedia =
           normalizedCrossPostMedia.length > 0
             ? normalizedCrossPostMedia
@@ -821,12 +822,18 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                   : (Array.isArray(media) ? media : [])
               );
 
+        // Build task array — only include enabled targets
+        const crossPostTasks = [];
+
         if (normalizedCrossPostTargets.linkedin) {
           if (twitterAccount.isTeamAccount && !normalizedCrossPostTargetAccountIds.linkedin) {
-            crossPostResult.linkedin.status = 'missing_target_route';
+            // No network call needed — resolve immediately
+            crossPostTasks.push(
+              Promise.resolve({ platform: 'linkedin', result: { status: 'missing_target_route' } })
+            );
           } else {
-            try {
-              const linkedInCrossPost = await crossPostToLinkedIn({
+            crossPostTasks.push(
+              crossPostToLinkedIn({
                 userId,
                 teamId: twitterAccount.isTeamAccount ? requestTeamId : null,
                 targetLinkedinTeamAccountId: twitterAccount.isTeamAccount
@@ -837,25 +844,24 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 postMode: formattedCrossPost.linkedin.postMode,
                 mediaDetected,
                 media: crossPostSourceMedia,
-              });
-              crossPostResult.linkedin = {
-                ...crossPostResult.linkedin,
-                ...linkedInCrossPost,
-                status: linkedInCrossPost?.status || 'failed',
-              };
-            } catch (err) {
-              logger.error('LinkedIn cross-post error', { userId, error: err?.message || String(err) });
-              crossPostResult.linkedin.status = 'failed';
-            }
+              })
+                .then((result) => ({ platform: 'linkedin', result }))
+                .catch((err) => {
+                  logger.error('LinkedIn cross-post error', { userId, error: err?.message || String(err) });
+                  return { platform: 'linkedin', result: { status: 'failed' } };
+                })
+            );
           }
         }
 
         if (normalizedCrossPostTargets.threads) {
           if (twitterAccount.isTeamAccount) {
-            crossPostResult.threads.status = 'skipped_individual_only';
+            crossPostTasks.push(
+              Promise.resolve({ platform: 'threads', result: { status: 'skipped_individual_only' } })
+            );
           } else {
-            try {
-              const threadsCrossPost = await crossPostToThreads({
+            crossPostTasks.push(
+              crossPostToThreads({
                 userId,
                 content: formattedCrossPost.threads.content,
                 threadParts: formattedCrossPost.threads.threadParts,
@@ -864,17 +870,30 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 mediaDetected,
                 optimizeCrossPost,
                 media: crossPostSourceMedia,
-              });
-              crossPostResult.threads = {
-                ...crossPostResult.threads,
-                ...threadsCrossPost,
-                status: threadsCrossPost?.status || 'failed',
-              };
-            } catch (err) {
-              logger.error('Threads cross-post error', { userId, error: err?.message || String(err) });
-              crossPostResult.threads.status = 'failed';
-            }
+              })
+                .then((result) => ({ platform: 'threads', result }))
+                .catch((err) => {
+                  logger.error('Threads cross-post error', { userId, error: err?.message || String(err) });
+                  return { platform: 'threads', result: { status: 'failed' } };
+                })
+            );
           }
+        }
+
+        // Fire all cross-posts at the same time
+        // allSettled = one failure never cancels the other
+        const settlements = await Promise.allSettled(crossPostTasks);
+
+        for (const settlement of settlements) {
+          if (settlement.status === 'fulfilled') {
+            const { platform, result } = settlement.value;
+            crossPostResult[platform] = {
+              ...crossPostResult[platform],
+              ...result,
+              status: result?.status || 'failed',
+            };
+          }
+          // 'rejected' should never reach here — each task catches internally
         }
       }
 
