@@ -169,7 +169,6 @@ const TweetComposer = () => {
       // delay to ensure element is in DOM
       setTimeout(() => {
         _modalCloseRef.current?.focus();
-        _modalDialogRef.current?.focus();
       }, 0);
     }
   }, [imageModal.open]);

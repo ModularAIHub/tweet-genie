@@ -641,7 +641,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach((warning) => toast(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast.info(warning, { icon: '⚠️' }));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
@@ -727,7 +727,7 @@ export const useTweetComposer = () => {
           return;
         }
         if (validation.warnings.length > 0) {
-          validation.warnings.forEach((warning) => toast(`Tweet ${i + 1}: ${warning}`, { icon: '⚠️' }));
+          validation.warnings.forEach((warning) => toast.info(`Tweet ${i + 1}: ${warning}`, { icon: '⚠️' }));
         }
       }
       if (validTweets.length === 0 && selectedImages.length === 0) {
@@ -741,7 +741,7 @@ export const useTweetComposer = () => {
         return;
       }
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach((warning) => toast(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast.info(warning, { icon: '⚠️' }));
       }
       if (!content.trim() && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -815,15 +815,15 @@ export const useTweetComposer = () => {
             }
 
             const statusMessages = {
-              not_connected: `${platform.label} not connected - X post succeeded.`,
-              target_not_found: `${platform.label} target account not found - X post succeeded.`,
-              permission_revoked: `${platform.label} target permission denied - X post succeeded.`,
-              missing_target_route: `${platform.label} target selection missing - X post succeeded.`,
-              timeout: `${platform.label} cross-post timed out - X post succeeded.`,
+                not_connected: `${platform.label} not connected — post was created on X.`,
+                target_not_found: `${platform.label} target account not found — post was created on X.`,
+                permission_revoked: `${platform.label} target permission denied — post was created on X.`,
+                missing_target_route: `${platform.label} target selection missing — post was created on X.`,
+                timeout: `${platform.label} cross-post timed out — post was created on X.`,
               skipped_individual_only: `${platform.label} cross-post is available only for personal Twitter accounts right now.`,
               skipped_not_configured: `${platform.label} cross-post is not configured yet.`,
               skipped: `${platform.label} cross-post was skipped.`,
-              failed: `${platform.label} cross-post failed - X post succeeded.`,
+              failed: `${platform.label} cross-post failed — post was created on X.`,
               disabled: null,
               '': null,
               null: null,
@@ -831,7 +831,7 @@ export const useTweetComposer = () => {
 
             const issue =
               statusMessages[status] ??
-              `${platform.label} cross-post did not complete (${status}). X post succeeded.`;
+              `${platform.label} cross-post did not complete (${status}). Post was created on X.`;
             if (issue) issues.push(issue);
           }
 
@@ -861,10 +861,10 @@ export const useTweetComposer = () => {
           );
         } else if (normalizedCrossPost.linkedin && linkedinStatus === 'failed') {
           toast.success(baseSuccessMessage);
-          toast.error('LinkedIn cross-post failed - check your connection.');
+          toast.error('LinkedIn cross-post failed — post was created on X.');
         } else if (normalizedCrossPost.linkedin && linkedinStatus === 'not_connected') {
           toast.success(baseSuccessMessage);
-          toast.error('LinkedIn not connected - post was X only.');
+          toast.error('LinkedIn not connected — post was created on X only.');
         } else {
           toast.success(baseSuccessMessage);
         }
@@ -1396,6 +1396,8 @@ export const useTweetComposer = () => {
 
     if (sanitizedPrompt.includes('[FILTERED]')) {
       toast.error('Some content was filtered from your prompt for safety reasons');
+      // Abort: do not call image generation with a filtered prompt
+      return;
     }
 
     setIsGeneratingImage(true);
@@ -1483,7 +1485,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach((warning) => toast(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast.info(warning, { icon: '⚠️' }));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
