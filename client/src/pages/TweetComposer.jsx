@@ -10,12 +10,28 @@ import {
   AIImageGenerator,
   ImageUploader,
   ThreadComposer,
-  TweetActions,
-  SchedulingPanel
+  TweetActions
 } from '../components/TweetComposer';
 import { useTweetComposer } from '../hooks/useTweetComposer';
 import { fetchApiKeyPreference } from '../utils/byok-platform';
 import { useAccount } from '../contexts/AccountContext';
+
+const CROSS_POST_PLATFORM_KEYS = ['twitter', 'linkedin', 'threads'];
+
+const normalizeTargetUsername = (value) => {
+  const raw = value === undefined || value === null ? '' : String(value).trim();
+  if (!raw) return '';
+  return raw.startsWith('@') ? raw : `@${raw}`;
+};
+
+const getTargetLabel = (target = {}, fallback = 'Account') => {
+  const display = String(target?.displayName || '').trim();
+  const username = normalizeTargetUsername(target?.username);
+  if (display && username) return `${display} (${username})`;
+  if (display) return display;
+  if (username) return username;
+  return fallback;
+};
 
 const TweetComposer = () => {
   const location = useLocation();
@@ -23,21 +39,23 @@ const TweetComposer = () => {
   const [imageModal, setImageModal] = useState({ open: false, src: null });
   const [apiKeyMode, setApiKeyMode] = useState('platform');
   const [hasAppliedStrategyPrompt, setHasAppliedStrategyPrompt] = useState(false);
+  const [postToTwitter, setPostToTwitter] = useState(false);
   const [postToLinkedin, setPostToLinkedin] = useState(false);
   const [postToThreads, setPostToThreads] = useState(false);
-  const [linkedinConnected, setLinkedinConnected] = useState(null);
-  const [threadsConnected, setThreadsConnected] = useState(null);
-  const [threadsConnectionReason, setThreadsConnectionReason] = useState('');
   const [optimizeCrossPost, setOptimizeCrossPost] = useState(true);
-  const [linkedinTeamTargets, setLinkedinTeamTargets] = useState([]);
-  const [isLoadingLinkedinTeamTargets, setIsLoadingLinkedinTeamTargets] = useState(false);
-  const [linkedinTeamTargetsError, setLinkedinTeamTargetsError] = useState('');
-  const [selectedLinkedinTargetAccountId, setSelectedLinkedinTargetAccountId] = useState('');
+  const [crossPostTargets, setCrossPostTargets] = useState({ twitter: [], linkedin: [], threads: [] });
+  const [isLoadingCrossPostTargets, setIsLoadingCrossPostTargets] = useState(false);
+  const [crossPostTargetsError, setCrossPostTargetsError] = useState('');
+  const [selectedCrossPostTargetAccountIds, setSelectedCrossPostTargetAccountIds] = useState({
+    twitter: '',
+    linkedin: '',
+    threads: '',
+  });
   const _modalDialogRef = useRef(null);
   const _modalCloseRef = useRef(null);
   const isTeamTwitterAccountSelected = Boolean(selectedAccount?.team_id || selectedAccount?.teamId);
 
-  // Fetch BYOK/platform mode + cross-post connection statuses on mount
+  // Fetch BYOK/platform mode on mount.
   useEffect(() => {
     let mounted = true;
 
@@ -45,123 +63,121 @@ const TweetComposer = () => {
       if (mounted) setApiKeyMode(mode);
     });
 
-    // Check LinkedIn connection â€” hits Tweet Genie's own backend (same origin, no CORS)
-    // which does a direct DB lookup on linkedin_auth table
-    (async () => {
-      try {
-        const res = await fetch('/api/linkedin/status', { credentials: 'include' });
-        if (!mounted) return;
-
-        const data = await res.json().catch(() => ({ connected: false }));
-        setLinkedinConnected(data.connected === true);
-      } catch (err) {
-        console.error('Failed to fetch LinkedIn status:', err);
-        if (mounted) setLinkedinConnected(false);
-      }
-    })();
-
-    (async () => {
-      try {
-        const res = await fetch('/api/threads/status', { credentials: 'include' });
-        if (!mounted) return;
-
-        const data = await res.json().catch(() => ({ connected: false, reason: 'service_unreachable' }));
-        setThreadsConnected(data.connected === true);
-        setThreadsConnectionReason(typeof data.reason === 'string' ? data.reason : '');
-      } catch (err) {
-        console.error('Failed to fetch Threads status:', err);
-        if (mounted) {
-          setThreadsConnected(false);
-          setThreadsConnectionReason('service_unreachable');
-        }
-      }
-    })();
-
     return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
     let mounted = true;
     const selectedTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
-    const selectedTwitterAccountId = selectedAccount?.id || null;
+    const sourceAccountId = selectedAccount?.id ? String(selectedAccount.id) : '';
 
-    if (!isTeamTwitterAccountSelected || !selectedTeamId || !selectedTwitterAccountId) {
-      setLinkedinTeamTargets([]);
-      setIsLoadingLinkedinTeamTargets(false);
-      setLinkedinTeamTargetsError('');
-      setSelectedLinkedinTargetAccountId('');
+    if (!sourceAccountId) {
+      setCrossPostTargets({ twitter: [], linkedin: [], threads: [] });
+      setCrossPostTargetsError('');
+      setSelectedCrossPostTargetAccountIds({ twitter: '', linkedin: '', threads: '' });
+      setPostToTwitter(false);
+      setPostToLinkedin(false);
+      setPostToThreads(false);
+      setIsLoadingCrossPostTargets(false);
       return () => { mounted = false; };
     }
 
     (async () => {
-      setIsLoadingLinkedinTeamTargets(true);
-      setLinkedinTeamTargetsError('');
-
+      setIsLoadingCrossPostTargets(true);
+      setCrossPostTargetsError('');
       try {
-        const res = await fetch('/api/cross-post/targets/linkedin', {
+        const params = new URLSearchParams();
+        params.set('excludeAccountId', sourceAccountId);
+        params.set('excludePlatform', 'twitter');
+        const res = await fetch(`/api/cross-post/targets?${params.toString()}`, {
           credentials: 'include',
-          headers: {
-            'X-Selected-Account-Id': String(selectedTwitterAccountId),
-            'x-team-id': String(selectedTeamId),
-          },
+          headers: selectedTeamId ? { 'x-team-id': String(selectedTeamId) } : {},
         });
 
-        const data = await res.json().catch(() => ({ targets: [] }));
+        const data = await res.json().catch(() => ({ targets: {} }));
         if (!mounted) return;
 
         if (!res.ok) {
-          setLinkedinTeamTargets([]);
-          setLinkedinTeamTargetsError(data?.error || 'Failed to load team LinkedIn targets');
+          setCrossPostTargets({ twitter: [], linkedin: [], threads: [] });
+          setCrossPostTargetsError(data?.error || 'Failed to load cross-post accounts');
+          setPostToTwitter(false);
           setPostToLinkedin(false);
+          setPostToThreads(false);
           return;
         }
 
-        const targets = Array.isArray(data?.targets) ? data.targets : [];
-        setLinkedinTeamTargets(targets);
-        if (targets.length === 0) {
-          setPostToLinkedin(false);
-        }
+        const normalizedTargets = CROSS_POST_PLATFORM_KEYS.reduce((acc, platform) => {
+          const rows = Array.isArray(data?.targets?.[platform]) ? data.targets[platform] : [];
+          const normalizedRows = rows
+            .map((target) => ({
+              id: target?.id !== undefined && target?.id !== null ? String(target.id) : '',
+              platform,
+              username: target?.username ? String(target.username) : '',
+              displayName: target?.displayName ? String(target.displayName) : '',
+              avatar: target?.avatar || null,
+              scope: target?.scope ? String(target.scope) : '',
+            }))
+            .filter((target) => target.id && target.id !== sourceAccountId);
+          acc[platform] = normalizedRows;
+          return acc;
+        }, { twitter: [], linkedin: [], threads: [] });
+
+        setCrossPostTargets(normalizedTargets);
       } catch (err) {
         if (!mounted) return;
-        console.error('Failed to fetch LinkedIn team cross-post targets:', err);
-        setLinkedinTeamTargets([]);
-        setLinkedinTeamTargetsError('Failed to load team LinkedIn targets');
+        console.error('Failed to fetch cross-post targets:', err);
+        setCrossPostTargets({ twitter: [], linkedin: [], threads: [] });
+        setCrossPostTargetsError('Failed to load cross-post accounts');
+        setPostToTwitter(false);
         setPostToLinkedin(false);
+        setPostToThreads(false);
       } finally {
-        if (mounted) setIsLoadingLinkedinTeamTargets(false);
+        if (mounted) setIsLoadingCrossPostTargets(false);
       }
     })();
 
     return () => { mounted = false; };
   }, [
-    isTeamTwitterAccountSelected,
     selectedAccount?.id,
     selectedAccount?.team_id,
     selectedAccount?.teamId,
   ]);
 
   useEffect(() => {
-    if (!isTeamTwitterAccountSelected) {
-      setSelectedLinkedinTargetAccountId('');
-      return;
-    }
-
-    if (!Array.isArray(linkedinTeamTargets) || linkedinTeamTargets.length === 0) {
-      setSelectedLinkedinTargetAccountId('');
-      return;
-    }
-
-    if (linkedinTeamTargets.length === 1) {
-      setSelectedLinkedinTargetAccountId(String(linkedinTeamTargets[0].id));
-      return;
-    }
-
-    setSelectedLinkedinTargetAccountId((current) => {
-      const currentId = String(current || '').trim();
-      if (!currentId) return '';
-      return linkedinTeamTargets.some((target) => String(target?.id) === currentId) ? currentId : '';
+    setSelectedCrossPostTargetAccountIds((current) => {
+      const next = { ...current };
+      let changed = false;
+      CROSS_POST_PLATFORM_KEYS.forEach((platform) => {
+        const targets = Array.isArray(crossPostTargets?.[platform]) ? crossPostTargets[platform] : [];
+        const currentId = String(current?.[platform] || '').trim();
+        if (targets.length === 0) {
+          if (currentId) {
+            next[platform] = '';
+            changed = true;
+          }
+          return;
+        }
+        const hasCurrent = targets.some((target) => String(target?.id) === currentId);
+        if (!hasCurrent) {
+          next[platform] = targets.length === 1 ? String(targets[0].id) : '';
+          changed = true;
+        }
+      });
+      return changed ? next : current;
     });
-  }, [isTeamTwitterAccountSelected, linkedinTeamTargets]);
+  }, [crossPostTargets]);
+
+  useEffect(() => {
+    if (!Array.isArray(crossPostTargets.twitter) || crossPostTargets.twitter.length === 0) {
+      setPostToTwitter(false);
+    }
+    if (!Array.isArray(crossPostTargets.linkedin) || crossPostTargets.linkedin.length === 0) {
+      setPostToLinkedin(false);
+    }
+    if (!Array.isArray(crossPostTargets.threads) || crossPostTargets.threads.length === 0) {
+      setPostToThreads(false);
+    }
+  }, [crossPostTargets]);
 
   // Focus the modal's close button when modal opens for keyboard users
   useEffect(() => {
@@ -324,39 +340,128 @@ const TweetComposer = () => {
     );
   }
 
-  const crossPostSelected = Boolean(postToLinkedin || postToThreads);
+  const platformTargets = {
+    twitter: Array.isArray(crossPostTargets?.twitter) ? crossPostTargets.twitter : [],
+    linkedin: Array.isArray(crossPostTargets?.linkedin) ? crossPostTargets.linkedin : [],
+    threads: Array.isArray(crossPostTargets?.threads) ? crossPostTargets.threads : [],
+  };
+  const crossPostEnabledFlags = {
+    twitter: Boolean(postToTwitter),
+    linkedin: Boolean(postToLinkedin),
+    threads: Boolean(postToThreads),
+  };
+  const crossPostSelected = Boolean(postToTwitter || postToLinkedin || postToThreads);
   const hasAnyImagesForCurrentDraft =
     (Array.isArray(selectedImages) && selectedImages.length > 0) ||
     (Array.isArray(threadImages) && threadImages.some((items) => Array.isArray(items) && items.length > 0));
-  const selectedLinkedinTarget = Array.isArray(linkedinTeamTargets)
-    ? linkedinTeamTargets.find((target) => String(target?.id) === String(selectedLinkedinTargetAccountId))
-    : null;
-  const linkedinToggleDisabled = isTeamTwitterAccountSelected
-    ? isLoadingLinkedinTeamTargets || linkedinTeamTargets.length === 0
-    : linkedinConnected !== true;
-  const threadsToggleDisabled = threadsConnected !== true || isTeamTwitterAccountSelected;
+  const platformMeta = {
+    twitter: {
+      key: 'twitter',
+      label: 'X (Other Accounts)',
+      toggleLabel: 'Post to another X account',
+      noTargetsMessage: 'No additional X accounts connected',
+      icon: 'X',
+      bg: '#111827',
+      targetLabel: 'Target X account',
+    },
+    linkedin: {
+      key: 'linkedin',
+      label: 'LinkedIn',
+      toggleLabel: 'Post to LinkedIn',
+      noTargetsMessage: 'No LinkedIn accounts connected',
+      icon: 'in',
+      bg: '#0A66C2',
+      targetLabel: 'Target LinkedIn account',
+    },
+    threads: {
+      key: 'threads',
+      label: 'Threads',
+      toggleLabel: 'Post to Threads',
+      noTargetsMessage: 'No Threads accounts connected',
+      icon: '@',
+      bg: '#111111',
+      targetLabel: 'Target Threads account',
+    },
+  };
+  const platformToggleRows = CROSS_POST_PLATFORM_KEYS.map((platform) => {
+    const targets = platformTargets[platform];
+    const targetCount = targets.length;
+    const disabled = isLoadingCrossPostTargets || targetCount === 0;
+    const statusText = isLoadingCrossPostTargets
+      ? 'Loading accounts...'
+      : targetCount > 0
+        ? `${targetCount} account${targetCount === 1 ? '' : 's'} available`
+        : platformMeta[platform].noTargetsMessage;
+    return {
+      ...platformMeta[platform],
+      targets,
+      targetCount,
+      disabled,
+      enabled: crossPostEnabledFlags[platform],
+      statusText,
+      disabledTitle: disabled
+        ? (isLoadingCrossPostTargets ? 'Loading cross-post accounts...' : platformMeta[platform].noTargetsMessage)
+        : '',
+    };
+  });
 
-  const ensureTeamLinkedinTargetSelected = () => {
-    if (isTeamTwitterAccountSelected && postToLinkedin && !selectedLinkedinTarget) {
-      toast.error('Select a target LinkedIn team account for cross-posting.');
+  const ensureCrossPostTargetsSelected = () => {
+    const missingPlatforms = [];
+    CROSS_POST_PLATFORM_KEYS.forEach((platform) => {
+      if (!crossPostEnabledFlags[platform]) return;
+      const targetId = String(selectedCrossPostTargetAccountIds?.[platform] || '').trim();
+      if (!targetId) missingPlatforms.push(platformMeta[platform].label);
+    });
+    if (missingPlatforms.length > 0) {
+      toast.error(`Choose target account for: ${missingPlatforms.join(', ')}`);
       return false;
     }
     return true;
   };
 
-  const buildCrossPostInput = () => ({
-    linkedin: postToLinkedin,
-    threads: postToThreads,
-    optimizeCrossPost,
-    ...(isTeamTwitterAccountSelected && postToLinkedin && selectedLinkedinTarget && {
-      crossPostTargetAccountIds: {
-        linkedin: String(selectedLinkedinTarget.id),
-      },
-      crossPostTargetAccountLabels: {
-        linkedin: String(selectedLinkedinTarget.label || '').trim(),
-      },
-    }),
-  });
+  const buildCrossPostInput = () => {
+    const crossPostTargetAccountIds = {};
+    const crossPostTargetAccountLabels = {};
+
+    CROSS_POST_PLATFORM_KEYS.forEach((platform) => {
+      if (!crossPostEnabledFlags[platform]) return;
+      const targetId = String(selectedCrossPostTargetAccountIds?.[platform] || '').trim();
+      if (!targetId) return;
+      crossPostTargetAccountIds[platform] = targetId;
+      const target = platformTargets[platform].find((item) => String(item?.id) === targetId);
+      if (target) {
+        crossPostTargetAccountLabels[platform] = getTargetLabel(target, `${platformMeta[platform].label} account`);
+      }
+    });
+
+    return {
+      twitter: crossPostEnabledFlags.twitter,
+      linkedin: crossPostEnabledFlags.linkedin,
+      threads: crossPostEnabledFlags.threads,
+      optimizeCrossPost,
+      ...(Object.keys(crossPostTargetAccountIds).length > 0 && { crossPostTargetAccountIds }),
+      ...(Object.keys(crossPostTargetAccountLabels).length > 0 && { crossPostTargetAccountLabels }),
+    };
+  };
+
+  const toggleCrossPostPlatform = (platform) => {
+    const row = platformToggleRows.find((item) => item.key === platform);
+    if (!row || row.disabled) return;
+    const shouldEnable = !crossPostEnabledFlags[platform];
+    if (platform === 'twitter') {
+      setPostToTwitter(shouldEnable);
+    } else if (platform === 'linkedin') {
+      setPostToLinkedin(shouldEnable);
+    } else if (platform === 'threads') {
+      setPostToThreads(shouldEnable);
+    }
+    if (shouldEnable && row.targets.length === 1) {
+      setSelectedCrossPostTargetAccountIds((current) => ({
+        ...current,
+        [platform]: String(row.targets[0].id),
+      }));
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -486,11 +591,11 @@ const TweetComposer = () => {
                 isScheduling={isScheduling}
                 postToLinkedin={postToLinkedin}
                 onPost={() => {
-                  if (!ensureTeamLinkedinTargetSelected()) return;
+                  if (!ensureCrossPostTargetsSelected()) return;
                   handlePost(buildCrossPostInput());
                 }}
                 onSchedule={(dateString, timezone) => {
-                  if (!ensureTeamLinkedinTargetSelected()) return;
+                  if (!ensureCrossPostTargetsSelected()) return;
                   handleSchedule(dateString, timezone, buildCrossPostInput());
                 }}
               />
@@ -517,62 +622,55 @@ const TweetComposer = () => {
 
               {/* Platform rows */}
               <div style={{ display: 'grid', gap: '12px' }}>
-                {[
-                  {
-                    key: 'x',
-                    label: 'X',
-                    statusText: 'Primary posting platform',
-                    connected: true,
-                    enabled: true,
-                    toggleable: false,
-                    bg: '#111827',
-                    icon: 'X',
-                  },
-                  {
-                    key: 'linkedin',
-                    label: 'LinkedIn',
-                    statusText: isTeamTwitterAccountSelected
-                      ? isLoadingLinkedinTeamTargets
-                        ? 'Loading team targets...'
-                        : linkedinTeamTargetsError
-                          ? 'Target lookup failed'
-                          : linkedinTeamTargets.length > 0
-                            ? `${linkedinTeamTargets.length} eligible team target${linkedinTeamTargets.length === 1 ? '' : 's'}`
-                            : 'No eligible team accounts'
-                      : linkedinConnected === null ? 'Checking...' : linkedinConnected ? 'Connected' : 'Not connected',
-                    connected: isTeamTwitterAccountSelected ? linkedinTeamTargets.length > 0 : linkedinConnected === true,
-                    enabled: !!postToLinkedin,
-                    toggleable: true,
-                    disabled: linkedinToggleDisabled,
-                    onToggle: () => setPostToLinkedin(prev => !prev),
-                    bg: '#0A66C2',
-                    icon: 'in',
-                    disabledTitle: isTeamTwitterAccountSelected
-                      ? (linkedinTeamTargetsError || 'No eligible LinkedIn team accounts available for this team.')
-                      : 'Connect LinkedIn in settings first',
-                  },
-                  {
-                    key: 'threads',
-                    label: 'Threads',
-                    statusText: threadsConnected === null
-                      ? 'Checking...'
-                      : threadsConnected
-                        ? 'Connected'
-                        : threadsConnectionReason === 'not_configured'
-                          ? 'Unavailable'
-                          : 'Not connected',
-                    connected: threadsConnected === true,
-                    enabled: !!postToThreads,
-                    toggleable: true,
-                    disabled: threadsToggleDisabled,
-                    onToggle: () => setPostToThreads(prev => !prev),
-                    bg: '#111111',
-                    icon: '@',
-                    disabledTitle: isTeamTwitterAccountSelected
-                      ? 'Cross-post is available for personal account posting only in Phase 1'
-                      : 'Connect Threads in Social Genie first',
-                  },
-                ].map(platform => (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '10px',
+                    background: '#f9fafb',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '10px',
+                    padding: '10px 14px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                    <div style={{
+                      height: '36px',
+                      width: '36px',
+                      flexShrink: 0,
+                      borderRadius: '7px',
+                      background: '#111827',
+                      color: 'white',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 700,
+                      fontSize: '16px',
+                      userSelect: 'none',
+                    }}>
+                      X
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>X</div>
+                      <div style={{ fontSize: '11px', color: '#6b7280' }}>Primary posting platform</div>
+                    </div>
+                  </div>
+                  <div style={{
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    color: '#2563eb',
+                    background: '#dbeafe',
+                    border: '1px solid #bfdbfe',
+                    borderRadius: '999px',
+                    padding: '4px 8px',
+                    flexShrink: 0,
+                  }}>
+                    Always On
+                  </div>
+                </div>
+
+                {platformToggleRows.map((platform) => (
                   <div
                     key={platform.key}
                     style={{
@@ -581,7 +679,7 @@ const TweetComposer = () => {
                       justifyContent: 'space-between',
                       gap: '10px',
                       background: '#f9fafb',
-                      border: `1px solid ${platform.toggleable && !platform.connected ? '#fecaca' : '#e5e7eb'}`,
+                      border: `1px solid ${platform.targetCount === 0 && !isLoadingCrossPostTargets ? '#fecaca' : '#e5e7eb'}`,
                       borderRadius: '10px',
                       padding: '10px 14px',
                     }}
@@ -609,7 +707,7 @@ const TweetComposer = () => {
                         </div>
                         <div style={{
                           fontSize: '11px',
-                          color: platform.toggleable && !platform.connected ? '#ef4444' : '#6b7280',
+                          color: platform.targetCount === 0 && !isLoadingCrossPostTargets ? '#ef4444' : '#6b7280',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap',
@@ -619,130 +717,139 @@ const TweetComposer = () => {
                       </div>
                     </div>
 
-                    {platform.toggleable ? (
-                      <button
-                        type="button"
-                        aria-label={`Post to ${platform.label}`}
-                        role="switch"
-                        aria-checked={platform.enabled && !platform.disabled}
-                        aria-disabled={platform.disabled}
-                        onClick={() => { if (!platform.disabled) platform.onToggle(); }}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            if (!platform.disabled) platform.onToggle();
-                          }
-                        }}
-                        title={platform.disabled ? platform.disabledTitle : ''}
-                        style={{
-                          position: 'relative',
-                          width: '44px',
-                          height: '24px',
-                          borderRadius: '999px',
-                          background: platform.disabled
-                            ? '#e5e7eb'
-                            : platform.enabled ? '#2563eb' : '#d1d5db',
-                          cursor: platform.disabled ? 'not-allowed' : 'pointer',
-                          flexShrink: 0,
-                          transition: 'background 0.2s ease',
-                          opacity:
-                            (platform.key === 'linkedin' &&
-                              ((isTeamTwitterAccountSelected && isLoadingLinkedinTeamTargets) ||
-                                (!isTeamTwitterAccountSelected && linkedinConnected === null))) ||
-                            (platform.key === 'threads' && threadsConnected === null)
-                              ? 0.5
-                              : 1,
-                          border: 'none',
-                          padding: 0,
-                        }}
-                      >
-                        <div style={{
-                          position: 'absolute',
-                          top: '3px',
-                          left: platform.enabled && !platform.disabled ? '23px' : '3px',
-                          width: '18px',
-                          height: '18px',
-                          borderRadius: '50%',
-                          background: 'white',
-                          boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
-                          transition: 'left 0.2s ease',
-                        }} />
-                      </button>
-                    ) : (
-                      <div style={{
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        color: '#2563eb',
-                        background: '#dbeafe',
-                        border: '1px solid #bfdbfe',
+                    <button
+                      type="button"
+                      aria-label={platform.toggleLabel}
+                      role="switch"
+                      aria-checked={platform.enabled && !platform.disabled}
+                      aria-disabled={platform.disabled}
+                      onClick={() => toggleCrossPostPlatform(platform.key)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleCrossPostPlatform(platform.key);
+                        }
+                      }}
+                      title={platform.disabled ? platform.disabledTitle : ''}
+                      style={{
+                        position: 'relative',
+                        width: '44px',
+                        height: '24px',
                         borderRadius: '999px',
-                        padding: '4px 8px',
+                        background: platform.disabled
+                          ? '#e5e7eb'
+                          : platform.enabled ? '#2563eb' : '#d1d5db',
+                        cursor: platform.disabled ? 'not-allowed' : 'pointer',
                         flexShrink: 0,
-                      }}>
-                        Always On
-                      </div>
-                    )}
+                        transition: 'background 0.2s ease',
+                        opacity: isLoadingCrossPostTargets ? 0.5 : 1,
+                        border: 'none',
+                        padding: 0,
+                      }}
+                    >
+                      <div style={{
+                        position: 'absolute',
+                        top: '3px',
+                        left: platform.enabled && !platform.disabled ? '23px' : '3px',
+                        width: '18px',
+                        height: '18px',
+                        borderRadius: '50%',
+                        background: 'white',
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+                        transition: 'left 0.2s ease',
+                      }} />
+                    </button>
                   </div>
                 ))}
               </div>
 
-              {isTeamTwitterAccountSelected && postToLinkedin && (
+              {crossPostTargetsError && (
                 <div style={{
                   marginTop: '12px',
-                  border: '1px solid #e5e7eb',
+                  fontSize: '11px',
+                  color: '#b91c1c',
+                  background: '#fef2f2',
+                  border: '1px solid #fecaca',
                   borderRadius: '10px',
-                  padding: '12px',
-                  background: '#ffffff',
+                  padding: '10px 12px',
                 }}>
-                  <label
-                    htmlFor="linkedin-crosspost-target"
-                    style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#111827', marginBottom: '8px' }}
-                  >
-                    Target LinkedIn Account
-                  </label>
-                  <select
-                    id="linkedin-crosspost-target"
-                    value={selectedLinkedinTargetAccountId}
-                    onChange={(e) => setSelectedLinkedinTargetAccountId(e.target.value)}
-                    disabled={isLoadingLinkedinTeamTargets || linkedinTeamTargets.length === 0}
-                    style={{
-                      width: '100%',
-                      border: '1px solid #d1d5db',
-                      borderRadius: '8px',
-                      padding: '10px 12px',
-                      fontSize: '13px',
-                      color: '#111827',
-                      background: isLoadingLinkedinTeamTargets ? '#f9fafb' : '#fff',
-                    }}
-                  >
-                    <option value="">
-                      {isLoadingLinkedinTeamTargets
-                        ? 'Loading LinkedIn team targets...'
-                        : linkedinTeamTargets.length === 0
-                          ? 'No eligible LinkedIn team accounts'
-                          : linkedinTeamTargets.length === 1
-                            ? 'Auto-selected target'
-                            : 'Select a LinkedIn target account'}
-                    </option>
-                    {linkedinTeamTargets.map((target) => (
-                      <option key={String(target.id)} value={String(target.id)}>
-                        {target.label || `LinkedIn account #${target.id}`}
-                      </option>
-                    ))}
-                  </select>
-                  <div style={{ marginTop: '8px', fontSize: '11px', color: selectedLinkedinTarget ? '#374151' : '#92400e' }}>
-                    {selectedLinkedinTarget
-                      ? `Cross-post target: ${selectedLinkedinTarget.label || `LinkedIn account #${selectedLinkedinTarget.id}`}`
-                      : 'Choose exactly one LinkedIn team account for this X post.'}
-                  </div>
-                  {linkedinTeamTargetsError && (
-                    <div style={{ marginTop: '8px', fontSize: '11px', color: '#b91c1c' }}>
-                      {linkedinTeamTargetsError}
-                    </div>
-                  )}
+                  {crossPostTargetsError}
                 </div>
               )}
+
+              {crossPostSelected && CROSS_POST_PLATFORM_KEYS.map((platform) => {
+                if (!crossPostEnabledFlags[platform]) return null;
+                const row = platformToggleRows.find((item) => item.key === platform);
+                if (!row) return null;
+                const selectedTargetId = String(selectedCrossPostTargetAccountIds?.[platform] || '').trim();
+                return (
+                  <div
+                    key={`${platform}-crosspost-target`}
+                    style={{
+                      marginTop: '12px',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '10px',
+                      padding: '12px',
+                      background: '#ffffff',
+                    }}
+                  >
+                    <label
+                      htmlFor={`${platform}-crosspost-target`}
+                      style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#111827', marginBottom: '8px' }}
+                    >
+                      {row.targetLabel}
+                    </label>
+                    <select
+                      id={`${platform}-crosspost-target`}
+                      value={selectedTargetId}
+                      onChange={(e) => setSelectedCrossPostTargetAccountIds((current) => ({
+                        ...current,
+                        [platform]: String(e.target.value || ''),
+                      }))}
+                      disabled={isLoadingCrossPostTargets || row.targets.length === 0}
+                      style={{
+                        width: '100%',
+                        border: '1px solid #d1d5db',
+                        borderRadius: '8px',
+                        padding: '10px 12px',
+                        fontSize: '13px',
+                        color: '#111827',
+                        background: isLoadingCrossPostTargets ? '#f9fafb' : '#fff',
+                      }}
+                    >
+                      <option value="">
+                        {isLoadingCrossPostTargets
+                          ? 'Loading accounts...'
+                          : row.targets.length === 0
+                            ? row.noTargetsMessage
+                            : row.targets.length === 1
+                              ? 'Auto-selected target'
+                              : `Select ${row.label} target`}
+                      </option>
+                      {row.targets.map((target) => (
+                        <option key={String(target.id)} value={String(target.id)}>
+                          {getTargetLabel(target, `${row.label} account`)}
+                        </option>
+                      ))}
+                    </select>
+                    <div style={{
+                      marginTop: '8px',
+                      fontSize: '11px',
+                      color: selectedTargetId ? '#374151' : '#92400e',
+                    }}>
+                      {selectedTargetId
+                        ? `Cross-post target: ${
+                          getTargetLabel(
+                            row.targets.find((target) => String(target?.id) === selectedTargetId) || {},
+                            `${row.label} account`
+                          )
+                        }`
+                        : `Choose one ${row.label} account for this post.`}
+                    </div>
+                  </div>
+                );
+              })}
 
               <div style={{
                 marginTop: '12px',
@@ -800,7 +907,7 @@ const TweetComposer = () => {
                   borderRadius: '10px',
                   padding: '10px 12px',
                 }}>
-                  Team mode v1 supports X to LinkedIn cross-post with explicit target selection. Threads cross-post remains personal-only.
+                  Team scope is active. Only accounts connected to this team are shown as cross-post targets.
                 </div>
               )}
 
@@ -814,7 +921,7 @@ const TweetComposer = () => {
                   borderRadius: '10px',
                   padding: '10px 12px',
                 }}>
-                  Images will post to X only. LinkedIn/Threads cross-post is text-only in Phase 1.
+                  Media is forwarded to selected platforms when supported. Unsupported formats may post as text only.
                 </div>
               )}
 

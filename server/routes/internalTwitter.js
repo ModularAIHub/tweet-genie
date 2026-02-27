@@ -49,6 +49,20 @@ const getPersonalTwitterAccount = async (platformUserId) => {
   return rows[0] || null;
 };
 
+const getPersonalTwitterAccountById = async (platformUserId, targetAccountId) => {
+  if (!platformUserId || !targetAccountId) return null;
+  const { rows } = await pool.query(
+    `SELECT id, user_id, twitter_user_id, twitter_username, access_token, refresh_token, token_expires_at,
+            oauth1_access_token, oauth1_access_token_secret
+     FROM twitter_auth
+     WHERE user_id = $1
+       AND id::text = $2::text
+     LIMIT 1`,
+    [platformUserId, String(targetAccountId)]
+  );
+  return rows[0] || null;
+};
+
 const getTeamTwitterAccountForMember = async (platformUserId, platformTeamId) => {
   if (!platformUserId || !platformTeamId) return null;
 
@@ -69,6 +83,28 @@ const getTeamTwitterAccountForMember = async (platformUserId, platformTeamId) =>
        ta.id DESC
      LIMIT 1`,
     [platformUserId, platformTeamId]
+  );
+
+  return rows[0] || null;
+};
+
+const getTeamTwitterAccountForMemberById = async (platformUserId, platformTeamId, targetAccountId) => {
+  if (!platformUserId || !platformTeamId || !targetAccountId) return null;
+
+  const { rows } = await pool.query(
+    `SELECT ta.id, ta.team_id, ta.user_id, ta.twitter_user_id, ta.twitter_username,
+            ta.access_token, ta.refresh_token, ta.token_expires_at,
+            ta.oauth1_access_token, ta.oauth1_access_token_secret
+     FROM team_accounts ta
+     INNER JOIN team_members tm
+       ON tm.team_id = ta.team_id
+      AND tm.user_id = $1
+      AND tm.status = 'active'
+     WHERE ta.team_id::text = $2::text
+       AND ta.id::text = $3::text
+       AND ta.active = true
+     LIMIT 1`,
+    [platformUserId, platformTeamId, String(targetAccountId)]
   );
 
   return rows[0] || null;
@@ -304,6 +340,72 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
   }
 });
 
+router.get('/targets', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req) || null;
+  const excludeAccountId = String(req.query?.excludeAccountId || '').trim() || null;
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  try {
+    let rows = [];
+    if (platformTeamId) {
+      const result = await pool.query(
+        `SELECT ta.id, ta.twitter_user_id, ta.twitter_username, ta.twitter_display_name, ta.twitter_profile_image_url
+         FROM team_accounts ta
+         INNER JOIN team_members tm
+           ON tm.team_id = ta.team_id
+          AND tm.user_id = $1
+          AND tm.status = 'active'
+         WHERE ta.team_id::text = $2::text
+           AND ta.active = true
+         ORDER BY ta.updated_at DESC NULLS LAST, ta.id DESC`,
+        [platformUserId, platformTeamId]
+      );
+      rows = result.rows;
+    } else {
+      const result = await pool.query(
+        `SELECT id, twitter_user_id, twitter_username, twitter_display_name, twitter_profile_image_url
+         FROM twitter_auth
+         WHERE user_id = $1
+         ORDER BY updated_at DESC NULLS LAST, id DESC`,
+        [platformUserId]
+      );
+      rows = result.rows;
+    }
+
+    const accounts = rows
+      .map((row) => ({
+        id: row?.id !== undefined && row?.id !== null ? String(row.id) : null,
+        platform: 'twitter',
+        accountId: row?.twitter_user_id ? String(row.twitter_user_id) : null,
+        username: row?.twitter_username ? String(row.twitter_username) : null,
+        displayName:
+          String(row?.twitter_display_name || '').trim() ||
+          (row?.twitter_username ? `@${String(row.twitter_username)}` : 'X account'),
+        avatar: row?.twitter_profile_image_url || null,
+      }))
+      .filter((row) => row.id && row.id !== String(excludeAccountId || ''));
+
+    return res.json({ success: true, accounts });
+  } catch (error) {
+    logger.error('[internal/twitter/targets] Failed to list targets', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to fetch Twitter targets',
+      code: 'TWITTER_TARGETS_FAILED',
+    });
+  }
+});
+
 router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
   const platformTeamId = resolvePlatformTeamId(req);
@@ -314,6 +416,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     threadParts = [],
     media = [],
     mediaUrls = [],
+    targetAccountId = null,
   } = req.body || {};
 
   if (!platformUserId) {
@@ -361,15 +464,32 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
     let account = null;
     let accountScope = 'personal';
 
-    if (platformTeamId) {
-      account = await getTeamTwitterAccountForMember(platformUserId, platformTeamId);
-      if (account) accountScope = 'team';
-    }
+    if (targetAccountId) {
+      if (platformTeamId) {
+        account = await getTeamTwitterAccountForMemberById(platformUserId, platformTeamId, targetAccountId);
+        if (account) accountScope = 'team';
+      } else {
+        account = await getPersonalTwitterAccountById(platformUserId, targetAccountId);
+        if (account) accountScope = 'personal';
+      }
 
-    if (!account) {
-      const validatedReq = await runValidateTwitterConnection(platformUserId);
-      account = validatedReq?.twitterAccount;
-      accountScope = 'personal';
+      if (!account) {
+        return res.status(404).json({
+          error: 'Target Twitter account not found or inaccessible',
+          code: 'TWITTER_TARGET_ACCOUNT_NOT_FOUND',
+        });
+      }
+    } else {
+      if (platformTeamId) {
+        account = await getTeamTwitterAccountForMember(platformUserId, platformTeamId);
+        if (account) accountScope = 'team';
+      }
+
+      if (!account) {
+        const validatedReq = await runValidateTwitterConnection(platformUserId);
+        account = validatedReq?.twitterAccount;
+        accountScope = 'personal';
+      }
     }
 
     if (!account) {

@@ -10,7 +10,7 @@ import {
 } from '../utils/sanitization';
 import toast from 'react-hot-toast';
 
-// ── Character limit constants ─────────────────────────────────────────────────
+// â”€â”€ Character limit constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const DEFAULT_CHAR_LIMIT = 280;
 export const PREMIUM_CHAR_LIMIT = 2000;
 
@@ -28,7 +28,7 @@ const COMPOSE_DRAFT_VERSION = 1;
 const COMPOSE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ALLOWED_AI_STYLES = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
 
-// Use a generous ceiling for draft restore — actual limit enforced by setters at runtime
+// Use a generous ceiling for draft restore â€” actual limit enforced by setters at runtime
 const DRAFT_RESTORE_MAX_CHARS = PREMIUM_CHAR_LIMIT;
 
 const normalizeComposeDraftTweets = (tweets = []) => {
@@ -124,7 +124,7 @@ const parseStrategyPromptDetails = (prompt = '') => {
   };
 };
 
-// ── charLimit-aware AI prompt builder ────────────────────────────────────────
+// â”€â”€ charLimit-aware AI prompt builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const buildSingleTweetAIPrompt = (rawPrompt, charLimit = DEFAULT_CHAR_LIMIT) => {
   const { idea, instruction } = parseStrategyPromptDetails(rawPrompt);
   const safeIdea = idea || normalizeIdeaPrompt(String(rawPrompt || ''));
@@ -199,7 +199,7 @@ export const useTweetComposer = () => {
   const lastTokenStatusToastAtRef = useRef(0);
   const lastTokenStatusCheckAtRef = useRef(0);
 
-  // ── Character limit state ─────────────────────────────────────────────────
+  // â”€â”€ Character limit state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [charLimit, setCharLimit] = useState(DEFAULT_CHAR_LIMIT);
   const [xLongPostEnabled, setXLongPostEnabled] = useState(false);
 
@@ -228,7 +228,7 @@ export const useTweetComposer = () => {
   const [scheduledTweets, setScheduledTweets] = useState([]);
   const [isLoadingScheduled, setIsLoadingScheduled] = useState(false);
 
-  // ── Fetch posting preferences for the selected account ───────────────────
+  // â”€â”€ Fetch posting preferences for the selected account â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const fetchPostingPreferences = async () => {
     try {
       const res = await fetch('/api/twitter/posting-preferences', {
@@ -241,7 +241,7 @@ export const useTweetComposer = () => {
       setXLongPostEnabled(enabled);
       setCharLimit(limit);
     } catch {
-      // Non-critical — fall back to 280
+      // Non-critical â€” fall back to 280
     }
   };
 
@@ -279,12 +279,12 @@ export const useTweetComposer = () => {
     // Helper to determine the effective char limit depending on thread mode
     const getEffectiveCharLimit = () => (isThread ? DEFAULT_CHAR_LIMIT : Math.max(charLimit, DEFAULT_CHAR_LIMIT));
 
-    // ── Sanitized setters — all respect effective char limit for single tweets
+    // â”€â”€ Sanitized setters â€” all respect effective char limit for single tweets
     const setContent = (value) => {
       const ceiling = getEffectiveCharLimit();
       let cleaned = value.length > ceiling ? value.substring(0, ceiling) : value;
       // Remove em-dash and en-dash characters from user input
-      cleaned = cleaned.replace(/[—–]/g, '');
+      cleaned = cleaned.replace(/[â€”â€“]/g, '');
       setContentState(cleaned);
     };
 
@@ -318,7 +318,7 @@ export const useTweetComposer = () => {
         ? tweet
         : (() => {
             let t = tweet.length > ceiling ? tweet.substring(0, ceiling) : tweet;
-            return t.replace(/[—–]/g, '');
+            return t.replace(/[â€”â€“]/g, '');
           })()
     );
     setThreadTweetsState(cleanedTweets);
@@ -388,7 +388,7 @@ export const useTweetComposer = () => {
     const draft = loaded?.data;
     if (draft && typeof draft === 'object' && !Array.isArray(draft)) {
       if (typeof draft.content === 'string') {
-        setContentState(draft.content); // use raw setter here — charLimit not fetched yet
+        setContentState(draft.content); // use raw setter here â€” charLimit not fetched yet
       }
 
       const restoredThreadTweets = normalizeComposeDraftTweets(draft.threadTweets);
@@ -615,7 +615,7 @@ export const useTweetComposer = () => {
       }
 
       if (!silent && status?.needsRefresh) {
-        toast('Twitter token is expiring soon. We will try to refresh it automatically.', { icon: 'ℹ️' });
+        toast('Twitter token is expiring soon. We will try to refresh it automatically.', { icon: 'â„¹ï¸' });
       }
 
       return { ok: true, status };
@@ -641,7 +641,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach((warning) => toast.info(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast.info(warning, { icon: 'âš ï¸' }));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
@@ -681,42 +681,56 @@ export const useTweetComposer = () => {
     setSelectedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const normalizeCrossPostInput = (crossPostInput = false) => {
+    if (crossPostInput && typeof crossPostInput === 'object' && !Array.isArray(crossPostInput)) {
+      const rawIds =
+        crossPostInput.crossPostTargetAccountIds &&
+        typeof crossPostInput.crossPostTargetAccountIds === 'object' &&
+        !Array.isArray(crossPostInput.crossPostTargetAccountIds)
+          ? crossPostInput.crossPostTargetAccountIds
+          : {};
+      const rawLabels =
+        crossPostInput.crossPostTargetAccountLabels &&
+        typeof crossPostInput.crossPostTargetAccountLabels === 'object' &&
+        !Array.isArray(crossPostInput.crossPostTargetAccountLabels)
+          ? crossPostInput.crossPostTargetAccountLabels
+          : {};
+
+      const normalizedIds = {};
+      const normalizedLabels = {};
+      ['linkedin', 'threads', 'twitter'].forEach((platform) => {
+        const idValue = rawIds[platform];
+        const labelValue = rawLabels[platform];
+        const normalizedId = idValue === undefined || idValue === null ? '' : String(idValue).trim();
+        const normalizedLabel = labelValue === undefined || labelValue === null ? '' : String(labelValue).trim();
+        if (normalizedId) normalizedIds[platform] = normalizedId;
+        if (normalizedLabel) normalizedLabels[platform] = normalizedLabel;
+      });
+
+      return {
+        linkedin: Boolean(crossPostInput.linkedin),
+        threads: Boolean(crossPostInput.threads),
+        twitter: Boolean(crossPostInput.twitter),
+        optimizeCrossPost: crossPostInput.optimizeCrossPost !== false,
+        crossPostTargetAccountIds: normalizedIds,
+        crossPostTargetAccountLabels: normalizedLabels,
+      };
+    }
+
+    return {
+      linkedin: Boolean(crossPostInput),
+      threads: false,
+      twitter: false,
+      optimizeCrossPost: true,
+      crossPostTargetAccountIds: {},
+      crossPostTargetAccountLabels: {},
+    };
+  };
+
   const handlePost = async (crossPostInput = false) => {
-    const normalizedCrossPost =
-      crossPostInput && typeof crossPostInput === 'object' && !Array.isArray(crossPostInput)
-        ? {
-            linkedin: Boolean(crossPostInput.linkedin),
-            threads: Boolean(crossPostInput.threads),
-            optimizeCrossPost: crossPostInput.optimizeCrossPost !== false,
-            crossPostTargetAccountIds:
-              crossPostInput.crossPostTargetAccountIds &&
-              typeof crossPostInput.crossPostTargetAccountIds === 'object' &&
-              !Array.isArray(crossPostInput.crossPostTargetAccountIds)
-                ? {
-                    ...(crossPostInput.crossPostTargetAccountIds.linkedin
-                      ? { linkedin: String(crossPostInput.crossPostTargetAccountIds.linkedin).trim() }
-                      : {}),
-                  }
-                : {},
-            crossPostTargetAccountLabels:
-              crossPostInput.crossPostTargetAccountLabels &&
-              typeof crossPostInput.crossPostTargetAccountLabels === 'object' &&
-              !Array.isArray(crossPostInput.crossPostTargetAccountLabels)
-                ? {
-                    ...(crossPostInput.crossPostTargetAccountLabels.linkedin
-                      ? { linkedin: String(crossPostInput.crossPostTargetAccountLabels.linkedin).trim() }
-                      : {}),
-                  }
-                : {},
-          }
-        : {
-            linkedin: Boolean(crossPostInput),
-            threads: false,
-            optimizeCrossPost: true,
-            crossPostTargetAccountIds: {},
-            crossPostTargetAccountLabels: {},
-          };
-    const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
+    const normalizedCrossPost = normalizeCrossPostInput(crossPostInput);
+    const hasAnyCrossPostTarget =
+      normalizedCrossPost.linkedin || normalizedCrossPost.threads || normalizedCrossPost.twitter;
 
     if (isThread) {
       const validTweets = threadTweets.filter((tweet) => tweet.trim().length > 0 && tweet !== '---');
@@ -727,7 +741,7 @@ export const useTweetComposer = () => {
           return;
         }
         if (validation.warnings.length > 0) {
-          validation.warnings.forEach((warning) => toast.info(`Tweet ${i + 1}: ${warning}`, { icon: '⚠️' }));
+          validation.warnings.forEach((warning) => toast.info(`Tweet ${i + 1}: ${warning}`, { icon: 'âš ï¸' }));
         }
       }
       if (validTweets.length === 0 && selectedImages.length === 0) {
@@ -741,7 +755,7 @@ export const useTweetComposer = () => {
         return;
       }
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach((warning) => toast.info(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast.info(warning, { icon: 'âš ï¸' }));
       }
       if (!content.trim() && selectedImages.length === 0) {
         toast.error('Please enter some content or add images');
@@ -768,6 +782,7 @@ export const useTweetComposer = () => {
           crossPostTargets: {
             linkedin: normalizedCrossPost.linkedin,
             threads: normalizedCrossPost.threads,
+            twitter: normalizedCrossPost.twitter,
           },
           ...(Object.keys(normalizedCrossPost.crossPostTargetAccountIds || {}).length > 0 && {
             crossPostTargetAccountIds: normalizedCrossPost.crossPostTargetAccountIds,
@@ -794,6 +809,9 @@ export const useTweetComposer = () => {
           if (normalizedCrossPost.threads) {
             selectedPlatforms.push({ label: 'Threads', result: crossPost.threads || null });
           }
+          if (normalizedCrossPost.twitter) {
+            selectedPlatforms.push({ label: 'X', result: crossPost.twitter || null });
+          }
 
           if (selectedPlatforms.length === 0) {
             toast.success(baseSuccessMessage);
@@ -815,15 +833,14 @@ export const useTweetComposer = () => {
             }
 
             const statusMessages = {
-                not_connected: `${platform.label} not connected — post was created on X.`,
-                target_not_found: `${platform.label} target account not found — post was created on X.`,
-                permission_revoked: `${platform.label} target permission denied — post was created on X.`,
-                missing_target_route: `${platform.label} target selection missing — post was created on X.`,
-                timeout: `${platform.label} cross-post timed out — post was created on X.`,
-              skipped_individual_only: `${platform.label} cross-post is available only for personal Twitter accounts right now.`,
+                not_connected: `${platform.label} not connected â€” post was created on X.`,
+                target_not_found: `${platform.label} target account not found â€” post was created on X.`,
+                permission_revoked: `${platform.label} target permission denied â€” post was created on X.`,
+                missing_target_route: `${platform.label} target selection missing â€” post was created on X.`,
+                timeout: `${platform.label} cross-post timed out â€” post was created on X.`,
               skipped_not_configured: `${platform.label} cross-post is not configured yet.`,
               skipped: `${platform.label} cross-post was skipped.`,
-              failed: `${platform.label} cross-post failed — post was created on X.`,
+              failed: `${platform.label} cross-post failed â€” post was created on X.`,
               disabled: null,
               '': null,
               null: null,
@@ -841,12 +858,12 @@ export const useTweetComposer = () => {
             );
           } else {
             toast.success(baseSuccessMessage);
-            issues.forEach((message) => toast(message, { icon: '⚠️' }));
+            issues.forEach((message) => toast(message, { icon: 'âš ï¸' }));
           }
 
           if (mediaFallbackShown) {
             toast('Images were posted to X only. Cross-posts used text-only content (Phase 1).', {
-              icon: 'ℹ️',
+              icon: 'â„¹ï¸',
             });
           }
           return;
@@ -856,15 +873,15 @@ export const useTweetComposer = () => {
         if (normalizedCrossPost.linkedin && linkedinStatus === 'posted') {
           toast.success(
             isThreadPost
-              ? 'Thread posted & cross-posted to LinkedIn! ✓'
-              : 'Tweet posted & cross-posted to LinkedIn! ✓'
+              ? 'Thread posted & cross-posted to LinkedIn! âœ“'
+              : 'Tweet posted & cross-posted to LinkedIn! âœ“'
           );
         } else if (normalizedCrossPost.linkedin && linkedinStatus === 'failed') {
           toast.success(baseSuccessMessage);
-          toast.error('LinkedIn cross-post failed — post was created on X.');
+          toast.error('LinkedIn cross-post failed â€” post was created on X.');
         } else if (normalizedCrossPost.linkedin && linkedinStatus === 'not_connected') {
           toast.success(baseSuccessMessage);
-          toast.error('LinkedIn not connected — post was created on X only.');
+          toast.error('LinkedIn not connected â€” post was created on X only.');
         } else {
           toast.success(baseSuccessMessage);
         }
@@ -966,7 +983,7 @@ export const useTweetComposer = () => {
 
       if (error.response?.data?.code === 'TWITTER_RATE_LIMIT') {
         toast.error(
-          '⏰ Twitter rate limit reached. Please try again in 15-30 minutes. Your credits have been refunded.',
+          'â° Twitter rate limit reached. Please try again in 15-30 minutes. Your credits have been refunded.',
           { duration: 8000 }
         );
         return;
@@ -996,41 +1013,9 @@ export const useTweetComposer = () => {
   };
 
   const handleSchedule = async (dateString, timezone, crossPostInput = false) => {
-    const normalizedCrossPost =
-      crossPostInput && typeof crossPostInput === 'object' && !Array.isArray(crossPostInput)
-        ? {
-            linkedin: Boolean(crossPostInput.linkedin),
-            threads: Boolean(crossPostInput.threads),
-            optimizeCrossPost: crossPostInput.optimizeCrossPost !== false,
-            crossPostTargetAccountIds:
-              crossPostInput.crossPostTargetAccountIds &&
-              typeof crossPostInput.crossPostTargetAccountIds === 'object' &&
-              !Array.isArray(crossPostInput.crossPostTargetAccountIds)
-                ? {
-                    ...(crossPostInput.crossPostTargetAccountIds.linkedin
-                      ? { linkedin: String(crossPostInput.crossPostTargetAccountIds.linkedin).trim() }
-                      : {}),
-                  }
-                : {},
-            crossPostTargetAccountLabels:
-              crossPostInput.crossPostTargetAccountLabels &&
-              typeof crossPostInput.crossPostTargetAccountLabels === 'object' &&
-              !Array.isArray(crossPostInput.crossPostTargetAccountLabels)
-                ? {
-                    ...(crossPostInput.crossPostTargetAccountLabels.linkedin
-                      ? { linkedin: String(crossPostInput.crossPostTargetAccountLabels.linkedin).trim() }
-                      : {}),
-                  }
-                : {},
-          }
-        : {
-            linkedin: Boolean(crossPostInput),
-            threads: false,
-            optimizeCrossPost: true,
-            crossPostTargetAccountIds: {},
-            crossPostTargetAccountLabels: {},
-          };
-    const hasAnyCrossPostTarget = normalizedCrossPost.linkedin || normalizedCrossPost.threads;
+    const normalizedCrossPost = normalizeCrossPostInput(crossPostInput);
+    const hasAnyCrossPostTarget =
+      normalizedCrossPost.linkedin || normalizedCrossPost.threads || normalizedCrossPost.twitter;
 
     if (isThread) {
       const validTweets = threadTweets.filter((tweet) => tweet.trim().length > 0 && tweet !== '---');
@@ -1119,6 +1104,7 @@ export const useTweetComposer = () => {
             crossPostTargets: {
               linkedin: normalizedCrossPost.linkedin,
               threads: normalizedCrossPost.threads,
+              twitter: normalizedCrossPost.twitter,
             },
             ...(Object.keys(normalizedCrossPost.crossPostTargetAccountIds || {}).length > 0 && {
               crossPostTargetAccountIds: normalizedCrossPost.crossPostTargetAccountIds,
@@ -1138,6 +1124,7 @@ export const useTweetComposer = () => {
           const labels = [
             normalizedCrossPost.linkedin ? 'LinkedIn' : null,
             normalizedCrossPost.threads ? 'Threads' : null,
+            normalizedCrossPost.twitter ? 'X' : null,
           ].filter(Boolean);
           toast.success(`Thread scheduled. Cross-post to ${labels.join(' + ')} will run at publish time.`);
         } else {
@@ -1155,6 +1142,7 @@ export const useTweetComposer = () => {
             crossPostTargets: {
               linkedin: normalizedCrossPost.linkedin,
               threads: normalizedCrossPost.threads,
+              twitter: normalizedCrossPost.twitter,
             },
             ...(Object.keys(normalizedCrossPost.crossPostTargetAccountIds || {}).length > 0 && {
               crossPostTargetAccountIds: normalizedCrossPost.crossPostTargetAccountIds,
@@ -1174,6 +1162,7 @@ export const useTweetComposer = () => {
           const labels = [
             normalizedCrossPost.linkedin ? 'LinkedIn' : null,
             normalizedCrossPost.threads ? 'Threads' : null,
+            normalizedCrossPost.twitter ? 'X' : null,
           ].filter(Boolean);
           toast.success(
             `Tweet scheduled. Cross-post to ${labels.join(' + ')} will run at publish time.`
@@ -1202,7 +1191,7 @@ export const useTweetComposer = () => {
     }
   };
 
-  // ── AI Generation — uses charLimit throughout ─────────────────────────────
+  // â”€â”€ AI Generation â€” uses charLimit throughout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleAIGenerate = async (promptOverride = null) => {
     const promptSource = typeof promptOverride === 'string' ? promptOverride : aiPrompt;
     let sanitizedPrompt = sanitizeUserInput(promptSource.trim(), {
@@ -1315,7 +1304,7 @@ export const useTweetComposer = () => {
     }
   };
 
-  // ── Tweet splitter — charLimit-aware ─────────────────────────────────────
+  // â”€â”€ Tweet splitter â€” charLimit-aware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const splitIntoTweets = (content, limit = DEFAULT_CHAR_LIMIT) => {
     const charLimit = Math.max(limit, DEFAULT_CHAR_LIMIT);
 
@@ -1485,7 +1474,7 @@ export const useTweetComposer = () => {
       }
 
       if (validation.warnings.length > 0) {
-        validation.warnings.forEach((warning) => toast.info(warning, { icon: '⚠️' }));
+        validation.warnings.forEach((warning) => toast.info(warning, { icon: 'âš ï¸' }));
       }
 
       const isValidType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type);
@@ -1607,7 +1596,7 @@ export const useTweetComposer = () => {
     scheduledTweets,
     isLoadingScheduled,
     characterCount,
-    // ── New exports ──
+    // â”€â”€ New exports â”€â”€
     charLimit,
     effectiveCharLimit,
     xLongPostEnabled,

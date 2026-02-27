@@ -154,8 +154,10 @@ function normalizeScheduledCrossPostTargets({ postToLinkedin = false, crossPostT
     typeof rawTargets.linkedin === 'boolean' ? rawTargets.linkedin : Boolean(postToLinkedin);
   const threads =
     typeof rawTargets.threads === 'boolean' ? rawTargets.threads : false;
+  const twitter =
+    typeof rawTargets.twitter === 'boolean' ? rawTargets.twitter : false;
 
-  return { linkedin, threads };
+  return { linkedin, threads, twitter };
 }
 
 function normalizeScheduledCrossPostTargetAccountIds({ crossPostTargetAccountIds = null } = {}) {
@@ -165,8 +167,12 @@ function normalizeScheduledCrossPostTargetAccountIds({ crossPostTargetAccountIds
       : {};
 
   const linkedin = raw.linkedin === undefined || raw.linkedin === null ? null : String(raw.linkedin).trim();
+  const threads = raw.threads === undefined || raw.threads === null ? null : String(raw.threads).trim();
+  const twitter = raw.twitter === undefined || raw.twitter === null ? null : String(raw.twitter).trim();
   return {
     linkedin: linkedin || null,
+    threads: threads || null,
+    twitter: twitter || null,
   };
 }
 
@@ -187,8 +193,9 @@ function buildScheduledCrossPostMetadata({
 } = {}) {
   const linkedin = Boolean(targets?.linkedin);
   const threads = Boolean(targets?.threads);
+  const twitter = Boolean(targets?.twitter);
 
-  if (!linkedin && !threads) {
+  if (!linkedin && !threads && !twitter) {
     return null;
   }
 
@@ -198,6 +205,7 @@ function buildScheduledCrossPostMetadata({
       targets: {
         linkedin,
         threads,
+        twitter,
       },
       ...(routing && typeof routing === 'object' ? { routing } : {}),
       ...(Array.isArray(media) && media.length > 0 ? { media } : {}),
@@ -1329,39 +1337,63 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
       crossPostMedia,
     });
 
-    if (teamId && normalizedCrossPostTargets.linkedin) {
-      if (!normalizedCrossPostTargetAccountIds.linkedin) {
-        return res.status(400).json({
-          error: 'Select a target LinkedIn team account before cross-posting in team mode.',
-          code: 'CROSSPOST_TARGET_ACCOUNT_REQUIRED',
-        });
-      }
-      if (!/^\d+$/.test(normalizedCrossPostTargetAccountIds.linkedin)) {
-        return res.status(400).json({
-          error: 'Invalid target LinkedIn team account id.',
-          code: 'CROSSPOST_TARGET_ACCOUNT_INVALID',
-        });
-      }
-    }
-
-    const linkedinTargetLabel =
+    const getTargetLabel = (key) =>
       crossPostTargetAccountLabels &&
       typeof crossPostTargetAccountLabels === 'object' &&
       !Array.isArray(crossPostTargetAccountLabels) &&
-      crossPostTargetAccountLabels.linkedin !== undefined &&
-      crossPostTargetAccountLabels.linkedin !== null
-        ? String(crossPostTargetAccountLabels.linkedin).trim().slice(0, 255) || null
+      crossPostTargetAccountLabels[key] !== undefined &&
+      crossPostTargetAccountLabels[key] !== null
+        ? String(crossPostTargetAccountLabels[key]).trim().slice(0, 255) || null
         : null;
 
-    const crossPostRouting =
-      normalizedCrossPostTargets.linkedin && normalizedCrossPostTargetAccountIds.linkedin
-        ? {
-            linkedin: {
-              targetAccountId: normalizedCrossPostTargetAccountIds.linkedin,
-              ...(linkedinTargetLabel ? { targetLabel: linkedinTargetLabel } : {}),
-            },
-          }
-        : null;
+    const requireTargetId = (enabled, key, label) => {
+      if (!enabled) return null;
+      if (normalizedCrossPostTargetAccountIds[key]) return null;
+      return {
+        error: `Select a target ${label} account before cross-posting.`,
+        code: 'CROSSPOST_TARGET_ACCOUNT_REQUIRED',
+      };
+    };
+    const missingTargetError =
+      requireTargetId(normalizedCrossPostTargets.linkedin, 'linkedin', 'LinkedIn') ||
+      requireTargetId(normalizedCrossPostTargets.threads, 'threads', 'Threads') ||
+      requireTargetId(normalizedCrossPostTargets.twitter, 'twitter', 'X');
+    if (missingTargetError) {
+      return res.status(400).json(missingTargetError);
+    }
+    if (
+      normalizedCrossPostTargets.twitter &&
+      normalizedCrossPostTargetAccountIds.twitter &&
+      String(normalizedCrossPostTargetAccountIds.twitter) === String(req.twitterAccount?.id || '')
+    ) {
+      return res.status(400).json({
+        error: 'Target X account must be different from the source account.',
+        code: 'CROSSPOST_TARGET_ACCOUNT_INVALID',
+      });
+    }
+
+    const crossPostRouting = (() => {
+      const routing = {};
+      if (normalizedCrossPostTargets.linkedin && normalizedCrossPostTargetAccountIds.linkedin) {
+        routing.linkedin = {
+          targetAccountId: normalizedCrossPostTargetAccountIds.linkedin,
+          ...(getTargetLabel('linkedin') ? { targetLabel: getTargetLabel('linkedin') } : {}),
+        };
+      }
+      if (normalizedCrossPostTargets.threads && normalizedCrossPostTargetAccountIds.threads) {
+        routing.threads = {
+          targetAccountId: normalizedCrossPostTargetAccountIds.threads,
+          ...(getTargetLabel('threads') ? { targetLabel: getTargetLabel('threads') } : {}),
+        };
+      }
+      if (normalizedCrossPostTargets.twitter && normalizedCrossPostTargetAccountIds.twitter) {
+        routing.twitter = {
+          targetAccountId: normalizedCrossPostTargetAccountIds.twitter,
+          ...(getTargetLabel('twitter') ? { targetLabel: getTargetLabel('twitter') } : {}),
+        };
+      }
+      return Object.keys(routing).length > 0 ? routing : null;
+    })();
 
     const sourceSnapshot =
       teamId || req.twitterAccount?.id
@@ -1432,6 +1464,7 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
         userId,
         hasLinkedIn: normalizedCrossPostTargets.linkedin,
         hasThreads: normalizedCrossPostTargets.threads,
+        hasTwitter: normalizedCrossPostTargets.twitter,
       });
     }
 

@@ -31,15 +31,26 @@ export const tweetSchema = Joi.object({
   crossPostTargets: Joi.object({
     linkedin: Joi.boolean().optional(),
     threads: Joi.boolean().optional(),
+    twitter: Joi.boolean().optional(),
   }).optional(),
   crossPostTargetAccountIds: Joi.object({
     linkedin: Joi.alternatives().try(
-      Joi.string().trim().pattern(/^\d+$/),
+      Joi.string().trim().max(128),
+      Joi.number().integer().positive()
+    ).optional(),
+    threads: Joi.alternatives().try(
+      Joi.string().trim().max(128),
+      Joi.number().integer().positive()
+    ).optional(),
+    twitter: Joi.alternatives().try(
+      Joi.string().trim().max(128),
       Joi.number().integer().positive()
     ).optional(),
   }).optional(),
   crossPostTargetAccountLabels: Joi.object({
     linkedin: Joi.string().trim().max(255).allow('').optional(),
+    threads: Joi.string().trim().max(255).allow('').optional(),
+    twitter: Joi.string().trim().max(255).allow('').optional(),
   }).optional(),
   optimizeCrossPost: Joi.boolean().optional(),
   crossPostMedia: Joi.array().items(Joi.string()).max(4).optional(),
@@ -69,15 +80,26 @@ export const scheduleSchema = Joi.object({
   crossPostTargets: Joi.object({
     linkedin: Joi.boolean().optional(),
     threads: Joi.boolean().optional(),
+    twitter: Joi.boolean().optional(),
   }).optional(),
   crossPostTargetAccountIds: Joi.object({
     linkedin: Joi.alternatives().try(
-      Joi.string().trim().pattern(/^\d+$/),
+      Joi.string().trim().max(128),
+      Joi.number().integer().positive()
+    ).optional(),
+    threads: Joi.alternatives().try(
+      Joi.string().trim().max(128),
+      Joi.number().integer().positive()
+    ).optional(),
+    twitter: Joi.alternatives().try(
+      Joi.string().trim().max(128),
       Joi.number().integer().positive()
     ).optional(),
   }).optional(),
   crossPostTargetAccountLabels: Joi.object({
     linkedin: Joi.string().trim().max(255).allow('').optional(),
+    threads: Joi.string().trim().max(255).allow('').optional(),
+    twitter: Joi.string().trim().max(255).allow('').optional(),
   }).optional(),
   optimizeCrossPost: Joi.boolean().optional(),
   crossPostMedia: Joi.array().items(Joi.string()).max(4).optional(),
