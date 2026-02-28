@@ -252,11 +252,22 @@ app.use(
 );
 
 // --- CORS: must be first middleware! ---
+const envAllowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+
 const allowedOrigins = [
   'https://suitegenie.in',
   'https://tweet.suitegenie.in',
+  'https://linkedin.suitegenie.in',
+  'https://linkedin.suitgenie.in',
+  'https://meta.suitegenie.in',
   'https://api.suitegenie.in',
+  'https://metaapi.suitegenie.in',
   'https://tweetapi.suitegenie.in',
+  'https://apilinkedin.suitegenie.in',
+  ...envAllowedOrigins,
 ];
 
 function isAllowedOrigin(origin) {
@@ -267,6 +278,9 @@ function isAllowedOrigin(origin) {
       allowedOrigins.includes(origin) ||
       hostname === 'suitegenie.in' ||
       hostname.endsWith('.suitegenie.in') ||
+      hostname === 'suitgenie.in' ||
+      hostname.endsWith('.suitgenie.in') ||
+      (process.env.ALLOW_VERCEL_PREVIEWS === 'true' && hostname.endsWith('.vercel.app')) ||
       hostname === 'localhost' ||
       hostname === '127.0.0.1'
     );
@@ -285,7 +299,7 @@ app.use((req, res, next) => {
     res.header('Vary', 'Origin');
     res.header(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id'
+      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id, X-Requested-With'
     );
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
     corsLog('[cors] headers set for:', origin);
