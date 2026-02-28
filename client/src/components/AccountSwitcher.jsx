@@ -32,22 +32,24 @@ const AccountSwitcher = () => {
   if (accounts.length === 1) {
     // Show single account without dropdown
     const account = accounts[0];
+    const displayName = account.account_display_name || account.display_name || account.nickname || 'Account';
+    const username = account.account_username || account.username || '';
     return (
       <div className="flex items-center space-x-3 px-3 py-2 bg-blue-50 rounded-lg border border-blue-200">
         <div className="relative">
           <img 
             src={account.profile_image_url || '/default-avatar.png'} 
-            alt={account.display_name}
+            alt={displayName}
             className="w-8 h-8 rounded-full"
           />
           <Twitter className="absolute -bottom-1 -right-1 h-4 w-4 text-blue-400 bg-white rounded-full p-0.5" />
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-gray-900 truncate">
-            {account.display_name}
+            {displayName}
           </p>
           <p className="text-xs text-gray-500 truncate">
-            @{account.username}
+            @{username}
           </p>
         </div>
       </div>

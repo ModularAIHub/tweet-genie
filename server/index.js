@@ -52,6 +52,7 @@ import {
   getDeletedTweetRetentionWorkerStatus,
   startDeletedTweetRetentionWorker,
 } from './workers/deletedTweetRetentionWorker.js';
+import pool from './config/database.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, './.env') });
@@ -89,6 +90,21 @@ const START_DB_SCHEDULER_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DB_SCHEDULER_WORKER, true);
 const START_DELETED_TWEET_RETENTION_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DELETED_TWEET_RETENTION_WORKER, true);
+const READINESS_CHECK_INTERVAL_MS = Number.parseInt(process.env.READINESS_CHECK_INTERVAL_MS || '30000', 10);
+
+const tweetGenieRuntimeState = {
+  database: {
+    ok: false,
+    lastCheckedAt: null,
+    error: 'Database readiness not checked yet',
+  },
+  workers: {
+    analytics: false,
+    autopilot: false,
+    dbScheduler: false,
+    deletedRetention: false,
+  },
+};
 
 const requestLog = (...args) => {
   if (REQUEST_DEBUG) {
@@ -106,6 +122,117 @@ const corsWarn = (...args) => {
   if (CORS_DEBUG) {
     logger.warn(...args);
   }
+};
+
+const setTweetGenieDatabaseReady = () => {
+  tweetGenieRuntimeState.database.ok = true;
+  tweetGenieRuntimeState.database.lastCheckedAt = new Date().toISOString();
+  tweetGenieRuntimeState.database.error = null;
+};
+
+const setTweetGenieDatabaseNotReady = (error) => {
+  tweetGenieRuntimeState.database.ok = false;
+  tweetGenieRuntimeState.database.lastCheckedAt = new Date().toISOString();
+  tweetGenieRuntimeState.database.error = error?.message || String(error || 'Unknown database error');
+};
+
+const refreshTweetGenieDatabaseReadiness = async () => {
+  try {
+    await pool.query('SELECT 1');
+    setTweetGenieDatabaseReady();
+    return true;
+  } catch (error) {
+    setTweetGenieDatabaseNotReady(error);
+    return false;
+  }
+};
+
+const getTweetGenieHealthPayload = () => ({
+  status: tweetGenieRuntimeState.database.ok ? 'OK' : 'DEGRADED',
+  live: true,
+  ready: tweetGenieRuntimeState.database.ok,
+  service: 'Tweet Genie',
+  timestamp: new Date().toISOString(),
+  checks: {
+    database: { ...tweetGenieRuntimeState.database },
+    workers: { ...tweetGenieRuntimeState.workers },
+  },
+});
+
+const maybeStartBackgroundWorkers = async () => {
+  if (!BACKGROUND_WORKERS_ENABLED) {
+    return;
+  }
+
+  if (!tweetGenieRuntimeState.database.ok) {
+    logger.warn('Skipping background worker startup because database is not ready', {
+      database: tweetGenieRuntimeState.database,
+    });
+    return;
+  }
+
+  if (START_ANALYTICS_WORKER && !tweetGenieRuntimeState.workers.analytics) {
+    startAnalyticsAutoSyncWorker();
+    tweetGenieRuntimeState.workers.analytics = true;
+    const analyticsStatus = getAnalyticsAutoSyncStatus();
+    logger.info('Analytics auto sync worker started', {
+      enabled: !!analyticsStatus.enabled,
+      running: !!analyticsStatus.running,
+      intervalMs: analyticsStatus.intervalMs
+    });
+  }
+
+  if (START_AUTOPILOT_WORKER && !tweetGenieRuntimeState.workers.autopilot) {
+    startAutopilotWorker();
+    tweetGenieRuntimeState.workers.autopilot = true;
+    const autopilotStatus = getAutopilotWorkerStatus();
+    logger.info('Autopilot worker started', { enabled: !!autopilotStatus });
+  }
+
+  if (START_DB_SCHEDULER_WORKER && !tweetGenieRuntimeState.workers.dbScheduler) {
+    try {
+      await startDbScheduledTweetWorker();
+      tweetGenieRuntimeState.workers.dbScheduler = true;
+      const dbStatus = getDbScheduledTweetWorkerStatus();
+      logger.info('DB scheduled tweet worker started', {
+        enabled: !!dbStatus.enabled,
+        started: !!dbStatus.started,
+        batchSize: dbStatus.batchSize,
+        pollIntervalMs: dbStatus.pollIntervalMs
+      });
+    } catch (error) {
+      logger.error('DB scheduler initialization error', { error: error?.message || error });
+    }
+  }
+
+  if (START_DELETED_TWEET_RETENTION_WORKER && !tweetGenieRuntimeState.workers.deletedRetention) {
+    try {
+      startDeletedTweetRetentionWorker();
+      tweetGenieRuntimeState.workers.deletedRetention = true;
+      const delStatus = getDeletedTweetRetentionWorkerStatus();
+      logger.info('Deleted tweet retention worker started', {
+        enabled: !!delStatus.enabled,
+        retentionDays: delStatus.days || delStatus.retentionDays || null,
+        intervalMs: delStatus.intervalMs
+      });
+    } catch (error) {
+      logger.error('Deleted tweet retention worker initialization error', { error: error?.message || error });
+    }
+  }
+};
+
+const startTweetGenieReadinessLoop = () => {
+  const intervalMs =
+    Number.isFinite(READINESS_CHECK_INTERVAL_MS) && READINESS_CHECK_INTERVAL_MS > 0
+      ? READINESS_CHECK_INTERVAL_MS
+      : 30000;
+
+  const timer = setInterval(async () => {
+    await refreshTweetGenieDatabaseReadiness();
+    await maybeStartBackgroundWorkers();
+  }, intervalMs);
+
+  timer.unref?.();
 };
 
 // Basic middleware with CSP configuration for development
@@ -180,7 +307,13 @@ app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 // Health check
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK', service: 'Tweet Genie' });
+  const payload = getTweetGenieHealthPayload();
+  res.status(200).json(payload);
+});
+
+app.get('/ready', (req, res) => {
+  const payload = getTweetGenieHealthPayload();
+  res.status(payload.ready ? 200 : 503).json(payload);
 });
 
 // Auth middleware performance debug endpoint
@@ -369,59 +502,17 @@ app.listen(PORT, async () => {
   }
   if (!BACKGROUND_WORKERS_ENABLED) {
     logger.info('Background workers disabled by BACKGROUND_WORKERS_ENABLED=false');
+    await refreshTweetGenieDatabaseReadiness();
+    startTweetGenieReadinessLoop();
     return;
   }
 
-  if (START_ANALYTICS_WORKER) {
-    startAnalyticsAutoSyncWorker();
-    const analyticsStatus = getAnalyticsAutoSyncStatus();
-    logger.info('Analytics auto sync worker started', {
-      enabled: !!analyticsStatus.enabled,
-      running: !!analyticsStatus.running,
-      intervalMs: analyticsStatus.intervalMs
-    });
-  } else {
-    logger.info('Analytics auto sync worker disabled.');
-  }
+  if (!START_ANALYTICS_WORKER) logger.info('Analytics auto sync worker disabled.');
+  if (!START_AUTOPILOT_WORKER) logger.info('Autopilot worker disabled.');
+  if (!START_DB_SCHEDULER_WORKER) logger.info('DB scheduled tweet worker disabled.');
+  if (!START_DELETED_TWEET_RETENTION_WORKER) logger.info('Deleted tweet retention worker disabled.');
 
-  if (START_AUTOPILOT_WORKER) {
-    startAutopilotWorker();
-    const autopilotStatus = getAutopilotWorkerStatus();
-    logger.info('Autopilot worker started', { enabled: !!autopilotStatus });
-  } else {
-    logger.info('Autopilot worker disabled.');
-  }
-
-  if (START_DB_SCHEDULER_WORKER) {
-    try {
-      await startDbScheduledTweetWorker();
-      const dbStatus = getDbScheduledTweetWorkerStatus();
-      logger.info('DB scheduled tweet worker started', {
-        enabled: !!dbStatus.enabled,
-        started: !!dbStatus.started,
-        batchSize: dbStatus.batchSize,
-        pollIntervalMs: dbStatus.pollIntervalMs
-      });
-    } catch (error) {
-      logger.error('DB scheduler initialization error', { error: error?.message || error });
-    }
-  } else {
-    logger.info('DB scheduled tweet worker disabled.');
-  }
-
-  if (START_DELETED_TWEET_RETENTION_WORKER) {
-    try {
-      startDeletedTweetRetentionWorker();
-      const delStatus = getDeletedTweetRetentionWorkerStatus();
-      logger.info('Deleted tweet retention worker started', {
-        enabled: !!delStatus.enabled,
-        retentionDays: delStatus.days || delStatus.retentionDays || null,
-        intervalMs: delStatus.intervalMs
-      });
-    } catch (error) {
-      logger.error('Deleted tweet retention worker initialization error', { error: error?.message || error });
-    }
-  } else {
-    logger.info('Deleted tweet retention worker disabled.');
-  }
+  await refreshTweetGenieDatabaseReadiness();
+  await maybeStartBackgroundWorkers();
+  startTweetGenieReadinessLoop();
 });

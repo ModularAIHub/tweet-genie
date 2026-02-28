@@ -1,10 +1,10 @@
 import express from 'express';
 import pool from '../config/database.js';
-import { TwitterApi } from 'twitter-api-v2';
 import { authenticateToken, validateTwitterConnection } from '../middleware/auth.js';
 import { hasProPlanAccess, resolveRequestPlanType, requireProPlan } from '../middleware/planAccess.js';
 import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import { markTweetDeleted } from '../services/tweetRetentionService.js';
+import { createTwitterReadClient } from '../utils/twitterRuntimeAuth.js';
 
 const router = express.Router();
 const SYNC_COOLDOWN_MS = Number(process.env.ANALYTICS_SYNC_COOLDOWN_MS || 3 * 60 * 1000);
@@ -17,6 +17,7 @@ const ANALYTICS_PRECOMPUTE_TTL_MS = Number(process.env.ANALYTICS_PRECOMPUTE_TTL_
 const ANALYTICS_DEBUG = process.env.ANALYTICS_DEBUG === 'true';
 const ANALYTICS_CACHE_SCHEMA_VERSION = 'v2';
 const TWEET_ANALYTICS_COLUMNS = ['impressions', 'likes', 'retweets', 'replies', 'quote_count', 'bookmark_count'];
+const TWEET_ANALYTICS_TIMESTAMP_COLUMNS = ['analytics_fetched_at'];
 const FREE_ANALYTICS_DAYS = 7;
 const FREE_TOP_POSTS_LIMIT = 5;
 const PRO_TOP_POSTS_LIMIT = 20;
@@ -94,9 +95,15 @@ const ensureTweetAnalyticsColumns = async () => {
 
   const existingColumns = new Set((rows || []).map((row) => row.column_name));
   const missingColumns = TWEET_ANALYTICS_COLUMNS.filter((columnName) => !existingColumns.has(columnName));
+  const missingTimestampColumns = TWEET_ANALYTICS_TIMESTAMP_COLUMNS.filter((columnName) => !existingColumns.has(columnName));
 
   if (missingColumns.length > 0) {
     const alterParts = missingColumns.map((columnName) => `ADD COLUMN IF NOT EXISTS ${columnName} INTEGER DEFAULT 0`);
+    await pool.query(`ALTER TABLE tweets ${alterParts.join(', ')}`);
+  }
+
+  if (missingTimestampColumns.length > 0) {
+    const alterParts = missingTimestampColumns.map((columnName) => `ADD COLUMN IF NOT EXISTS ${columnName} TIMESTAMP`);
     await pool.query(`ALTER TABLE tweets ${alterParts.join(', ')}`);
   }
 
@@ -874,26 +881,19 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
 
     log('Sync lock acquired', { syncKey });
 
-    let twitterClient;
-    if (twitterAccount.access_token) {
-      try {
-        twitterClient = new TwitterApi(twitterAccount.access_token);
-      } catch (oauth2Error) {
-        console.error('OAuth 2.0 initialization failed:', oauth2Error);
-        await setSyncState(syncKey, {
-          userId,
-          accountId: effectiveAccountId,
-          patch: { inProgress: false, lastResult: 'auth_error' },
-        });
-        return res.status(401).json({
-          error: 'Twitter authentication failed',
-          message: 'Please reconnect your Twitter account.',
-          type: 'twitter_auth_error',
-          syncStatus: await getSyncStatusPayload(syncKey),
-        });
-      }
-    } else {
-      throw new Error('No OAuth 2.0 access token found');
+    const twitterClient = createTwitterReadClient(twitterAccount);
+    if (!twitterClient) {
+      await setSyncState(syncKey, {
+        userId,
+        accountId: effectiveAccountId,
+        patch: { inProgress: false, lastResult: 'auth_error' },
+      });
+      return res.status(401).json({
+        error: 'Twitter authentication failed',
+        message: 'Please reconnect your Twitter account.',
+        type: 'twitter_auth_error',
+        syncStatus: await getSyncStatusPayload(syncKey),
+      });
     }
 
     const syncScopeParams = [userId];
@@ -1207,6 +1207,13 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
             currentBookmarks !== nextBookmarks;
 
           if (!hasDelta) {
+            await pool.query(
+              `UPDATE tweets
+               SET analytics_fetched_at = CURRENT_TIMESTAMP,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1`,
+              [tweet.id]
+            );
             skipReasons.no_change++;
             skippedTweetIds.add(tweet.id);
             log('Tweet metrics unchanged', {
@@ -1228,16 +1235,16 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
               likes: currentLikes,
               retweets: currentRetweets,
               replies: currentReplies,
-              quotes: currentQuotes,
-              bookmarks: currentBookmarks,
+              quote_count: currentQuotes,
+              bookmark_count: currentBookmarks,
             },
             next: {
               impressions: nextImpressions,
               likes: nextLikes,
               retweets: nextRetweets,
               replies: nextReplies,
-              quotes: nextQuotes,
-              bookmarks: nextBookmarks,
+              quote_count: nextQuotes,
+              bookmark_count: nextBookmarks,
             }
           });
           await pool.query(
@@ -1248,6 +1255,7 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
               replies = $4,
               quote_count = $5,
               bookmark_count = $6,
+              analytics_fetched_at = CURRENT_TIMESTAMP,
               updated_at = CURRENT_TIMESTAMP
              WHERE id = $7`,
             [
@@ -1506,7 +1514,14 @@ router.post('/tweets/:tweetId/refresh', requireProPlan('Tweet metric refresh'), 
     }
 
     const tweet = tweetResult.rows[0];
-    const twitterClient = new TwitterApi(req.twitterAccount.access_token);
+    const twitterClient = createTwitterReadClient(req.twitterAccount);
+    if (!twitterClient) {
+      return res.status(401).json({
+        success: false,
+        error: 'Twitter authentication failed',
+        code: 'TWITTER_AUTH_ERROR',
+      });
+    }
 
     let lookup;
     try {
@@ -1590,6 +1605,7 @@ router.post('/tweets/:tweetId/refresh', requireProPlan('Tweet metric refresh'), 
              replies = $4,
              quote_count = $5,
              bookmark_count = $6,
+             analytics_fetched_at = CURRENT_TIMESTAMP,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $7
          RETURNING updated_at`,
@@ -1607,6 +1623,18 @@ router.post('/tweets/:tweetId/refresh', requireProPlan('Tweet metric refresh'), 
         ? new Date(updateResult.rows[0].updated_at).toISOString()
         : new Date().toISOString();
       await clearAnalyticsCachedPayload({ userId, accountId: effectiveAccountId });
+    } else {
+      const touchResult = await pool.query(
+        `UPDATE tweets
+         SET analytics_fetched_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1
+         RETURNING updated_at`,
+        [tweet.id]
+      );
+      metricsUpdatedAt = touchResult.rows?.[0]?.updated_at
+        ? new Date(touchResult.rows[0].updated_at).toISOString()
+        : new Date().toISOString();
     }
 
     return res.json({

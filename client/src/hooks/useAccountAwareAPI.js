@@ -40,14 +40,11 @@ const toCachedFetchResponse = ({ ok, status, statusText, payload, headers, rawTe
 
 const resolveTeamScope = ({ selectedAccount, activeTeamId, isTeamMode }) => {
   const selectedAccountTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
-  const hasExplicitPersonalSelection = Boolean(selectedAccount) && !selectedAccountTeamId;
-  const effectiveTeamId = hasExplicitPersonalSelection
-    ? null
-    : selectedAccountTeamId || activeTeamId || null;
+  const effectiveTeamId = selectedAccountTeamId || null;
 
   return {
     effectiveTeamId,
-    isTeamScope: Boolean(isTeamMode && effectiveTeamId),
+    isTeamScope: Boolean(isTeamMode && effectiveTeamId && (selectedAccount?.id || selectedAccount?.account_id)),
   };
 };
 
@@ -80,8 +77,7 @@ export const useAccountAwareAPI = () => {
       ...requestOptions.headers,
     };
 
-    // Team account headers are intentionally omitted in personal mode.
-    if (isTeamScope && accountId) {
+    if (accountId) {
       headers['X-Selected-Account-Id'] = accountId;
     }
 
@@ -103,7 +99,7 @@ export const useAccountAwareAPI = () => {
       scope: 'accountAwareFetch',
       url,
       params: {
-        accountId: isTeamScope ? accountId : null,
+        accountId: accountId || null,
         teamId: isTeamScope ? effectiveTeamId : null,
       },
     });
@@ -170,7 +166,7 @@ export const useAccountAwareAPI = () => {
       ...options.headers,
     };
 
-    if (isTeamScope && accountId) {
+    if (accountId) {
       headers['X-Selected-Account-Id'] = accountId;
     }
     if (isTeamScope) {

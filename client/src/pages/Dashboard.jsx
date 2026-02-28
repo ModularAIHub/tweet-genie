@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Edit3,
@@ -17,7 +17,7 @@ import {
   Target,
   Layers,
 } from 'lucide-react';
-import { dashboard, credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
+import { credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
 import { useAccount } from '../contexts/AccountContext';
 import { useAuth } from '../contexts/AuthContext';
 import { hasProPlanAccess } from '../utils/planAccess';
@@ -25,6 +25,11 @@ import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import LoadingSpinner from '../components/LoadingSpinner';
 import TeamRedirectHandler from '../components/TeamRedirectHandler';
 import { isPageVisible } from '../utils/requestCache';
+
+const DASHBOARD_BOOTSTRAP_TIMEOUT_MS = Number.parseInt(
+  import.meta.env.VITE_DASHBOARD_BOOTSTRAP_TIMEOUT_MS || '8000',
+  10
+);
 
 const Dashboard = () => {
   // No auto-redirect. User must click Twitter button to start connection.
@@ -39,50 +44,68 @@ const Dashboard = () => {
   const [recentTweets, setRecentTweets] = useState([]);
   const [creditBalance, setCreditBalance] = useState(null);
   const [hasAttemptedFetch, setHasAttemptedFetch] = useState(false);
+  const bootstrapInFlightRef = useRef(false);
   
   // Get fresh accountAPI on every render to capture current selectedAccount
   const accountAPI = useAccountAwareAPI();
 
   useEffect(() => {
-    // For team users: wait for account selection
-    // For individual users: fetch data immediately (even if selectedAccount is null)
-    if (!accountsLoading && isPageVisible()) {
-      // Fetch if:
-      // 1. Team user with selected account, OR
-      // 2. Individual user (accounts.length === 0) regardless of selectedAccount state
-      if ((accounts.length > 0 && selectedAccount) || accounts.length === 0) {
-        fetchDashboardData();
-      }
+    const canFetch =
+      !accountsLoading &&
+      ((accounts.length > 0 && selectedAccount) || accounts.length === 0);
+
+    if (!canFetch) {
+      return undefined;
     }
+
+    const fetchIfVisible = () => {
+      if (!isPageVisible()) return;
+      fetchDashboardData();
+    };
+
+    fetchIfVisible();
+
+    if (isPageVisible()) {
+      return undefined;
+    }
+
+    const onVisibilityChange = () => {
+      fetchIfVisible();
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [selectedAccount, accountsLoading, accounts.length]);
 
   const fetchDashboardData = async () => {
+    if (bootstrapInFlightRef.current) {
+      return;
+    }
+
+    bootstrapInFlightRef.current = true;
+    const controller = new AbortController();
+    const timeoutMs = Number.isFinite(DASHBOARD_BOOTSTRAP_TIMEOUT_MS) && DASHBOARD_BOOTSTRAP_TIMEOUT_MS > 0
+      ? DASHBOARD_BOOTSTRAP_TIMEOUT_MS
+      : 8000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
       setLoading(true);
       setHasAttemptedFetch(true);
       
-      // For team users, use account-aware API calls.
-      // For individual users, use axios API helpers.
-      const isTeamUser = accounts.length > 0;
-      
       try {
-        let payload = null;
+        const bootstrapResponse = await accountAPI.fetchForCurrentAccount('/api/dashboard/bootstrap?days=50', {
+          cacheTtlMs: 20000,
+          signal: controller.signal,
+        });
 
-        if (isTeamUser) {
-          const bootstrapResponse = await accountAPI.fetchForCurrentAccount('/api/dashboard/bootstrap?days=50', {
-            cacheTtlMs: 20000,
-          });
-
-          if (!bootstrapResponse?.ok) {
-            throw new Error(`Dashboard bootstrap failed (${bootstrapResponse?.status || 'unknown'})`);
-          }
-
-          payload = await bootstrapResponse.json();
-        } else {
-          const bootstrapResponse = await dashboard.bootstrapCached({ days: 50 }, { ttlMs: 20000 });
-          payload = bootstrapResponse?.data || null;
+        if (!bootstrapResponse?.ok) {
+          throw new Error(`Dashboard bootstrap failed (${bootstrapResponse?.status || 'unknown'})`);
         }
 
+        const payload = await bootstrapResponse.json();
         const normalizedPayload = payload && typeof payload === 'object' ? payload : null;
         const isDisconnected = Boolean(normalizedPayload?.disconnected);
 
@@ -90,7 +113,11 @@ const Dashboard = () => {
         setRecentTweets(Array.isArray(normalizedPayload?.recent_tweets) ? normalizedPayload.recent_tweets : []);
         setCreditBalance(normalizedPayload?.credits || null);
       } catch (error) {
-        console.error('Dashboard data fetch error:', error?.message || error);
+        const isTimeoutError = error?.name === 'AbortError';
+        const errorMessage = isTimeoutError
+          ? `Dashboard bootstrap timed out after ${timeoutMs}ms`
+          : (error?.message || error);
+        console.error('Dashboard data fetch error:', errorMessage);
         // Don't throw - allow dashboard to display even if fetch fails
         setAnalyticsData(null);
         setRecentTweets([]);
@@ -98,6 +125,8 @@ const Dashboard = () => {
       }
 
     } finally {
+      clearTimeout(timeoutId);
+      bootstrapInFlightRef.current = false;
       setLoading(false);
     }
   };
@@ -246,31 +275,6 @@ const Dashboard = () => {
               </div>
             );
           })}
-        </div>
-      </div>
-    );
-  }
-
-  // Show loading spinner only while AccountContext is loading
-  if (accountsLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <LoadingSpinner size="lg" />
-          <p className="mt-4 text-gray-600">Selecting account...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // For individual users with no Twitter account, show dashboard with connect prompt
-  // selectedAccount will be null, but that's ok - we'll show a message to connect
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <LoadingSpinner size="lg" />
-          <p className="mt-4 text-gray-600">Loading dashboard for @{selectedAccount.username}...</p>
         </div>
       </div>
     );

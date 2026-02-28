@@ -13,7 +13,7 @@ const DB_POOL_CONNECTION_TIMEOUT_MS = Number.parseInt(process.env.DB_POOL_CONNEC
 const DB_STATEMENT_TIMEOUT_MS = Number.parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '30000', 10);
 const DB_QUERY_TIMEOUT_MS = Number.parseInt(process.env.DB_QUERY_TIMEOUT_MS || '30000', 10);
 const DB_POOL_MAX_USES = Number.parseInt(process.env.DB_POOL_MAX_USES || '7500', 10);
-const DB_QUERY_MAX_RETRIES = Number.parseInt(process.env.DB_QUERY_MAX_RETRIES || '1', 10);
+const DB_QUERY_MAX_RETRIES = Number.parseInt(process.env.DB_QUERY_MAX_RETRIES || '2', 10);
 const DB_QUERY_RETRY_DELAY_MS = Number.parseInt(process.env.DB_QUERY_RETRY_DELAY_MS || '250', 10);
 
 let hasLoggedConnect = false;
@@ -35,7 +35,8 @@ const dbError = (...args) => {
 };
 
 const databaseUrl = process.env.DATABASE_URL || '';
-const isSupabaseConnection = databaseUrl.includes('supabase.com');
+const isSupabaseConnection =
+  databaseUrl.includes('supabase.com') || databaseUrl.includes('supabase.co');
 
 // Ensure TIMESTAMP WITHOUT TIME ZONE values are interpreted as UTC consistently.
 pg.types.setTypeParser(PG_TIMESTAMP_OID, (value) => (value ? new Date(`${value}Z`) : null));
@@ -43,7 +44,7 @@ pg.types.setTypeParser(PG_TIMESTAMP_OID, (value) => (value ? new Date(`${value}Z
 const config = databaseUrl
   ? {
       connectionString: databaseUrl,
-      ssl: (process.env.NODE_ENV === 'production' || isSupabaseConnection) 
+      ssl: (process.env.NODE_ENV === 'production' || isSupabaseConnection)
         ? { rejectUnauthorized: false } 
         : false,
     }
@@ -110,8 +111,13 @@ const isRetryableConnectionError = (error) => {
 
   if (message.includes('connection terminated')) return true;
   if (message.includes('connection timeout')) return true;
-  if (message.includes('ecconnreset')) return true;
+  if (message.includes('econnreset')) return true;
+  if (message.includes('getaddrinfo')) return true;
+  if (message.includes('enotfound')) return true;
+  if (message.includes('eai_again')) return true;
+  if (message.includes('connect eacces')) return true;
   if (code.startsWith('08')) return true; // Connection exception class
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'EACCES' || code === 'EPERM') return true;
   if (code === '57P01' || code === '57P02' || code === '57P03') return true;
   return false;
 };

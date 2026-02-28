@@ -26,13 +26,16 @@ export const resolveTeamAccountScope = async (pool, userId, selectedAccountId) =
     pool.query(
       `SELECT id
        FROM team_accounts
-       WHERE team_id = $1 AND twitter_user_id = $2`,
+       WHERE team_id = $1
+         AND twitter_user_id = $2
+         AND active = true`,
       [selected.team_id, selected.twitter_user_id]
     ),
     pool.query(
       `SELECT COUNT(*)::int AS active_count
        FROM team_accounts
-       WHERE team_id = $1 AND active = true`,
+       WHERE team_id = $1
+         AND active = true`,
       [selected.team_id]
     ),
   ]);

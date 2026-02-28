@@ -17,6 +17,22 @@ import { fetchApiKeyPreference } from '../utils/byok-platform';
 import { useAccount } from '../contexts/AccountContext';
 
 const CROSS_POST_PLATFORM_KEYS = ['twitter', 'linkedin', 'threads'];
+const DEFAULT_TARGET_SENTINEL_PREFIX = '__default__';
+
+const getCachedSelectedTwitterAccount = () => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return null;
+  }
+  const raw = localStorage.getItem('selectedTwitterAccount');
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.id ? parsed : null;
+  } catch {
+    return null;
+  }
+};
 
 const normalizeTargetUsername = (value) => {
   const raw = value === undefined || value === null ? '' : String(value).trim();
@@ -33,9 +49,13 @@ const getTargetLabel = (target = {}, fallback = 'Account') => {
   return fallback;
 };
 
+const isDefaultSentinelTargetId = (value) => String(value || '').startsWith(DEFAULT_TARGET_SENTINEL_PREFIX);
+
 const TweetComposer = () => {
   const location = useLocation();
   const { selectedAccount } = useAccount();
+  const fallbackSelectedAccount = getCachedSelectedTwitterAccount();
+  const effectiveSelectedAccount = selectedAccount?.id ? selectedAccount : fallbackSelectedAccount;
   const [imageModal, setImageModal] = useState({ open: false, src: null });
   const [apiKeyMode, setApiKeyMode] = useState('platform');
   const [hasAppliedStrategyPrompt, setHasAppliedStrategyPrompt] = useState(false);
@@ -53,7 +73,7 @@ const TweetComposer = () => {
   });
   const _modalDialogRef = useRef(null);
   const _modalCloseRef = useRef(null);
-  const isTeamTwitterAccountSelected = Boolean(selectedAccount?.team_id || selectedAccount?.teamId);
+  const isTeamTwitterAccountSelected = Boolean(effectiveSelectedAccount?.team_id || effectiveSelectedAccount?.teamId);
 
   // Fetch BYOK/platform mode on mount.
   useEffect(() => {
@@ -68,8 +88,8 @@ const TweetComposer = () => {
 
   useEffect(() => {
     let mounted = true;
-    const selectedTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
-    const sourceAccountId = selectedAccount?.id ? String(selectedAccount.id) : '';
+    const selectedTeamId = effectiveSelectedAccount?.team_id || effectiveSelectedAccount?.teamId || null;
+    const sourceAccountId = effectiveSelectedAccount?.id ? String(effectiveSelectedAccount.id) : '';
 
     if (!sourceAccountId) {
       setCrossPostTargets({ twitter: [], linkedin: [], threads: [] });
@@ -122,7 +142,78 @@ const TweetComposer = () => {
           return acc;
         }, { twitter: [], linkedin: [], threads: [] });
 
-        setCrossPostTargets(normalizedTargets);
+        // Fallback for legacy personal connections: if targets API has no LinkedIn/Threads rows,
+        // probe existing status endpoints and expose a virtual "default connected account" target.
+        const enrichWithLegacyDefaults = async () => {
+          // In team scope, never fall back to personal status targets.
+          if (selectedTeamId) {
+            return normalizedTargets;
+          }
+
+          const nextTargets = {
+            ...normalizedTargets,
+            linkedin: [...normalizedTargets.linkedin],
+            threads: [...normalizedTargets.threads],
+          };
+
+          const tryHydrateDefaultTarget = async ({ platform, statusEndpoint, labelPrefix }) => {
+            if (!mounted) return;
+            if (nextTargets[platform].length > 0) return;
+
+            try {
+              const statusRes = await fetch(statusEndpoint, { credentials: 'include' });
+              const statusData = await statusRes.json().catch(() => ({}));
+              if (!statusRes.ok || statusData?.connected !== true) return;
+
+              const account = statusData?.account && typeof statusData.account === 'object'
+                ? statusData.account
+                : {};
+              const username =
+                account?.username ||
+                account?.account_username ||
+                account?.linkedin_username ||
+                '';
+              const displayName =
+                account?.displayName ||
+                account?.account_display_name ||
+                account?.linkedin_display_name ||
+                (username ? `${labelPrefix} ${normalizeTargetUsername(username)}` : `${labelPrefix} (connected)`);
+
+              nextTargets[platform] = [
+                {
+                  id: `${DEFAULT_TARGET_SENTINEL_PREFIX}_${platform}`,
+                  platform,
+                  username: username ? String(username) : '',
+                  displayName: String(displayName || `${labelPrefix} (connected)`),
+                  avatar: account?.avatar || account?.profile_image_url || null,
+                  scope: 'personal',
+                },
+              ];
+            } catch {
+              // no-op fallback
+            }
+          };
+
+          await Promise.all([
+            tryHydrateDefaultTarget({
+              platform: 'linkedin',
+              statusEndpoint: '/api/linkedin/status',
+              labelPrefix: 'LinkedIn',
+            }),
+            tryHydrateDefaultTarget({
+              platform: 'threads',
+              statusEndpoint: '/api/threads/status',
+              labelPrefix: 'Threads',
+            }),
+          ]);
+
+          return nextTargets;
+        };
+
+        const enrichedTargets = await enrichWithLegacyDefaults();
+        if (!mounted) return;
+
+        setCrossPostTargets(enrichedTargets || normalizedTargets);
       } catch (err) {
         if (!mounted) return;
         console.error('Failed to fetch cross-post targets:', err);
@@ -141,6 +232,9 @@ const TweetComposer = () => {
     selectedAccount?.id,
     selectedAccount?.team_id,
     selectedAccount?.teamId,
+    fallbackSelectedAccount?.id,
+    fallbackSelectedAccount?.team_id,
+    fallbackSelectedAccount?.teamId,
   ]);
 
   useEffect(() => {
@@ -241,6 +335,13 @@ const TweetComposer = () => {
     handleImageButtonClick,
     fetchScheduledTweets
   } = useTweetComposer();
+
+  const effectiveTwitterAccounts =
+    Array.isArray(twitterAccounts) && twitterAccounts.length > 0
+      ? twitterAccounts
+      : effectiveSelectedAccount?.id
+        ? [effectiveSelectedAccount]
+        : [];
   
   // Added: char limit for TweetContentEditor
 
@@ -307,7 +408,7 @@ const TweetComposer = () => {
     showAIPrompt,
   ]);
 
-  if (isLoadingTwitterAccounts && (!twitterAccounts || twitterAccounts.length === 0)) {
+  if (isLoadingTwitterAccounts && effectiveTwitterAccounts.length === 0) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
@@ -318,7 +419,7 @@ const TweetComposer = () => {
     );
   }
 
-  if (!twitterAccounts || twitterAccounts.length === 0) {
+  if (effectiveTwitterAccounts.length === 0) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center max-w-md mx-auto">
@@ -427,7 +528,9 @@ const TweetComposer = () => {
       if (!crossPostEnabledFlags[platform]) return;
       const targetId = String(selectedCrossPostTargetAccountIds?.[platform] || '').trim();
       if (!targetId) return;
-      crossPostTargetAccountIds[platform] = targetId;
+      if (!isDefaultSentinelTargetId(targetId)) {
+        crossPostTargetAccountIds[platform] = targetId;
+      }
       const target = platformTargets[platform].find((item) => String(item?.id) === targetId);
       if (target) {
         crossPostTargetAccountLabels[platform] = getTargetLabel(target, `${platformMeta[platform].label} account`);
@@ -477,7 +580,7 @@ const TweetComposer = () => {
 
           {/* â”€â”€ Main Composer (2/3 width) â”€â”€ */}
           <div className="lg:col-span-2 space-y-6">
-            <TwitterAccountInfo twitterAccounts={twitterAccounts} />
+            <TwitterAccountInfo twitterAccounts={effectiveTwitterAccounts} />
 
             <div className="card">
               <div className="space-y-4">

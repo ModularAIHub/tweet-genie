@@ -84,8 +84,10 @@ END;
 $$ LANGUAGE plpgsql
 SET search_path = pg_catalog;
 
+DROP TRIGGER IF EXISTS update_user_strategies_updated_at ON user_strategies;
 CREATE TRIGGER update_user_strategies_updated_at BEFORE UPDATE ON user_strategies
     FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_strategy_prompts_updated_at ON strategy_prompts;
 CREATE TRIGGER update_strategy_prompts_updated_at BEFORE UPDATE ON strategy_prompts
     FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

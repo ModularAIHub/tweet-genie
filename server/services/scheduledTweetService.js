@@ -1,9 +1,15 @@
 import { pool } from '../config/database.js';
-import { TwitterApi } from 'twitter-api-v2';
 import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPostOptimizer.js';
+import { fetchLatestPersonalTwitterAuth } from '../utils/personalTwitterAuth.js';
+import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache.js';
+import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
+import {
+  createTwitterPostingClient,
+  refreshTwitterOauth2IfNeeded,
+} from '../utils/twitterRuntimeAuth.js';
 
 const THREAD_REPLY_DELAY_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_MS || '600', 10);
 const THREAD_REPLY_DELAY_JITTER_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_JITTER_MS || '250', 10);
@@ -38,124 +44,37 @@ async function refreshScheduledOAuth2TokenIfNeeded({ scheduledTweet, accountRow,
     return;
   }
 
-  if (!isDateValue(scheduledTweet.token_expires_at)) {
-    return;
-  }
-
-  const tokenExpiry = new Date(scheduledTweet.token_expires_at);
-  const now = new Date();
-  const refreshThreshold = new Date(tokenExpiry.getTime() - (10 * 60 * 1000));
-  const isExpired = tokenExpiry <= now;
-
-  if (now < refreshThreshold && !isExpired) {
-    return;
-  }
-
-  const minutesUntilExpiry = Math.floor((tokenExpiry - now) / (60 * 1000));
-  console.log('[Scheduled Tweet] OAuth2 token refresh check', {
-    scheduledTweetId: scheduledTweet.id,
+  const refreshResult = await refreshTwitterOauth2IfNeeded({
+    dbPool: pool,
+    account: accountRow || scheduledTweet,
     accountType,
-    username: scheduledTweet.twitter_username,
-    isExpired,
-    minutesUntilExpiry,
-    hasRefreshToken: !!scheduledTweet.refresh_token,
+    reason: 'scheduled-post',
+    onLog: (...args) => console.log(...args),
   });
 
-  if (!scheduledTweet.refresh_token) {
-    if (isExpired) {
-      throw new Error('Twitter token expired and no refresh token is available. Please reconnect your Twitter account.');
-    }
-    return;
-  }
-
-  if (!process.env.TWITTER_CLIENT_ID || !process.env.TWITTER_CLIENT_SECRET) {
-    if (isExpired) {
-      throw new Error('Twitter token expired and refresh is unavailable because TWITTER_CLIENT_ID/TWITTER_CLIENT_SECRET are missing.');
-    }
-    return;
-  }
-
-  try {
-    const credentials = Buffer.from(
-      `${process.env.TWITTER_CLIENT_ID}:${process.env.TWITTER_CLIENT_SECRET}`
-    ).toString('base64');
-
-    const refreshResponse = await fetch('https://api.twitter.com/2/oauth2/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: `Basic ${credentials}`,
-      },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: scheduledTweet.refresh_token,
-        client_id: process.env.TWITTER_CLIENT_ID,
-      }),
-    });
-
-    const tokens = await refreshResponse.json();
-
-    if (!tokens?.access_token) {
-      const detail = tokens?.error_description || tokens?.error || 'Refresh token invalid or expired';
-      if (isExpired) {
-        throw new Error(`Twitter token refresh failed: ${detail}. Please reconnect your Twitter account.`);
-      }
-      console.warn('[Scheduled Tweet] OAuth2 refresh failed but current token still usable:', detail);
-      return;
-    }
-
-    const newExpiresAt = new Date(Date.now() + ((tokens.expires_in || 7200) * 1000));
-    if (accountType === 'team') {
-      await pool.query(
-        `UPDATE team_accounts
-         SET access_token = $1,
-             refresh_token = $2,
-             token_expires_at = $3,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $4`,
-        [
-          tokens.access_token,
-          tokens.refresh_token || scheduledTweet.refresh_token,
-          newExpiresAt,
-          accountRow.id,
-        ]
-      );
-    } else {
-      await pool.query(
-        `UPDATE twitter_auth
-         SET access_token = $1,
-             refresh_token = $2,
-             token_expires_at = $3,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $4`,
-        [
-          tokens.access_token,
-          tokens.refresh_token || scheduledTweet.refresh_token,
-          newExpiresAt,
-          scheduledTweet.user_id,
-        ]
-      );
-    }
-
-    scheduledTweet.access_token = tokens.access_token;
-    scheduledTweet.refresh_token = tokens.refresh_token || scheduledTweet.refresh_token;
-    scheduledTweet.token_expires_at = newExpiresAt;
+  if (refreshResult.account) {
+    const refreshedAccount = refreshResult.account;
+    scheduledTweet.access_token = refreshedAccount.access_token || scheduledTweet.access_token;
+    scheduledTweet.refresh_token = refreshedAccount.refresh_token || scheduledTweet.refresh_token;
+    scheduledTweet.token_expires_at = refreshedAccount.token_expires_at || scheduledTweet.token_expires_at;
     if (accountRow) {
-      accountRow.access_token = scheduledTweet.access_token;
-      accountRow.refresh_token = scheduledTweet.refresh_token;
-      accountRow.token_expires_at = scheduledTweet.token_expires_at;
+      accountRow.access_token = refreshedAccount.access_token || accountRow.access_token;
+      accountRow.refresh_token = refreshedAccount.refresh_token || accountRow.refresh_token;
+      accountRow.token_expires_at = refreshedAccount.token_expires_at || accountRow.token_expires_at;
     }
+  }
 
-    console.log('[Scheduled Tweet] OAuth2 token refreshed for scheduled posting', {
-      scheduledTweetId: scheduledTweet.id,
-      username: scheduledTweet.twitter_username,
-      expiresAt: newExpiresAt.toISOString(),
-    });
-  } catch (error) {
+  if (refreshResult.error && isDateValue(scheduledTweet.token_expires_at)) {
+    const isExpired = new Date(scheduledTweet.token_expires_at) <= new Date();
     if (isExpired) {
-      throw error;
+      throw new Error(
+        refreshResult.error.details || 'Twitter token expired and could not be refreshed. Please reconnect your Twitter account.'
+      );
     }
-    console.warn('[Scheduled Tweet] OAuth2 refresh failed before expiry, continuing with current token:', error.message);
+    console.warn(
+      '[Scheduled Tweet] OAuth2 refresh failed before expiry, continuing with current token:',
+      refreshResult.error.details || refreshResult.error.reason
+    );
   }
 }
 
@@ -376,6 +295,20 @@ function getTweetPermalink({ username, tweetId }) {
   return `https://twitter.com/${safeUsername}/status/${safeTweetId}`;
 }
 
+function resolveTweetGenieInternalBaseUrl() {
+  const configuredUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  if (configuredUrl) {
+    return configuredUrl;
+  }
+
+  if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+    const localPort = String(process.env.PORT || '3002').trim() || '3002';
+    return `http://localhost:${localPort}`;
+  }
+
+  return '';
+}
+
 async function crossPostScheduledToLinkedIn({
   userId,
   teamId = null,
@@ -521,7 +454,7 @@ async function crossPostScheduledToTwitterAccount({
   mediaDetected = false,
   media = [],
 }) {
-  const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  const tweetGenieUrl = resolveTweetGenieInternalBaseUrl();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
 
   if (!tweetGenieUrl || !internalApiKey) {
@@ -580,6 +513,36 @@ async function crossPostScheduledToTwitterAccount({
     };
   } catch (error) {
     if (error?.name === 'AbortError') return { status: 'timeout' };
+    return { status: 'failed' };
+  }
+}
+
+async function saveScheduledTwitterCrossPostToHistory({
+  userId,
+  teamId = null,
+  targetAccountId = null,
+  content,
+  tweetId = null,
+  sourcePlatform = 'x_schedule',
+  mediaDetected = false,
+  media = [],
+  postMode = 'single',
+  threadParts = [],
+}) {
+  try {
+    return await saveTwitterHistoryRow({
+      dbPool: pool,
+      userId,
+      teamId,
+      targetAccountId,
+      content,
+      tweetId,
+      sourcePlatform,
+      media: Array.isArray(media) ? media : [],
+      postMode: postMode === 'thread' ? 'thread' : 'single',
+      threadParts: Array.isArray(threadParts) ? threadParts : [],
+    });
+  } catch (error) {
     return { status: 'failed' };
   }
 }
@@ -946,14 +909,11 @@ class ScheduledTweetService {
     if (!accountRow) {
       // Personal account - use twitter_auth table
       console.log(`[Scheduled Tweet] User not in team, using personal account`);
-      const personalRes = await pool.query(
-        `SELECT * FROM twitter_auth WHERE user_id = $1`,
-        [scheduledTweet.user_id]
-      );
-      if (!personalRes.rows.length) {
+      const personalAccount = await fetchLatestPersonalTwitterAuth(pool, scheduledTweet.user_id);
+      if (!personalAccount) {
         throw new Error(`Personal twitter_auth not found for user: ${scheduledTweet.user_id}`);
       }
-      accountRow = personalRes.rows[0];
+      accountRow = personalAccount;
       console.log(`[Scheduled Tweet] Using personal account: ${accountRow.twitter_username}`);
     }
 
@@ -1189,9 +1149,10 @@ class ScheduledTweetService {
       );
 
 
-      // Create Twitter client - use OAuth1 if available, otherwise OAuth2
-      let twitterClient;
-      try {
+      // Create Twitter client - prefer the shared runtime policy first.
+      let twitterClient = createTwitterPostingClient(scheduledTweet, { preferOAuth1: true });
+      if (!twitterClient) {
+        try {
         if (scheduledTweet.oauth1_access_token && scheduledTweet.oauth1_access_token_secret) {
           // Check if consumer keys are available
           if (!TWITTER_OAUTH1_APP_KEY || !TWITTER_OAUTH1_APP_SECRET) {
@@ -1220,15 +1181,16 @@ class ScheduledTweetService {
         } else {
           throw new Error('No valid Twitter credentials found. Please reconnect your Twitter account.');
         }
-      } catch (authError) {
-        if (authError.code === 401 || authError.status === 401) {
-          throw new Error('Twitter authentication failed (401). Token may be expired. Please reconnect your Twitter account.');
+        } catch (authError) {
+          if (authError.code === 401 || authError.status === 401) {
+            throw new Error('Twitter authentication failed (401). Token may be expired. Please reconnect your Twitter account.');
+          }
+          // Check for missing env vars error
+          if (authError.message && authError.message.includes('Invalid consumer tokens')) {
+            throw new Error('Twitter API configuration error. OAuth 1.0a requires TWITTER_CONSUMER_KEY/TWITTER_CONSUMER_SECRET (or TWITTER_API_KEY/TWITTER_API_SECRET).');
+          }
+          throw authError;
         }
-        // Check for missing env vars error
-        if (authError.message && authError.message.includes('Invalid consumer tokens')) {
-          throw new Error('Twitter API configuration error. OAuth 1.0a requires TWITTER_CONSUMER_KEY/TWITTER_CONSUMER_SECRET (or TWITTER_API_KEY/TWITTER_API_SECRET).');
-        }
-        throw authError;
       }
 
 
@@ -1380,6 +1342,12 @@ class ScheduledTweetService {
         console.log(`Inserted ${threadTweetIds.length} additional thread tweets into history`);
       }
 
+      try {
+        await clearAnalyticsPrecomputeCache(pool, { userId: scheduledTweet.user_id });
+      } catch (cacheError) {
+        console.warn('[Scheduled Tweet] Failed to invalidate analytics cache:', cacheError?.message || cacheError);
+      }
+
       let crossPostResult = null;
       if (scheduledCrossPost.enabled) {
         const mediaDetected = detectCrossPostMedia({
@@ -1495,6 +1463,22 @@ class ScheduledTweetService {
                     mediaDetected,
                     media: scheduledMainSourceMedia,
                   });
+                  if (twitterCrossPost?.status === 'posted') {
+                    await saveScheduledTwitterCrossPostToHistory({
+                      userId: scheduledTweet.user_id,
+                      teamId: isTeamCrossPost ? scheduledTweet.team_id || null : null,
+                      targetAccountId: twitterTargetRouteId,
+                      content: twitterPostMode === 'thread'
+                        ? twitterThreadParts.join('\n---\n')
+                        : cleanContent,
+                      tweetId: twitterCrossPost?.tweetId || null,
+                      sourcePlatform: 'x_schedule',
+                      mediaDetected,
+                      media: scheduledMainSourceMedia,
+                      postMode: twitterPostMode,
+                      threadParts: twitterThreadParts,
+                    });
+                  }
                   return { target: 'twitter', result: twitterCrossPost };
                 } catch (err) {
                   return { target: 'twitter', error: err };

@@ -27,6 +27,7 @@ const COMPOSE_DRAFT_STORAGE_KEY = 'tweetComposerDraft';
 const COMPOSE_DRAFT_VERSION = 1;
 const COMPOSE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ALLOWED_AI_STYLES = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
+const ACCOUNT_SCOPE_CHANGED_EVENT = 'suitegenie:account-scope-changed';
 
 // Use a generous ceiling for draft restore â€” actual limit enforced by setters at runtime
 const DRAFT_RESTORE_MAX_CHARS = PREMIUM_CHAR_LIMIT;
@@ -90,6 +91,21 @@ const getCachedSelectedTwitterAccount = () => {
   } catch {
     return null;
   }
+};
+
+const normalizeCachedTwitterAccount = (account = null) => {
+  if (!account?.id) return null;
+
+  const teamId = account?.team_id || account?.teamId || null;
+  return {
+    ...account,
+    id: account.id,
+    team_id: teamId,
+    username: account.username || account.account_username || null,
+    display_name: account.display_name || account.account_display_name || null,
+    account_username: account.account_username || account.username || null,
+    account_display_name: account.account_display_name || account.display_name || null,
+  };
 };
 
 const normalizeIdeaPrompt = (prompt) =>
@@ -193,7 +209,7 @@ const fileToBase64 = (file) => {
 };
 
 export const useTweetComposer = () => {
-  const cachedAccount = getCachedSelectedTwitterAccount();
+  const cachedAccount = normalizeCachedTwitterAccount(getCachedSelectedTwitterAccount());
   const [isComposeDraftHydrated, setIsComposeDraftHydrated] = useState(false);
   const hasSkippedComposeDraftAutosaveRef = useRef(false);
   const lastTokenStatusToastAtRef = useRef(0);
@@ -350,6 +366,17 @@ export const useTweetComposer = () => {
           }
         });
       });
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleScopeChanged = () => {
+      fetchTwitterAccounts();
+    };
+
+    window.addEventListener(ACCOUNT_SCOPE_CHANGED_EVENT, handleScopeChanged);
+    return () => {
+      window.removeEventListener(ACCOUNT_SCOPE_CHANGED_EVENT, handleScopeChanged);
     };
   }, []);
 
@@ -519,6 +546,7 @@ export const useTweetComposer = () => {
 
   // API Functions
   const fetchTwitterAccounts = async () => {
+    const cachedSelection = normalizeCachedTwitterAccount(getCachedSelectedTwitterAccount());
     let personalAccounts = [];
     let mergedAccounts = [];
 
@@ -528,7 +556,7 @@ export const useTweetComposer = () => {
       }
 
       try {
-        const personalRes = await twitter.getStatus();
+        const personalRes = await twitter.getStatus({ _skipAccountScope: true });
         personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
         mergedAccounts = [...personalAccounts];
 
@@ -542,7 +570,7 @@ export const useTweetComposer = () => {
       }
 
       try {
-        const teamRes = await twitter.getTeamAccounts();
+        const teamRes = await twitter.getTeamAccounts({ _skipAccountScope: true });
         const responseTeamId = teamRes?.data?.team_id || teamRes?.data?.teamId || null;
         const rawTeamAccounts = Array.isArray(teamRes?.data?.accounts) ? teamRes.data.accounts : [];
         const teamAccounts = rawTeamAccounts.map((account) => ({
@@ -559,13 +587,19 @@ export const useTweetComposer = () => {
 
       if (mergedAccounts.length > 0) {
         persistSelectedTwitterAccount(mergedAccounts);
+      } else if (cachedSelection) {
+        setTwitterAccounts([cachedSelection]);
       } else {
         localStorage.removeItem('selectedTwitterAccount');
       }
     } catch (error) {
       console.error('Error fetching Twitter accounts:', error);
-      setTwitterAccounts([]);
-      localStorage.removeItem('selectedTwitterAccount');
+      if (cachedSelection) {
+        setTwitterAccounts([cachedSelection]);
+      } else {
+        setTwitterAccounts([]);
+        localStorage.removeItem('selectedTwitterAccount');
+      }
     } finally {
       setIsLoadingTwitterAccounts(false);
     }

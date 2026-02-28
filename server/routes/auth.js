@@ -145,6 +145,29 @@ router.get('/validate', authenticateToken, async (req, res) => {
     req.user?.user && typeof req.user.user === 'object'
       ? { ...req.user.user }
       : { ...(req.user || {}) };
+  const normalizedTeamMemberships = (Array.isArray(baseUser.teamMemberships)
+    ? baseUser.teamMemberships
+    : Array.isArray(req.user?.teamMemberships)
+      ? req.user.teamMemberships
+      : [])
+    .map((membership) => {
+      const teamId = membership?.teamId || membership?.team_id || null;
+      return {
+        ...membership,
+        teamId,
+        team_id: teamId,
+        role: membership?.role || null,
+        status: membership?.status || 'active',
+      };
+    })
+    .filter((membership) => membership.teamId);
+  const primaryTeamId =
+    baseUser.teamId ||
+    baseUser.team_id ||
+    req.user?.teamId ||
+    req.user?.team_id ||
+    normalizedTeamMemberships[0]?.teamId ||
+    null;
 
   const normalizedUser = {
     ...baseUser,
@@ -152,6 +175,9 @@ router.get('/validate', authenticateToken, async (req, res) => {
     userId: baseUser.userId || req.user?.userId || req.user?.id || null,
     email: baseUser.email || req.user?.email || null,
     name: baseUser.name || req.user?.name || '',
+    teamId: primaryTeamId,
+    team_id: primaryTeamId,
+    teamMemberships: normalizedTeamMemberships,
     plan_type: resolvedPlanType,
     planType: resolvedPlanType,
   };

@@ -108,11 +108,14 @@ CREATE INDEX IF NOT EXISTS idx_optimal_schedule_strategy ON optimal_posting_sche
 CREATE INDEX IF NOT EXISTS idx_optimal_schedule_recommended ON optimal_posting_schedule(strategy_id, is_recommended) WHERE is_recommended = true;
 
 -- Triggers for updated_at
+DROP TRIGGER IF EXISTS update_strategy_analytics_updated_at ON strategy_analytics;
 CREATE TRIGGER update_strategy_analytics_updated_at BEFORE UPDATE ON strategy_analytics
     FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_content_insights_updated_at ON content_insights;
 CREATE TRIGGER update_content_insights_updated_at BEFORE UPDATE ON content_insights
     FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_optimal_posting_schedule_updated_at ON optimal_posting_schedule;
 CREATE TRIGGER update_optimal_posting_schedule_updated_at BEFORE UPDATE ON optimal_posting_schedule
     FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

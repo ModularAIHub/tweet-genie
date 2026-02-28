@@ -17,15 +17,15 @@ export async function fetchTweetAnalytics(userId, tweetId, accessToken) {
       likes: 0,
       retweets: 0,
       replies: 0,
-      quotes: 0,
-      bookmarks: 0,
+      quote_count: 0,
+      bookmark_count: 0,
       url_clicks: 0,
       profile_clicks: 0
     };
     
     // Calculate engagement rate
     const totalEngagement = analyticsData.likes + analyticsData.retweets + 
-                           analyticsData.replies + analyticsData.quotes;
+                           analyticsData.replies + analyticsData.quote_count;
     const engagementRate = analyticsData.impressions > 0 
       ? (totalEngagement / analyticsData.impressions * 100).toFixed(2)
       : 0;
@@ -34,7 +34,7 @@ export async function fetchTweetAnalytics(userId, tweetId, accessToken) {
     await pool.query(
       `UPDATE tweets 
        SET impressions = $1, likes = $2, retweets = $3, replies = $4,
-           quotes = $5, bookmarks = $6, url_clicks = $7, profile_clicks = $8,
+           quote_count = $5, bookmark_count = $6, url_clicks = $7, profile_clicks = $8,
            engagement_rate = $9, analytics_fetched_at = NOW()
        WHERE id = $10 AND user_id = $11`,
       [
@@ -42,8 +42,8 @@ export async function fetchTweetAnalytics(userId, tweetId, accessToken) {
         analyticsData.likes,
         analyticsData.retweets,
         analyticsData.replies,
-        analyticsData.quotes,
-        analyticsData.bookmarks,
+        analyticsData.quote_count,
+        analyticsData.bookmark_count,
         analyticsData.url_clicks,
         analyticsData.profile_clicks,
         engagementRate,
@@ -155,7 +155,7 @@ export async function generateStrategyAnalytics(strategyId, startDate, endDate) 
       `SELECT 
          COUNT(*) as total_posts,
          SUM(impressions) as total_impressions,
-         SUM(likes + retweets + replies + quotes) as total_engagements,
+         SUM(likes + retweets + replies + COALESCE(quote_count, 0) + COALESCE(bookmark_count, 0)) as total_engagements,
          AVG(engagement_rate) as avg_engagement_rate
        FROM tweets
        WHERE strategy_id = $1

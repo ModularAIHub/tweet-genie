@@ -333,6 +333,22 @@ function buildExternalXScheduledRowFromLinkedIn(row) {
   const metadata = parseJsonObject(row?.metadata, {});
   const crossPostMeta =
     metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : {};
+  const routing =
+    crossPostMeta?.routing && typeof crossPostMeta.routing === 'object' ? crossPostMeta.routing : {};
+  const xRoute =
+    routing?.x && typeof routing.x === 'object'
+      ? routing.x
+      : (routing?.twitter && typeof routing.twitter === 'object' ? routing.twitter : null);
+  const targetAccountId =
+    xRoute?.targetAccountId !== undefined && xRoute?.targetAccountId !== null
+      ? String(xRoute.targetAccountId).trim() || null
+      : null;
+  const resolvedTeamId =
+    row?.company_id !== undefined && row?.company_id !== null && String(row.company_id).trim()
+      ? String(row.company_id).trim()
+      : (row?.team_id !== undefined && row?.team_id !== null && String(row.team_id).trim()
+          ? String(row.team_id).trim()
+          : null);
   const xLastResult =
     crossPostMeta?.last_result?.x && typeof crossPostMeta.last_result.x === 'object'
       ? crossPostMeta.last_result.x
@@ -342,8 +358,8 @@ function buildExternalXScheduledRowFromLinkedIn(row) {
   return {
     id: `lgx-${row.id}`,
     user_id: row.user_id,
-    team_id: null,
-    account_id: null,
+    team_id: resolvedTeamId,
+    account_id: targetAccountId,
     author_id: null,
     content: row.post_content || '',
     media: JSON.stringify([]),
@@ -374,6 +390,8 @@ function buildExternalXScheduledRowFromLinkedIn(row) {
       source_status: row.status || null,
       x_status: xLastResult?.status || null,
       last_attempted_at: crossPostMeta?.last_attempted_at || null,
+      target_account_id: targetAccountId,
+      team_id: resolvedTeamId,
     },
   };
 }
@@ -441,6 +459,16 @@ function buildExternalXScheduledRowFromSocial(row) {
   const metadata = parseJsonObject(row?.metadata, {});
   const crossPostMeta =
     metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : {};
+  const routing =
+    crossPostMeta?.routing && typeof crossPostMeta.routing === 'object' ? crossPostMeta.routing : {};
+  const xRoute =
+    routing?.x && typeof routing.x === 'object'
+      ? routing.x
+      : (routing?.twitter && typeof routing.twitter === 'object' ? routing.twitter : null);
+  const targetAccountId =
+    xRoute?.targetAccountId !== undefined && xRoute?.targetAccountId !== null
+      ? String(xRoute.targetAccountId).trim() || null
+      : null;
   const xLastResult =
     crossPostMeta?.last_result?.x && typeof crossPostMeta.last_result.x === 'object'
       ? crossPostMeta.last_result.x
@@ -451,7 +479,7 @@ function buildExternalXScheduledRowFromSocial(row) {
     id: `sgx-${row.id}`,
     user_id: row.user_id,
     team_id: row.team_id || null,
-    account_id: null,
+    account_id: targetAccountId,
     author_id: null,
     content: row.caption || '',
     media: JSON.stringify([]),
@@ -482,8 +510,245 @@ function buildExternalXScheduledRowFromSocial(row) {
       source_status: row.status || null,
       x_status: xLastResult?.status || null,
       last_attempted_at: crossPostMeta?.last_attempted_at || null,
+      target_account_id: targetAccountId,
+      team_id: row.team_id || null,
     },
   };
+}
+
+function getTwitterCrossRouteTargetAccountId(metadata = {}) {
+  const crossPostMeta =
+    metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : {};
+  const routing =
+    crossPostMeta?.routing && typeof crossPostMeta.routing === 'object' ? crossPostMeta.routing : {};
+  const twitterRoute =
+    routing?.twitter && typeof routing.twitter === 'object'
+      ? routing.twitter
+      : (routing?.x && typeof routing.x === 'object' ? routing.x : null);
+
+  if (twitterRoute?.targetAccountId === undefined || twitterRoute?.targetAccountId === null) {
+    return null;
+  }
+
+  const normalized = String(twitterRoute.targetAccountId).trim();
+  return normalized || null;
+}
+
+function mapTwitterSelfCrossScheduleStatusForX(row) {
+  const sourceStatus = String(row?.status || '').toLowerCase();
+  const metadata = parseJsonObject(row?.metadata, {});
+  const twitterResultStatus = String(
+    metadata?.cross_post?.last_result?.twitter?.status || ''
+  ).toLowerCase();
+
+  if (sourceStatus === 'cancelled' || sourceStatus === 'canceled') return 'cancelled';
+  if (sourceStatus === 'failed') return 'failed';
+  if (sourceStatus === 'processing') return 'processing';
+  if (sourceStatus === 'pending') return 'pending';
+
+  if (['completed', 'partially_completed'].includes(sourceStatus)) {
+    if (!twitterResultStatus) return 'completed';
+    if (twitterResultStatus === 'posted') return 'completed';
+    if (
+      [
+        'failed',
+        'failed_too_long',
+        'timeout',
+        'not_connected',
+        'skipped_not_configured',
+        'missing_target_route',
+        'target_not_found',
+      ].includes(twitterResultStatus)
+    ) {
+      return 'failed';
+    }
+    return 'completed';
+  }
+
+  return 'pending';
+}
+
+function buildExternalXScheduledRowFromTwitter(row, { teamId = null, targetAccount = null } = {}) {
+  const metadata = parseJsonObject(row?.metadata, {});
+  const crossPostMeta =
+    metadata?.cross_post && typeof metadata.cross_post === 'object' ? metadata.cross_post : {};
+  const twitterLastResult =
+    crossPostMeta?.last_result?.twitter && typeof crossPostMeta.last_result.twitter === 'object'
+      ? crossPostMeta.last_result.twitter
+      : null;
+  const targetAccountId = getTwitterCrossRouteTargetAccountId(metadata);
+  const mappedStatus = mapTwitterSelfCrossScheduleStatusForX(row);
+  const resolvedTeamId = teamId ? String(teamId).trim() : null;
+
+  return {
+    id: `tgx-${row.id}`,
+    user_id: row.user_id,
+    team_id: row.team_id || resolvedTeamId || null,
+    account_id: targetAccountId || null,
+    author_id: targetAccount?.twitter_user_id || null,
+    content: row.content || '',
+    media: row.media || JSON.stringify([]),
+    media_urls: row.media_urls || JSON.stringify([]),
+    thread_tweets: row.thread_tweets || JSON.stringify([]),
+    thread_media: row.thread_media || JSON.stringify([]),
+    scheduled_for: row.scheduled_for,
+    timezone: row.timezone || null,
+    status: mappedStatus,
+    posted_at: row.posted_at || null,
+    error_message:
+      row.error_message ||
+      (twitterLastResult?.status && twitterLastResult.status !== 'posted'
+        ? `X cross-post to X status: ${twitterLastResult.status}`
+        : null),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+    account_username: targetAccount?.twitter_username || null,
+    twitter_username: targetAccount?.twitter_username || null,
+    scheduled_by_email: null,
+    scheduled_by_name: null,
+    is_external_cross_post: true,
+    external_source: 'tweet-genie',
+    external_ref_id: row.id,
+    external_target: 'twitter',
+    external_read_only: true,
+    external_meta: {
+      source_status: row.status || null,
+      twitter_status: twitterLastResult?.status || null,
+      last_attempted_at: crossPostMeta?.last_attempted_at || null,
+      target_account_id: targetAccountId,
+      source_account_id:
+        row?.account_id !== undefined && row?.account_id !== null ? String(row.account_id).trim() || null : null,
+      team_id: row.team_id || resolvedTeamId || null,
+    },
+  };
+}
+
+async function fetchExternalTwitterCrossSchedulesForX({ userId, teamId = null, statuses = null, limit = 100 }) {
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 100));
+  const ownerClause = teamId
+    ? `team_id::text = $1`
+    : `(user_id = $1 AND (team_id IS NULL OR team_id::text = ''))`;
+  const ownerValue = teamId ? String(teamId) : userId;
+
+  const { rows } = await pool.query(
+    `SELECT *
+     FROM scheduled_tweets
+     WHERE ${ownerClause}
+       AND (
+         metadata->'cross_post'->'targets'->>'twitter' = 'true'
+       )
+     ORDER BY scheduled_for ASC
+     LIMIT $2`,
+    [ownerValue, safeLimit]
+  );
+
+  const rowsWithTargets = rows
+    .map((row) => ({ row, targetAccountId: getTwitterCrossRouteTargetAccountId(parseJsonObject(row?.metadata, {})) }))
+    .filter((entry) => entry.targetAccountId);
+
+  const targetAccountsById = new Map();
+  const targetAccountIds = [...new Set(rowsWithTargets.map((entry) => entry.targetAccountId))];
+
+  if (targetAccountIds.length > 0) {
+    if (teamId) {
+      const { rows: accountRows } = await pool.query(
+        `SELECT id::text AS account_id, twitter_user_id, twitter_username
+         FROM team_accounts
+         WHERE id::text = ANY($1::text[])`,
+        [targetAccountIds]
+      );
+      for (const accountRow of accountRows) {
+        targetAccountsById.set(String(accountRow.account_id), accountRow);
+      }
+    } else {
+      const { rows: accountRows } = await pool.query(
+        `SELECT id::text AS account_id, twitter_user_id, twitter_username
+         FROM twitter_auth
+         WHERE user_id = $1
+           AND id::text = ANY($2::text[])`,
+        [userId, targetAccountIds]
+      );
+      for (const accountRow of accountRows) {
+        targetAccountsById.set(String(accountRow.account_id), accountRow);
+      }
+    }
+  }
+
+  return rowsWithTargets
+    .map(({ row, targetAccountId }) =>
+      buildExternalXScheduledRowFromTwitter(row, {
+        teamId,
+        targetAccount: targetAccountsById.get(String(targetAccountId)) || null,
+      })
+    )
+    .filter((row) => !Array.isArray(statuses) || statuses.length === 0 || statuses.includes(String(row.status || '').toLowerCase()));
+}
+
+function filterScheduledRowsByTeamScope(rows, teamScope) {
+  if (!teamScope || !Array.isArray(teamScope.relatedAccountIds) || teamScope.relatedAccountIds.length === 0) {
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  const relatedAccountIds = new Set(
+    teamScope.relatedAccountIds
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  );
+  const scopedTeamId = String(teamScope.teamId || '').trim();
+  const allowOrphanFallback = Boolean(teamScope.allowOrphanFallback && scopedTeamId);
+
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const accountId = row?.account_id !== undefined && row?.account_id !== null
+      ? String(row.account_id).trim()
+      : '';
+    if (accountId && relatedAccountIds.has(accountId)) {
+      return true;
+    }
+
+    if (allowOrphanFallback) {
+      const rowTeamId = row?.team_id !== undefined && row?.team_id !== null
+        ? String(row.team_id).trim()
+        : '';
+      if (!accountId && rowTeamId && rowTeamId === scopedTeamId) {
+        return true;
+      }
+    }
+
+    return false;
+  });
+}
+
+function filterScheduledRowsByPersonalScope(rows, twitterScope, userId) {
+  const scopedAccountId = String(
+    twitterScope?.effectiveAccountId || twitterScope?.selectedAccountId || ''
+  ).trim();
+  const scopedAuthorId = String(twitterScope?.twitterUserId || '').trim();
+  const normalizedUserId = String(userId || '').trim();
+
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const accountId = row?.account_id !== undefined && row?.account_id !== null
+      ? String(row.account_id).trim()
+      : '';
+    if (scopedAccountId && accountId && accountId === scopedAccountId) {
+      return true;
+    }
+
+    const authorId = row?.author_id !== undefined && row?.author_id !== null
+      ? String(row.author_id).trim()
+      : '';
+    if (scopedAuthorId && authorId && authorId === scopedAuthorId) {
+      return true;
+    }
+
+    if (!accountId && !authorId && normalizedUserId) {
+      const rowUserId = row?.user_id !== undefined && row?.user_id !== null
+        ? String(row.user_id).trim()
+        : '';
+      return rowUserId === normalizedUserId;
+    }
+
+    return false;
+  });
 }
 
 async function fetchExternalSocialThreadsCrossSchedulesForX({ userId, teamId = null, statuses = null, limit = 100 }) {
@@ -747,10 +1012,13 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
 
     try {
       const rows = await fetchTeamScheduledRows({ teamId, statuses, safeLimit: mergeWindowLimit, offset: 0 });
-      const enrichedRows = await enrichTeamScheduledRows(rows);
+      const scopedInternalRows = twitterScope?.teamScope
+        ? filterScheduledRowsByTeamScope(rows, twitterScope.teamScope)
+        : rows;
+      const enrichedRows = await enrichTeamScheduledRows(scopedInternalRows);
       let externalRows = [];
       try {
-        const [linkedInRows, socialRows] = await Promise.all([
+        const [linkedInRows, socialRows, twitterRows] = await Promise.all([
           fetchExternalLinkedinCrossSchedulesForX({
             userId,
             teamId,
@@ -763,8 +1031,17 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
             statuses,
             limit: Math.max(100, mergeWindowLimit),
           }),
+          fetchExternalTwitterCrossSchedulesForX({
+            userId,
+            teamId,
+            statuses,
+            limit: Math.max(100, mergeWindowLimit),
+          }),
         ]);
-        externalRows = [...linkedInRows, ...socialRows];
+        const scopedExternalRows = twitterScope?.teamScope
+          ? filterScheduledRowsByTeamScope([...linkedInRows, ...socialRows, ...twitterRows], twitterScope.teamScope)
+          : [...linkedInRows, ...socialRows, ...twitterRows];
+        externalRows = await enrichTeamScheduledRows(scopedExternalRows);
       } catch (externalError) {
         console.warn('[ScheduledTweets] Failed to load external LinkedIn cross-schedules for X (team)', externalError?.message || externalError);
       }
@@ -789,10 +1066,13 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
         safeLimit: Math.min(Math.max(mergeWindowLimit, safeLimit), 10),
         offset: 0,
       });
-      const fallbackEnrichedRows = await enrichTeamScheduledRows(fallbackRows);
+      const scopedFallbackRows = twitterScope?.teamScope
+        ? filterScheduledRowsByTeamScope(fallbackRows, twitterScope.teamScope)
+        : fallbackRows;
+      const fallbackEnrichedRows = await enrichTeamScheduledRows(scopedFallbackRows);
       let externalRows = [];
       try {
-        const [linkedInRows, socialRows] = await Promise.all([
+        const [linkedInRows, socialRows, twitterRows] = await Promise.all([
           fetchExternalLinkedinCrossSchedulesForX({
             userId,
             teamId,
@@ -805,8 +1085,17 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
             statuses,
             limit: 100,
           }),
+          fetchExternalTwitterCrossSchedulesForX({
+            userId,
+            teamId,
+            statuses,
+            limit: 100,
+          }),
         ]);
-        externalRows = [...linkedInRows, ...socialRows];
+        const scopedExternalRows = twitterScope?.teamScope
+          ? filterScheduledRowsByTeamScope([...linkedInRows, ...socialRows, ...twitterRows], twitterScope.teamScope)
+          : [...linkedInRows, ...socialRows, ...twitterRows];
+        externalRows = await enrichTeamScheduledRows(scopedExternalRows);
       } catch {
         externalRows = [];
       }
@@ -821,7 +1110,7 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
   if (!twitterScope.connected && twitterScope.mode === 'personal') {
     let externalRows = [];
     try {
-      const [linkedInRows, socialRows] = await Promise.all([
+      const [linkedInRows, socialRows, twitterRows] = await Promise.all([
         fetchExternalLinkedinCrossSchedulesForX({
           userId,
           teamId: null,
@@ -834,8 +1123,18 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
           statuses,
           limit: Math.max(100, mergeWindowLimit),
         }),
+        fetchExternalTwitterCrossSchedulesForX({
+          userId,
+          teamId: null,
+          statuses,
+          limit: Math.max(100, mergeWindowLimit),
+        }),
       ]);
-      externalRows = [...linkedInRows, ...socialRows];
+      externalRows = filterScheduledRowsByPersonalScope(
+        [...linkedInRows, ...socialRows, ...twitterRows],
+        twitterScope,
+        userId
+      );
     } catch {
       externalRows = [];
     }
@@ -855,7 +1154,7 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
 
   let externalRows = [];
   try {
-    const [linkedInRows, socialRows] = await Promise.all([
+    const [linkedInRows, socialRows, twitterRows] = await Promise.all([
       fetchExternalLinkedinCrossSchedulesForX({
         userId,
         teamId: null,
@@ -868,8 +1167,18 @@ async function listScheduledTweets({ userId, teamId, selectedAccountId, safeLimi
         statuses,
         limit: Math.max(100, mergeWindowLimit),
       }),
+      fetchExternalTwitterCrossSchedulesForX({
+        userId,
+        teamId: null,
+        statuses,
+        limit: Math.max(100, mergeWindowLimit),
+      }),
     ]);
-    externalRows = [...linkedInRows, ...socialRows];
+    externalRows = filterScheduledRowsByPersonalScope(
+      [...linkedInRows, ...socialRows, ...twitterRows],
+      twitterScope,
+      userId
+    );
   } catch (externalError) {
     console.warn('[ScheduledTweets] Failed to load external LinkedIn cross-schedules for X (personal)', externalError?.message || externalError);
   }
@@ -1346,21 +1655,6 @@ router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, asy
         ? String(crossPostTargetAccountLabels[key]).trim().slice(0, 255) || null
         : null;
 
-    const requireTargetId = (enabled, key, label) => {
-      if (!enabled) return null;
-      if (normalizedCrossPostTargetAccountIds[key]) return null;
-      return {
-        error: `Select a target ${label} account before cross-posting.`,
-        code: 'CROSSPOST_TARGET_ACCOUNT_REQUIRED',
-      };
-    };
-    const missingTargetError =
-      requireTargetId(normalizedCrossPostTargets.linkedin, 'linkedin', 'LinkedIn') ||
-      requireTargetId(normalizedCrossPostTargets.threads, 'threads', 'Threads') ||
-      requireTargetId(normalizedCrossPostTargets.twitter, 'twitter', 'X');
-    if (missingTargetError) {
-      return res.status(400).json(missingTargetError);
-    }
     if (
       normalizedCrossPostTargets.twitter &&
       normalizedCrossPostTargetAccountIds.twitter &&

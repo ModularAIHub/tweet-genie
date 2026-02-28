@@ -2,6 +2,11 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import { pool } from '../config/database.js';
 import { buildReconnectRequiredPayload } from '../utils/twitterScopeResolver.js';
+import { fetchLatestPersonalTwitterAuth, fetchPersonalTwitterAuthById } from '../utils/personalTwitterAuth.js';
+import {
+  ensureTwitterAccountReady,
+  TwitterReconnectRequiredError,
+} from '../utils/twitterRuntimeAuth.js';
 
 const AUTH_DEBUG = process.env.AUTH_DEBUG === 'true';
 const AUTH_PLATFORM_TIMEOUT_MS = Number(process.env.AUTH_PLATFORM_TIMEOUT_MS || 4000);
@@ -544,9 +549,30 @@ export const validateTwitterConnection = async (req, res, next) => {
     
     // Check for selected team account first (from headers)
     const selectedAccountId = req.headers['x-selected-account-id'];
-    const requestTeamId =
-      req.headers['x-team-id'] || req.user?.teamId || req.user?.team_id || null;
+    const requestedTeamId = String(req.headers['x-team-id'] || '').trim() || null;
     const userId = req.user?.id || req.user?.userId;
+    let requestTeamId = null;
+
+    if (requestedTeamId) {
+      const membershipResult = await pool.query(
+        `SELECT 1
+         FROM team_members
+         WHERE team_id = $1
+           AND user_id = $2
+           AND status = 'active'
+         LIMIT 1`,
+        [requestedTeamId, userId]
+      );
+
+      if (membershipResult.rows.length > 0) {
+        requestTeamId = requestedTeamId;
+      } else {
+        return res.status(403).json({
+          error: 'Team scope is no longer valid for this user.',
+          code: 'TEAM_SCOPE_INVALID',
+        });
+      }
+    }
 
     // Team scope applies when header is present or authenticated user belongs to a team.
     if (requestTeamId && !selectedAccountId) {
@@ -558,7 +584,6 @@ export const validateTwitterConnection = async (req, res, next) => {
 
     if (selectedAccountId && requestTeamId) {
       try {
-        // Try to get team account credentials (OAuth2)
         const { rows } = await pool.query(
           `SELECT ta.*
            FROM team_accounts ta
@@ -566,8 +591,8 @@ export const validateTwitterConnection = async (req, res, next) => {
              ON tm.team_id = ta.team_id
             AND tm.user_id = $3
             AND tm.status = 'active'
-           WHERE ta.id = $1
-             AND ta.team_id = $2
+           WHERE ta.id::text = $1::text
+             AND ta.team_id::text = $2::text
              AND ta.active = true
            LIMIT 1`,
           [selectedAccountId, requestTeamId, userId]
@@ -575,6 +600,11 @@ export const validateTwitterConnection = async (req, res, next) => {
         if (rows.length > 0) {
           twitterAuthData = rows[0];
           isTeamAccount = true;
+        } else {
+          return res.status(403).json({
+            error: 'Selected team account is not available for this team member. Please reselect your team account.',
+            code: 'TEAM_ACCOUNT_NOT_USABLE',
+          });
         }
       } catch (teamQueryErr) {
         // Team-scoped requests must not fall back to personal credentials.
@@ -595,120 +625,54 @@ export const validateTwitterConnection = async (req, res, next) => {
     
     // Personal scope only.
     if (!twitterAuthData) {
-      const { rows } = await pool.query(
-        'SELECT * FROM twitter_auth WHERE user_id = $1',
-        [userId]
-      );
+      let personalAccount = null;
 
-      if (rows.length === 0) {
+      if (selectedAccountId) {
+        personalAccount = await fetchPersonalTwitterAuthById(pool, userId, selectedAccountId);
+      }
+
+      if (!personalAccount) {
+        personalAccount = await fetchLatestPersonalTwitterAuth(pool, userId);
+      }
+
+      if (!personalAccount) {
         return sendReconnectRequired('not_connected');
       }
 
-      twitterAuthData = rows[0];
+      twitterAuthData = personalAccount;
     }
     
-    // Check if token is expired or expiring soon (refresh 10 minutes before expiry)
-    const now = new Date();
-    const tokenExpiry = new Date(twitterAuthData.token_expires_at);
-    const refreshThreshold = new Date(tokenExpiry.getTime() - (10 * 60 * 1000)); // 10 minutes before expiry
-    const minutesUntilExpiry = Math.floor((tokenExpiry - now) / (60 * 1000));
-    
-    authLog('[Twitter Token Status]', {
-      accountType: isTeamAccount ? 'team' : 'personal',
-      expiresAt: tokenExpiry.toISOString(),
-      minutesUntilExpiry,
-      isExpired: tokenExpiry <= now,
-      needsRefresh: now >= refreshThreshold
-    });
-    
-    if (tokenExpiry <= now || now >= refreshThreshold) {
-      const isExpired = tokenExpiry <= now;
-      authLog(
-        `[Twitter Token] ${isExpired ? 'Token EXPIRED' : 'Token expiring soon, attempting refresh...'} (${minutesUntilExpiry} minutes until expiry)`
-      );
-      
-      // Try to refresh the token if we have a refresh token
-      if (twitterAuthData.refresh_token) {
-        try {
-          const credentials = Buffer.from(`${process.env.TWITTER_CLIENT_ID}:${process.env.TWITTER_CLIENT_SECRET}`).toString('base64');
-          
-          const refreshResponse = await fetch('https://api.twitter.com/2/oauth2/token', {
-            method: 'POST',
-            headers: { 
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'Authorization': `Basic ${credentials}`
-            },
-            body: new URLSearchParams({
-              grant_type: 'refresh_token',
-              refresh_token: twitterAuthData.refresh_token,
-              client_id: process.env.TWITTER_CLIENT_ID,
-            }),
-          });
+    try {
+      const readyResult = await ensureTwitterAccountReady({
+        dbPool: pool,
+        account: twitterAuthData,
+        accountType: isTeamAccount ? 'team' : 'personal',
+        reason: 'validateTwitterConnection',
+        onLog: (...args) => authLog(...args),
+      });
 
-          const tokens = await refreshResponse.json();
-          
-          if (tokens.access_token) {
-            authLog('Twitter token refreshed successfully');
-            // Update tokens in database
-            const newExpiresAt = new Date(Date.now() + (tokens.expires_in * 1000));
-            authLog('[Twitter Token] New expiry:', newExpiresAt.toISOString());
-            
-            if (isTeamAccount) {
-              // Update team_accounts table
-              await pool.query(
-                'UPDATE team_accounts SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
-                [tokens.access_token, tokens.refresh_token || twitterAuthData.refresh_token, newExpiresAt, twitterAuthData.id]
-              );
-            } else {
-              // Update twitter_auth table
-              await pool.query(
-                'UPDATE twitter_auth SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = CURRENT_TIMESTAMP WHERE user_id = $4',
-                [tokens.access_token, tokens.refresh_token || twitterAuthData.refresh_token, newExpiresAt, userId]
-              );
-            }
-            
-            // Use the new token
-            twitterAuthData.access_token = tokens.access_token;
-            twitterAuthData.refresh_token = tokens.refresh_token || twitterAuthData.refresh_token;
-            twitterAuthData.token_expires_at = newExpiresAt;
-          } else {
-            authLog('Twitter token refresh returned no access token:', tokens);
-            // Only return error if token is actually expired, not just expiring soon
-            if (isExpired) {
-              authWarn('twitter_token_expired_refresh_missing', 'Token expired and cannot be refreshed. User must reconnect.');
-              return sendReconnectRequired('token_refresh_failed', tokens.error_description || tokens.error);
-            } else {
-              authLog(`Token refresh failed but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
-            }
-          }
-        } catch (refreshError) {
-          authWarn('twitter_token_refresh_error', 'Twitter token refresh error:', refreshError.message);
-          // Only return error if token is actually expired, not just expiring soon
-          if (isExpired) {
-            authWarn(
-              'twitter_token_expired_refresh_failed',
-              'Token expired and refresh failed. User must reconnect their Twitter account.'
-            );
-            return sendReconnectRequired('token_refresh_error', refreshError.message);
-          } else {
-            authLog(`Token refresh failed but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
-          }
-        }
-      } else {
-        authLog('No refresh token available for this account');
-        // Only return error if token is actually expired, not just expiring soon
-        if (isExpired) {
-          authWarn(
-            'twitter_token_expired_no_refresh',
-            'Token expired and no refresh token. User must reconnect their Twitter account.'
-          );
-          return sendReconnectRequired('token_expired_no_refresh');
-        } else {
-          authLog(`No refresh token but token still valid for ${minutesUntilExpiry} minutes. Continuing...`);
-        }
+      twitterAuthData = readyResult.account;
+      authLog('[Twitter Token Status]', {
+        accountType: isTeamAccount ? 'team' : 'personal',
+        expiresAt: readyResult.status.expiresAtIso,
+        minutesUntilExpiry: readyResult.status.minutesUntilExpiry,
+        isExpired: readyResult.status.isExpired,
+        needsRefresh: readyResult.status.needsRefresh,
+        hasOauth1: readyResult.status.hasOauth1,
+        hasOauth2: readyResult.status.hasOauth2,
+        postingCapable: readyResult.status.postingCapable,
+      });
+    } catch (error) {
+      if (error instanceof TwitterReconnectRequiredError) {
+        authWarn(
+          `twitter_reconnect_required_${error.reason}`,
+          'Twitter account requires reconnect:',
+          error.reason,
+          error.details || ''
+        );
+        return sendReconnectRequired(error.reason, error.details);
       }
-    } else {
-      authLog(`Twitter token valid for ${minutesUntilExpiry} minutes`);
+      throw error;
     }
 
     // Map the account data to the expected format for tweet posting

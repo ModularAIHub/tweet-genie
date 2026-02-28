@@ -108,5 +108,6 @@ CREATE INDEX IF NOT EXISTS idx_strategy_queue_ideal_time ON strategy_queue(ideal
 CREATE INDEX IF NOT EXISTS idx_strategy_queue_priority ON strategy_queue(priority DESC, scheduled_for ASC);
 
 -- Triggers
+DROP TRIGGER IF EXISTS update_autopilot_config_updated_at ON autopilot_config;
 CREATE TRIGGER update_autopilot_config_updated_at BEFORE UPDATE ON autopilot_config
     FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

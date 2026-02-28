@@ -1,7 +1,10 @@
 import dotenv from 'dotenv';
-import { TwitterApi } from 'twitter-api-v2';
 import pool from '../config/database.js';
 import { markTweetDeleted } from '../services/tweetRetentionService.js';
+import {
+  createTwitterReadClient,
+  refreshTwitterOauth2IfNeeded,
+} from '../utils/twitterRuntimeAuth.js';
 
 dotenv.config();
 
@@ -228,62 +231,23 @@ const refreshTwitterTokenIfNeeded = async (account) => {
     return account;
   }
 
-  const tokenExpiryMs = account.token_expires_at ? new Date(account.token_expires_at).getTime() : null;
-  const refreshThresholdMs = Date.now() + 10 * 60 * 1000;
-  const needsRefresh = Number.isFinite(tokenExpiryMs) && tokenExpiryMs <= refreshThresholdMs;
+  const refreshResult = await refreshTwitterOauth2IfNeeded({
+    dbPool: pool,
+    account,
+    accountType: 'personal',
+    reason: 'analytics-auto-sync',
+    onLog: (...args) => log(...args),
+  });
 
-  if (!needsRefresh) {
-    return account;
-  }
-
-  if (!account.refresh_token || !process.env.TWITTER_CLIENT_ID || !process.env.TWITTER_CLIENT_SECRET) {
-    return account;
-  }
-
-  try {
-    const credentials = Buffer.from(
-      `${process.env.TWITTER_CLIENT_ID}:${process.env.TWITTER_CLIENT_SECRET}`
-    ).toString('base64');
-
-    const refreshResponse = await fetch('https://api.twitter.com/2/oauth2/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: `Basic ${credentials}`,
-      },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: account.refresh_token,
-        client_id: process.env.TWITTER_CLIENT_ID,
-      }),
+  if (refreshResult.error) {
+    log('Token refresh failed', {
+      userId: account.user_id,
+      accountId: account.id,
+      message: refreshResult.error.details || refreshResult.error.reason,
     });
-
-    const payload = await refreshResponse.json().catch(() => ({}));
-    if (!payload?.access_token) {
-      return account;
-    }
-
-    const newExpiry = new Date(Date.now() + (Number(payload.expires_in || 7200) * 1000));
-    await pool.query(
-      `UPDATE twitter_auth
-       SET access_token = $1,
-           refresh_token = $2,
-           token_expires_at = $3,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $4`,
-      [payload.access_token, payload.refresh_token || account.refresh_token, newExpiry, account.user_id]
-    );
-
-    return {
-      ...account,
-      access_token: payload.access_token,
-      refresh_token: payload.refresh_token || account.refresh_token,
-      token_expires_at: newExpiry,
-    };
-  } catch (error) {
-    log('Token refresh failed', { userId: account.user_id, message: error?.message });
-    return account;
   }
+
+  return refreshResult.account || account;
 };
 
 const getEligibleAccounts = async () => {
@@ -296,17 +260,33 @@ const getEligibleAccounts = async () => {
   const lookbackDays = Number.isFinite(SYNC_LOOKBACK_DAYS) && SYNC_LOOKBACK_DAYS > 0 ? SYNC_LOOKBACK_DAYS : 50;
 
   const { rows } = await pool.query(
-    `SELECT
+    `WITH ranked_auth AS (
+       SELECT
+         ta.id,
+         ta.user_id,
+         ta.access_token,
+         ta.refresh_token,
+         ta.token_expires_at,
+         ta.twitter_user_id,
+         ROW_NUMBER() OVER (
+           PARTITION BY ta.user_id
+           ORDER BY ta.updated_at DESC NULLS LAST, ta.created_at DESC NULLS LAST, ta.id DESC
+         ) AS rn
+       FROM twitter_auth ta
+       WHERE ta.access_token IS NOT NULL
+         AND ta.twitter_user_id IS NOT NULL
+     )
+     SELECT
+       ta.id,
        ta.user_id,
        ta.access_token,
        ta.refresh_token,
        ta.token_expires_at,
        ta.twitter_user_id
-     FROM twitter_auth ta
+     FROM ranked_auth ta
      LEFT JOIN analytics_sync_state ass
        ON ass.sync_key = ta.user_id || ':personal'
-     WHERE ta.access_token IS NOT NULL
-       AND ta.twitter_user_id IS NOT NULL
+     WHERE ta.rn = 1
        AND COALESCE(ass.in_progress, false) = false
        AND (ass.next_allowed_at IS NULL OR ass.next_allowed_at <= CURRENT_TIMESTAMP)
        AND EXISTS (
@@ -478,6 +458,7 @@ const updateTweetMetrics = async (tweetIdMap, tweetErrors) => {
          replies = $4,
          quote_count = $5,
          bookmark_count = $6,
+         analytics_fetched_at = CURRENT_TIMESTAMP,
          updated_at = CURRENT_TIMESTAMP
        WHERE id = $7`,
       [
@@ -568,7 +549,10 @@ const syncPersonalAccountMetrics = async (account) => {
       return { synced: true, reason: 'noop', updates: 0, rateLimited: false };
     }
 
-    const twitterClient = new TwitterApi(refreshedAccount.access_token);
+    const twitterClient = createTwitterReadClient(refreshedAccount);
+    if (!twitterClient) {
+      throw new Error('Twitter auth unavailable for analytics sync');
+    }
     let lookup;
     try {
       lookup = await twitterClient.v2.tweets(tweetIds, {

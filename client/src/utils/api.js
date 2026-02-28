@@ -1,7 +1,3 @@
-// Media endpoints
-export const media = {
-  upload: (mediaArray) => api.post('/api/twitter/upload-media', { media: mediaArray }),
-};
 import axios from 'axios';
 import {
   createRequestCacheKey,
@@ -10,8 +6,9 @@ import {
 } from './requestCache';
 
 export const CREDIT_BALANCE_UPDATED_EVENT = 'suitegenie:credits-balance-updated';
-const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
 const SELECTED_ACCOUNT_STORAGE_KEY = 'selectedTwitterAccount';
+const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
+const ACCOUNT_SCOPE_CHANGED_EVENT = 'suitegenie:account-scope-changed';
 
 const API_BASE_URL = String(import.meta.env.VITE_API_URL || '').trim();
 
@@ -97,6 +94,11 @@ const notifyCreditBalanceUpdated = (reason = 'unknown') => {
   }
 };
 
+const invalidateTweetReadCaches = () => {
+  invalidateCacheByPrefix('analytics_');
+  invalidateCacheByPrefix('dashboard_bootstrap');
+};
+
 const parseStoredJSON = (key) => {
   if (typeof window === 'undefined' || !window.localStorage) return null;
   const raw = localStorage.getItem(key);
@@ -108,19 +110,25 @@ const parseStoredJSON = (key) => {
   }
 };
 
+const clearStaleAccountScope = ({ clearTeamContext = false, reason = 'unknown' } = {}) => {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  localStorage.removeItem(SELECTED_ACCOUNT_STORAGE_KEY);
+  if (clearTeamContext) {
+    localStorage.removeItem(TEAM_CONTEXT_STORAGE_KEY);
+  }
+
+  window.dispatchEvent(
+    new CustomEvent(ACCOUNT_SCOPE_CHANGED_EVENT, {
+      detail: { reason, clearTeamContext, at: Date.now() },
+    })
+  );
+};
+
 const resolveRequestScope = () => {
   const selectedAccount = parseStoredJSON(SELECTED_ACCOUNT_STORAGE_KEY);
   const selectedAccountId = selectedAccount?.id || selectedAccount?.account_id || null;
   const selectedAccountTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
-  const hasExplicitPersonalSelection = Boolean(selectedAccountId) && !selectedAccountTeamId;
-
-  let teamId = selectedAccountTeamId || null;
-
-  // Preserve explicit personal selection. Only fall back to team context when no account is selected.
-  if (!teamId && !hasExplicitPersonalSelection) {
-    const teamContext = parseStoredJSON(TEAM_CONTEXT_STORAGE_KEY);
-    teamId = teamContext?.team_id || teamContext?.teamId || null;
-  }
+  const teamId = selectedAccountTeamId || null;
 
   return {
     teamId,
@@ -128,7 +136,7 @@ const resolveRequestScope = () => {
   };
 };
 
-// Request interceptor to attach JWT token and selected account ID
+// Request interceptor to attach JWT token and selected account scope.
 api.interceptors.request.use(
   (config) => {
     // Get token from localStorage (or cookies if you prefer)
@@ -137,15 +145,21 @@ api.interceptors.request.use(
       config.headers['Authorization'] = `Bearer ${token}`;
     }
     
+    const skipAccountScope = Boolean(config._skipAccountScope);
+    delete config._skipAccountScope;
+
     delete config.headers['X-Selected-Account-Id'];
     delete config.headers['x-team-id'];
 
-    const { teamId, selectedAccountId } = resolveRequestScope();
+    if (!skipAccountScope) {
+      const { teamId, selectedAccountId } = resolveRequestScope();
 
-    if (teamId) {
-      config.headers['x-team-id'] = teamId;
       if (selectedAccountId) {
         config.headers['X-Selected-Account-Id'] = selectedAccountId;
+      }
+
+      if (teamId) {
+        config.headers['x-team-id'] = teamId;
       }
     }
     
@@ -180,6 +194,21 @@ api.interceptors.response.use(
   },
   async (error) => {
     const originalRequest = error.config;
+    const responseCode = String(error?.response?.data?.code || '').trim();
+    const reconnectReason = String(error?.response?.data?.reason || '').trim();
+    const method = String(originalRequest?.method || 'GET').toUpperCase();
+
+    if (responseCode === 'TEAM_SCOPE_INVALID' || responseCode === 'TEAM_ACCOUNT_NOT_USABLE') {
+      clearStaleAccountScope({
+        clearTeamContext: responseCode === 'TEAM_SCOPE_INVALID',
+        reason: responseCode,
+      });
+
+      if (!originalRequest?._scopeRetry && (method === 'GET' || method === 'HEAD')) {
+        originalRequest._scopeRetry = true;
+        return api(originalRequest);
+      }
+    }
 
     // Check for Twitter token expiration specifically
     if (error.response?.data?.code === 'TWITTER_TOKEN_EXPIRED') {
@@ -198,6 +227,12 @@ api.interceptors.response.use(
       error.response?.data?.code === 'TWITTER_RECONNECT_REQUIRED' ||
       error.response?.data?.reconnect === true
     ) {
+      if (reconnectReason === 'team_account_not_connected' || reconnectReason === 'team_account_not_usable') {
+        clearStaleAccountScope({
+          clearTeamContext: false,
+          reason: reconnectReason,
+        });
+      }
       console.error('⚠️ Twitter reconnect required:', error.response.data);
       const { toast } = await import('react-hot-toast');
       toast.error(
@@ -326,11 +361,24 @@ export const twitter = {
   getProfile: () => api.get('/api/twitter/profile'),
 };
 
+// Media endpoints
+export const media = {
+  upload: (mediaArray) => api.post('/api/twitter/upload-media', { media: mediaArray }),
+};
+
 // Tweet endpoints
 export const tweets = {
-  create: (tweetData) => api.post('/api/tweets', tweetData),
+  create: (tweetData) =>
+    api.post('/api/tweets', tweetData).then((response) => {
+      invalidateTweetReadCaches();
+      return response;
+    }),
   list: (params) => api.get('/api/tweets', { params }),
-  delete: (tweetId) => api.delete(`/api/tweets/${tweetId}`),
+  delete: (tweetId) =>
+    api.delete(`/api/tweets/${tweetId}`).then((response) => {
+      invalidateTweetReadCaches();
+      return response;
+    }),
   generateAI: (prompt) => api.post('/api/tweets/ai-generate', prompt),
   // Bulk save generated tweets/threads as drafts
   bulkSaveDrafts: (items) => api.post('/api/tweets/bulk-save', { items }),
@@ -353,7 +401,11 @@ export const analytics = {
   getOverviewCached: (params, { ttlMs = 20000, bypass = false } = {}) =>
     cachedGet({ url: '/api/analytics/overview', params, scope: 'analytics_overview', ttlMs, bypass }),
   getDetailed: (data) => api.post('/api/analytics/detailed', data),
-  sync: () => api.post('/api/analytics/sync'),
+  sync: () =>
+    api.post('/api/analytics/sync').then((response) => {
+      invalidateTweetReadCaches();
+      return response;
+    }),
   getHashtags: (params) => api.get('/api/analytics/hashtags', { params }),
   getEngagement: (params) => api.get('/api/analytics/engagement', { params }),
   getEngagementCached: (params, { ttlMs = 20000, bypass = false } = {}) =>
@@ -361,7 +413,11 @@ export const analytics = {
   getAudience: (params) => api.get('/api/analytics/audience', { params }),
   getAudienceCached: (params, { ttlMs = 20000, bypass = false } = {}) =>
     cachedGet({ url: '/api/analytics/audience', params, scope: 'analytics_audience', ttlMs, bypass }),
-  refreshTweetMetrics: (tweetId) => api.post(`/api/analytics/tweets/${tweetId}/refresh`),
+  refreshTweetMetrics: (tweetId) =>
+    api.post(`/api/analytics/tweets/${tweetId}/refresh`).then((response) => {
+      invalidateTweetReadCaches();
+      return response;
+    }),
   invalidateCache: () => invalidateCacheByPrefix('analytics_'),
 };
 

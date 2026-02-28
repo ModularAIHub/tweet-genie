@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../config/database.js';
 import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
+import { fetchLatestPersonalTwitterAuth } from '../utils/personalTwitterAuth.js';
 
 const router = express.Router();
 
@@ -32,14 +33,9 @@ const buildTokenStatus = async ({ userId, requestTeamId, scope }) => {
   }
 
   if (!tokenData) {
-    const { rows } = await pool.query(
-      `SELECT token_expires_at, oauth1_access_token
-       FROM twitter_auth
-       WHERE user_id = $1
-       LIMIT 1`,
-      [userId]
-    );
-    if (rows.length > 0) tokenData = rows[0];
+    tokenData = await fetchLatestPersonalTwitterAuth(pool, userId, {
+      columns: 'token_expires_at, oauth1_access_token',
+    });
   }
 
   if (!tokenData) {

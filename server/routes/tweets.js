@@ -1,6 +1,5 @@
 import express from 'express';
 const router = express.Router();
-import { TwitterApi } from 'twitter-api-v2';
 import fetch from 'node-fetch';
 import pool from '../config/database.js';
 import { validateRequest } from '../middleware/validation.js';
@@ -22,6 +21,22 @@ import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 import { buildReconnectRequiredPayload, buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import { resolveRequestPlanType } from '../middleware/planAccess.js';
 import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPostOptimizer.js';
+import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache.js';
+import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
+import { createTwitterPostingClient } from '../utils/twitterRuntimeAuth.js';
+
+const invalidateUserAnalyticsCache = async (userId) => {
+  if (!userId) return;
+
+  try {
+    await clearAnalyticsPrecomputeCache(pool, { userId });
+  } catch (error) {
+    logger.warn('Failed to invalidate analytics precompute cache', {
+      userId,
+      error: error?.message || String(error),
+    });
+  }
+};
 
 
 // Bulk save generated tweets/threads as drafts
@@ -246,6 +261,20 @@ const buildCrossPostResultShape = ({
 
 const mapLinkedInLegacyStatus = (crossPostResult) =>
   crossPostResult?.linkedin?.enabled ? (crossPostResult.linkedin.status ?? 'failed') : null;
+
+const resolveTweetGenieInternalBaseUrl = () => {
+  const configuredUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  if (configuredUrl) {
+    return configuredUrl;
+  }
+
+  if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+    const localPort = String(process.env.PORT || '3002').trim() || '3002';
+    return `http://localhost:${localPort}`;
+  }
+
+  return '';
+};
 
 async function crossPostToLinkedIn({
   userId,
@@ -538,7 +567,7 @@ async function crossPostToTwitterAccount({
   mediaDetected = false,
   media = [],
 }) {
-  const tweetGenieUrl = String(process.env.TWEET_GENIE_URL || '').trim();
+  const tweetGenieUrl = resolveTweetGenieInternalBaseUrl();
   const internalApiKey = String(process.env.INTERNAL_API_KEY || '').trim();
 
   if (!tweetGenieUrl || !internalApiKey) {
@@ -607,6 +636,42 @@ async function crossPostToTwitterAccount({
   }
 }
 
+async function saveTwitterCrossPostToHistory({
+  userId,
+  teamId = null,
+  targetAccountId = null,
+  content,
+  tweetId = null,
+  sourcePlatform = 'x',
+  mediaDetected = false,
+  media = [],
+  postMode = 'single',
+  threadParts = [],
+}) {
+  try {
+    return await saveTwitterHistoryRow({
+      dbPool: pool,
+      userId,
+      teamId,
+      targetAccountId,
+      content,
+      tweetId,
+      sourcePlatform,
+      media: Array.isArray(media) ? media : [],
+      postMode: postMode === 'thread' ? 'thread' : 'single',
+      threadParts: Array.isArray(threadParts) ? threadParts : [],
+    });
+  } catch (error) {
+    logger.warn('[X Cross-post history] Request error', {
+      userId,
+      teamId,
+      targetAccountId,
+      error: error?.message || String(error),
+    });
+    return { status: 'failed' };
+  }
+}
+
 // Post a tweet
 router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async (req, res) => {
   try {
@@ -633,23 +698,6 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         error: 'Team context missing for cross-post routing.',
         code: 'CROSSPOST_TARGET_ACCOUNT_INVALID',
       });
-    }
-
-    const requireTargetId = (enabled, key, label) => {
-      if (!enabled) return null;
-      if (normalizedCrossPostTargetAccountIds[key]) return null;
-      return {
-        error: `Select a target ${label} account before cross-posting.`,
-        code: 'CROSSPOST_TARGET_ACCOUNT_REQUIRED',
-      };
-    };
-
-    const missingTargetError =
-      requireTargetId(normalizedCrossPostTargets.linkedin, 'linkedin', 'LinkedIn') ||
-      requireTargetId(normalizedCrossPostTargets.threads, 'threads', 'Threads') ||
-      requireTargetId(normalizedCrossPostTargets.twitter, 'twitter', 'X');
-    if (missingTargetError) {
-      return res.status(400).json(missingTargetError);
     }
 
     if (
@@ -679,7 +727,18 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       accessTokenPrefix: twitterAccount?.access_token?.substring(0, 10) + '...'
     });
 
-    let twitterClient = new TwitterApi(twitterAccount.access_token);
+    const shouldPreferOauth1ForPost =
+      Array.isArray(media) && media.length > 0 ||
+      (Array.isArray(threadMedia) && threadMedia.some((items) => Array.isArray(items) && items.length > 0));
+    let twitterClient = createTwitterPostingClient(twitterAccount, {
+      preferOAuth1: shouldPreferOauth1ForPost,
+    });
+    if (!twitterClient) {
+      throw {
+        code: 'TWITTER_AUTH_EXPIRED',
+        message: 'Twitter account not connected. Please reconnect your Twitter account.',
+      };
+    }
     let hasRetriedTwitter401 = false;
     let tweetResponse;
     let threadTweets = [];
@@ -705,7 +764,14 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
 
       req.twitterAccount = refreshedReq.twitterAccount;
       twitterAccount = refreshedReq.twitterAccount;
-      twitterClient = new TwitterApi(twitterAccount.access_token);
+      twitterClient = createTwitterPostingClient(twitterAccount, {
+        preferOAuth1: shouldPreferOauth1ForPost,
+      });
+      if (!twitterClient) {
+        const err = new Error('Twitter token refresh retry failed');
+        err.code = 'TWITTER_AUTH_EXPIRED';
+        throw err;
+      }
       logger.info('[POST /tweets] Twitter token refresh retry succeeded', {
         userId,
         sourceLabel,
@@ -868,6 +934,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           }
           
           logger.info('Background thread posting complete', { posted: threadTweets.length + 1, total: thread.length });
+          await invalidateUserAnalyticsCache(userId);
         };
 
         postRemainingTweets().catch(err => {
@@ -912,6 +979,7 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           thread && thread.length > 0 ? thread.length : 1  // thread_count
         ]
       );
+      await invalidateUserAnalyticsCache(userId);
 
       // â”€â”€ Parallel cross-post: LinkedIn + Threads fire simultaneously â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       const mediaDetected = detectCrossPostMedia({ media, threadMedia });
@@ -1005,7 +1073,25 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
               mediaDetected,
               media: crossPostSourceMedia,
             })
-              .then((result) => ({ platform: 'twitter', result }))
+              .then(async (result) => {
+                if (result?.status === 'posted') {
+                  await saveTwitterCrossPostToHistory({
+                    userId,
+                    teamId: twitterAccount.isTeamAccount ? requestTeamId : null,
+                    targetAccountId: normalizedCrossPostTargetAccountIds.twitter || null,
+                    content: twitterCrossPostMode === 'thread'
+                      ? twitterCrossPostThreadParts.join('\n---\n')
+                      : mainContent,
+                    tweetId: result?.tweetId || null,
+                    sourcePlatform: 'x',
+                    mediaDetected,
+                    media: crossPostSourceMedia,
+                    postMode: twitterCrossPostMode,
+                    threadParts: twitterCrossPostThreadParts,
+                  });
+                }
+                return { platform: 'twitter', result };
+              })
               .catch((err) => {
                 logger.error('X cross-post error', { userId, error: err?.message || String(err) });
                 return { platform: 'twitter', result: { status: 'failed' } };
@@ -1373,7 +1459,9 @@ router.get(['/history', '/'], async (req, res) => {
                   ELSE t.created_at
                 END as display_created_at
         FROM tweets t
-        LEFT JOIN twitter_auth ta ON t.user_id = ta.user_id
+        LEFT JOIN twitter_auth ta
+          ON ta.user_id = t.user_id
+         AND ta.twitter_user_id::text = t.author_id::text
         ${whereClause}
         ORDER BY 
           CASE 
@@ -1460,12 +1548,24 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
       hasOauth1: !!(req.twitterAccount?.oauth1_access_token && req.twitterAccount?.oauth1_access_token_secret),
     });
 
-    const twitterClient = new TwitterApi(req.twitterAccount.access_token);
+    const twitterClient = createTwitterPostingClient(req.twitterAccount, {
+      preferOAuth1: false,
+    });
+
+    if (!twitterClient) {
+      return res.status(401).json(
+        buildReconnectRequiredPayload({
+          reason: 'token_invalid_or_revoked',
+          details: 'Twitter account not connected. Please reconnect your Twitter account.',
+        })
+      );
+    }
 
     try {
       await twitterClient.v2.deleteTweet(tweet.tweet_id);
 
       const deletedRow = await markTweetDeleted(tweetId);
+      await invalidateUserAnalyticsCache(userId);
       const retention = getTweetDeletionRetentionWindow();
       const deletedAt = deletedRow?.deleted_at || new Date().toISOString();
       const deleteAfter = new Date(
@@ -1486,6 +1586,7 @@ router.delete('/:tweetId', validateTwitterConnection, async (req, res) => {
 
       if (isTwitterNotFoundError(twitterError)) {
         const deletedRow = await markTweetDeleted(tweetId);
+        await invalidateUserAnalyticsCache(userId);
         const retention = getTweetDeletionRetentionWindow();
         const deletedAt = deletedRow?.deleted_at || new Date().toISOString();
         const deleteAfter = new Date(

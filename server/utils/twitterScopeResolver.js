@@ -1,4 +1,5 @@
 import { buildTeamAccountFilter, resolveTeamAccountScope } from './teamAccountScope.js';
+import { fetchLatestPersonalTwitterAuth, fetchPersonalTwitterAuthById } from './personalTwitterAuth.js';
 
 export const TWITTER_RECONNECT_REQUIRED_CODE = 'TWITTER_RECONNECT_REQUIRED';
 
@@ -39,15 +40,23 @@ export const resolveTwitterScope = async (dbPool, { userId, selectedAccountId, t
     };
   }
 
-  const { rows: personalRows } = await dbPool.query(
-    `SELECT twitter_user_id, twitter_username
-     FROM twitter_auth
-     WHERE user_id = $1
-     LIMIT 1`,
-    [userId]
-  );
+  let personal = null;
+  let ignoredSelectedAccountId = false;
 
-  if (personalRows.length === 0) {
+  if (normalizedSelectedAccountId) {
+    personal = await fetchPersonalTwitterAuthById(dbPool, userId, normalizedSelectedAccountId, {
+      columns: 'id, twitter_user_id, twitter_username',
+    });
+    ignoredSelectedAccountId = !personal;
+  }
+
+  if (!personal) {
+    personal = await fetchLatestPersonalTwitterAuth(dbPool, userId, {
+      columns: 'id, twitter_user_id, twitter_username',
+    });
+  }
+
+  if (!personal) {
     return {
       mode: 'personal',
       connected: false,
@@ -61,17 +70,16 @@ export const resolveTwitterScope = async (dbPool, { userId, selectedAccountId, t
     };
   }
 
-  const personal = personalRows[0];
   return {
     mode: 'personal',
     connected: true,
     userId,
     selectedAccountId: normalizedSelectedAccountId,
-    effectiveAccountId: null,
+    effectiveAccountId: personal.id ? String(personal.id) : null,
     twitterUserId: personal.twitter_user_id ? String(personal.twitter_user_id) : null,
     twitterUsername: personal.twitter_username || null,
     teamScope: null,
-    ignoredSelectedAccountId: !!normalizedSelectedAccountId,
+    ignoredSelectedAccountId,
   };
 };
 
