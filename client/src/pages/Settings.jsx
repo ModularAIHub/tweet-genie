@@ -260,7 +260,11 @@ const Settings = () => {
       };
     }
 
-    if (twitterTokenStatus?.connected && twitterTokenStatus?.isExpired) {
+    if (
+      twitterTokenStatus?.connected &&
+      twitterTokenStatus?.isExpired &&
+      twitterTokenStatus?.postingReady === false
+    ) {
       return {
         card: 'bg-red-50 border-red-200',
         text: 'text-red-600',
@@ -389,7 +393,9 @@ const Settings = () => {
   const showReconnectAction =
     !isTeamMode &&
     (
-      (!!twitterTokenStatus?.connected && !!twitterTokenStatus?.isExpired) ||
+      (!!twitterTokenStatus?.connected &&
+        !!twitterTokenStatus?.isExpired &&
+        twitterTokenStatus?.postingReady === false) ||
       (twitterTokenStatus &&
         twitterTokenStatus.connected === false &&
         !twitterTokenStatus.requiresTeamAccountSelection)

@@ -24,7 +24,7 @@ const TwitterTokenStatusV2 = () => {
 
         setTokenStatus(data);
 
-        if (!data.connected || data.isOAuth1) {
+        if (!data.connected || data.isOAuth1 || data.postingReady === true) {
           setShowWarning(false);
           toast.dismiss('token-expiring');
           toast.dismiss('token-expired');

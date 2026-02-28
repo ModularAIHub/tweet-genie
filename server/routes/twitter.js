@@ -59,33 +59,42 @@ const getActiveTeamIdsFromUserPayload = (user = {}) => {
 };
 
 const resolveValidatedRequestTeamId = async (req) => {
-  const teamId = String(req.headers['x-team-id'] || '').trim();
   const userId = req.user?.id || req.user?.userId || null;
+  if (!userId) return null;
 
-  if (!teamId || !userId) return null;
+  const authActiveTeamIds = getActiveTeamIdsFromUserPayload(req.user) || [];
+  const hintedTeamIds = [
+    req.headers['x-team-id'],
+    req.user?.teamId,
+    req.user?.team_id,
+    ...authActiveTeamIds,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  if (hintedTeamIds.length === 0) return null;
 
   const membershipResult = await pool.query(
-    `SELECT 1
+    `SELECT team_id
      FROM team_members
-     WHERE team_id = $1
-       AND user_id = $2
+     WHERE user_id = $1
        AND status = 'active'
+       AND team_id::text = ANY($2::text[])
+     ORDER BY
+       CASE
+         WHEN team_id::text = $3::text THEN 0
+         ELSE 1
+       END,
+       team_id ASC
      LIMIT 1`,
-    [teamId, userId]
+    [userId, hintedTeamIds, hintedTeamIds[0]]
   );
 
   if (membershipResult.rows.length === 0) {
     return null;
   }
 
-  const authActiveTeamIds = getActiveTeamIdsFromUserPayload(req.user);
-  if (!Array.isArray(authActiveTeamIds)) {
-    return teamId;
-  }
-
-  // Keep auth payload as an optimization hint, but never as the sole authority.
-  // A freshly-updated DB membership should still pass even if token cache is stale.
-  return teamId;
+  return String(membershipResult.rows[0].team_id || '').trim() || null;
 };
 
 const isTeamModeRequest = async (req) => Boolean(await resolveValidatedRequestTeamId(req));

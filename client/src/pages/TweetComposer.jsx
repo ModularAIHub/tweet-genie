@@ -53,7 +53,7 @@ const isDefaultSentinelTargetId = (value) => String(value || '').startsWith(DEFA
 
 const TweetComposer = () => {
   const location = useLocation();
-  const { selectedAccount } = useAccount();
+  const { selectedAccount, activeTeamId } = useAccount();
   const fallbackSelectedAccount = getCachedSelectedTwitterAccount();
   const effectiveSelectedAccount = selectedAccount?.id ? selectedAccount : fallbackSelectedAccount;
   const [imageModal, setImageModal] = useState({ open: false, src: null });
@@ -88,7 +88,11 @@ const TweetComposer = () => {
 
   useEffect(() => {
     let mounted = true;
-    const selectedTeamId = effectiveSelectedAccount?.team_id || effectiveSelectedAccount?.teamId || null;
+    const selectedTeamId =
+      effectiveSelectedAccount?.team_id ||
+      effectiveSelectedAccount?.teamId ||
+      activeTeamId ||
+      null;
     const sourceAccountId = effectiveSelectedAccount?.id ? String(effectiveSelectedAccount.id) : '';
 
     if (!sourceAccountId) {
@@ -232,6 +236,7 @@ const TweetComposer = () => {
     selectedAccount?.id,
     selectedAccount?.team_id,
     selectedAccount?.teamId,
+    activeTeamId,
     fallbackSelectedAccount?.id,
     fallbackSelectedAccount?.team_id,
     fallbackSelectedAccount?.teamId,

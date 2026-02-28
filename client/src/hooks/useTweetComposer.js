@@ -28,6 +28,7 @@ const COMPOSE_DRAFT_VERSION = 1;
 const COMPOSE_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ALLOWED_AI_STYLES = ['casual', 'professional', 'humorous', 'inspirational', 'informative'];
 const ACCOUNT_SCOPE_CHANGED_EVENT = 'suitegenie:account-scope-changed';
+const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
 
 // Use a generous ceiling for draft restore â€” actual limit enforced by setters at runtime
 const DRAFT_RESTORE_MAX_CHARS = PREMIUM_CHAR_LIMIT;
@@ -106,6 +107,22 @@ const normalizeCachedTwitterAccount = (account = null) => {
     account_username: account.account_username || account.username || null,
     account_display_name: account.account_display_name || account.display_name || null,
   };
+};
+
+const hasActiveTeamContext = () => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return false;
+  }
+
+  const raw = localStorage.getItem(TEAM_CONTEXT_STORAGE_KEY);
+  if (!raw) return false;
+
+  try {
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed?.team_id || parsed?.teamId);
+  } catch {
+    return false;
+  }
 };
 
 const normalizeIdeaPrompt = (prompt) =>
@@ -558,12 +575,14 @@ export const useTweetComposer = () => {
       try {
         const personalRes = await twitter.getStatus({ _skipAccountScope: true });
         personalAccounts = Array.isArray(personalRes?.data?.accounts) ? personalRes.data.accounts : [];
-        mergedAccounts = [...personalAccounts];
+        mergedAccounts = hasActiveTeamContext() ? [] : [...personalAccounts];
 
         if (personalAccounts.length > 0) {
-          setTwitterAccounts(personalAccounts);
-          persistSelectedTwitterAccount(personalAccounts);
-          setIsLoadingTwitterAccounts(false);
+          if (!hasActiveTeamContext()) {
+            setTwitterAccounts(personalAccounts);
+            persistSelectedTwitterAccount(personalAccounts);
+            setIsLoadingTwitterAccounts(false);
+          }
         }
       } catch (personalError) {
         console.error('Error fetching personal Twitter accounts:', personalError);
@@ -577,10 +596,10 @@ export const useTweetComposer = () => {
           ...account,
           team_id: account?.team_id || account?.teamId || responseTeamId || null,
         }));
-        mergedAccounts = [...personalAccounts, ...teamAccounts];
+        mergedAccounts = hasActiveTeamContext() ? teamAccounts : [...personalAccounts, ...teamAccounts];
       } catch (teamError) {
         console.warn('Team Twitter accounts unavailable:', teamError?.response?.status || teamError?.message || teamError);
-        mergedAccounts = [...personalAccounts];
+        mergedAccounts = hasActiveTeamContext() ? [] : [...personalAccounts];
       }
 
       setTwitterAccounts(mergedAccounts);
@@ -635,13 +654,16 @@ export const useTweetComposer = () => {
         return { ok: true, status };
       }
 
-      const unusable = status?.connected === false || Boolean(status?.isExpired);
+      const unusable = status?.postingReady === false || status?.connected === false;
       if (unusable) {
         if (!silent || now - lastTokenStatusToastAtRef.current > 20_000) {
           lastTokenStatusToastAtRef.current = now;
-          const message = status?.isExpired
-            ? 'Twitter token expired. Please reconnect your account before posting.'
-            : 'Twitter connection is not usable right now. Please reconnect your account.';
+          const message =
+            status?.mediaReady === false
+              ? 'Twitter media permissions are not usable right now. Please reconnect your account before posting images.'
+              : status?.isExpired
+                ? 'Twitter token expired and auto-refresh could not restore posting. Please reconnect your account before posting.'
+                : 'Twitter connection is not usable right now. Please reconnect your account.';
           toast.error(message, { duration: 5000 });
         }
 

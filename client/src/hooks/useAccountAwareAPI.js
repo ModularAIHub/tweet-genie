@@ -40,11 +40,11 @@ const toCachedFetchResponse = ({ ok, status, statusText, payload, headers, rawTe
 
 const resolveTeamScope = ({ selectedAccount, activeTeamId, isTeamMode }) => {
   const selectedAccountTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
-  const effectiveTeamId = selectedAccountTeamId || null;
+  const effectiveTeamId = selectedAccountTeamId || activeTeamId || null;
 
   return {
     effectiveTeamId,
-    isTeamScope: Boolean(isTeamMode && effectiveTeamId && (selectedAccount?.id || selectedAccount?.account_id)),
+    isTeamScope: Boolean(isTeamMode && effectiveTeamId),
   };
 };
 

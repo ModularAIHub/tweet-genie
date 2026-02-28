@@ -126,13 +126,19 @@ const clearStaleAccountScope = ({ clearTeamContext = false, reason = 'unknown' }
 
 const resolveRequestScope = () => {
   const selectedAccount = parseStoredJSON(SELECTED_ACCOUNT_STORAGE_KEY);
+  const storedTeamContext = parseStoredJSON(TEAM_CONTEXT_STORAGE_KEY);
   const selectedAccountId = selectedAccount?.id || selectedAccount?.account_id || null;
   const selectedAccountTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
-  const teamId = selectedAccountTeamId || null;
+  const teamContextId = storedTeamContext?.team_id || storedTeamContext?.teamId || null;
+  const teamId = selectedAccountTeamId || teamContextId || null;
+  const scopedSelectedAccountId =
+    teamId && !selectedAccountTeamId
+      ? null
+      : selectedAccountId;
 
   return {
     teamId,
-    selectedAccountId,
+    selectedAccountId: scopedSelectedAccountId,
   };
 };
 
