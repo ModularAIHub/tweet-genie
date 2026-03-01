@@ -263,11 +263,20 @@ const mapLinkedInLegacyStatus = (crossPostResult) =>
   crossPostResult?.linkedin?.enabled ? (crossPostResult.linkedin.status ?? 'failed') : null;
 
 const resolveTweetGenieInternalBaseUrl = () => {
+  // 1. Explicit config always wins.
   const configuredUrl = String(process.env.TWEET_GENIE_URL || '').trim();
   if (configuredUrl) {
     return configuredUrl;
   }
 
+  // 2. On Vercel, VERCEL_URL is auto-injected with the deployment hostname (no protocol).
+  //    Use it so tweet-genie can call itself without needing TWEET_GENIE_URL set.
+  const vercelUrl = String(process.env.VERCEL_URL || '').trim();
+  if (vercelUrl) {
+    return `https://${vercelUrl}`;
+  }
+
+  // 3. Local dev: use localhost.
   if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
     const localPort = String(process.env.PORT || '3002').trim() || '3002';
     return `http://localhost:${localPort}`;
