@@ -685,6 +685,13 @@ const runAnalyticsAutoSyncTick = async () => {
   }
 };
 
+// Exported so that the Vercel Cron endpoint (and tests) can trigger a tick directly
+// without going through the setInterval timer (which doesn't survive Vercel serverless sleep).
+export async function triggerAnalyticsSyncTick() {
+  await runAnalyticsAutoSyncTick();
+  return analyticsAutoSyncLastRun;
+}
+
 export function startAnalyticsAutoSyncWorker() {
   if (!ANALYTICS_AUTO_SYNC_ENABLED) {
     console.warn('[AnalyticsAutoSync] Worker disabled by ANALYTICS_AUTO_SYNC_ENABLED=false');

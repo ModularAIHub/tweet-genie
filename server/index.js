@@ -46,7 +46,7 @@ import {
 
 // Service imports
 import { getDbScheduledTweetWorkerStatus, startDbScheduledTweetWorker } from './workers/dbScheduledTweetWorker.js';
-import { getAnalyticsAutoSyncStatus, startAnalyticsAutoSyncWorker } from './workers/analyticsSyncWorker.js';
+import { getAnalyticsAutoSyncStatus, startAnalyticsAutoSyncWorker, triggerAnalyticsSyncTick } from './workers/analyticsSyncWorker.js';
 import { startAutopilotWorker, getAutopilotWorkerStatus } from './workers/autopilotWorker.js';
 import {
   getDeletedTweetRetentionWorkerStatus,
@@ -434,7 +434,6 @@ app.use('/api/scheduling', authenticateToken, schedulingRoutes);
 app.use('/api/linkedin', authenticateToken, linkedinStatusRoutes);
 app.use('/api/threads', authenticateToken, threadsStatusRoutes);
 app.use('/api/cross-post', authenticateToken, crossPostTargetsRoutes);
-app.use('/api/analytics', authenticateToken, analyticsRoutes);
 app.use('/api/dashboard', authenticateToken, dashboardRoutes);
 app.use('/api/credits', authenticateToken, creditsRoutes);
 app.use('/api/providers', authenticateToken, providersRoutes);
@@ -454,6 +453,26 @@ app.use(
 app.use('/api/autopilot', authenticateToken, validateTwitterConnection, autopilotRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
+// Vercel Cron trigger for analytics auto-sync.
+// Must be registered BEFORE the authenticateToken-wrapped /api/analytics mount.
+// Vercel calls this every 15 min (see server/vercel.json). Auth via CRON_SECRET.
+app.post('/api/analytics/cron', async (req, res) => {
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  const authHeader = req.headers['authorization'] || '';
+  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+  if (!cronSecret || providedToken !== cronSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const result = await triggerAnalyticsSyncTick();
+    return res.json({ ok: true, result });
+  } catch (error) {
+    console.error('[AnalyticsCron] Tick failed:', error?.message || error);
+    return res.status(500).json({ ok: false, error: error?.message || 'unknown_error' });
+  }
+});
+
+app.use('/api/analytics', authenticateToken, analyticsRoutes);
 // Global error handler to always set CORS headers, even for body parser errors (e.g., 413)
 app.use((err, req, res, next) => {
   const origin = req.headers.origin;
