@@ -312,7 +312,7 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
 
   try {
     if (platformTeamId) {
-      const teamAccount = await getTeamTwitterAccountForMember(platformUserId, platformTeamId);
+      let teamAccount = await getTeamTwitterAccountForMember(platformUserId, platformTeamId);
 
       if (!teamAccount) {
         return res.json({
@@ -320,6 +320,20 @@ router.get('/status', ensureInternalRequest, async (req, res) => {
           reason: 'not_connected',
           code: 'TWITTER_NOT_CONNECTED',
         });
+      }
+
+      // Attempt proactive token refresh (mirrors what validateTwitterConnection does).
+      if (!hasOauth1Credentials(teamAccount)) {
+        const refreshResult = await refreshTwitterOauth2IfNeeded({
+          dbPool: pool,
+          account: teamAccount,
+          accountType: 'team',
+          reason: 'status-check',
+          onLog: (msg, meta) => logger.info(msg, { ...meta, userId: platformUserId, teamId: platformTeamId }),
+        });
+        if (refreshResult.account) {
+          teamAccount = refreshResult.account;
+        }
       }
 
       if (isTokenExpired(teamAccount.token_expires_at) && !hasOauth1Credentials(teamAccount)) {
@@ -561,14 +575,15 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
       });
     }
 
-    // Attempt token refresh before hard-failing on expiry.
-    // This mirrors what the main tweet route does via ensureTwitterAccountReady.
-    if (isTokenExpired(account.token_expires_at) || account?.refresh_token) {
+    // Proactively refresh OAuth2 token (near-expiry or already expired).
+    // refreshTwitterOauth2IfNeeded is a no-op when the token is still healthy,
+    // so calling unconditionally for OAuth2-only accounts is safe and ensures
+    // the same 10-minute look-ahead window used everywhere else.
+    if (!hasOauth1Credentials(account)) {
       const refreshResult = await refreshTwitterOauth2IfNeeded({
         dbPool: pool,
         account,
         accountType: accountScope,
-        force: isTokenExpired(account.token_expires_at) && !hasOauth1Credentials(account),
         reason: 'cross-post',
         onLog: (msg, meta) => logger.info(msg, { ...meta, userId: platformUserId, teamId: platformTeamId || null }),
       });
