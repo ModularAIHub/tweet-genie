@@ -12,6 +12,7 @@ import {
 import { listTwitterConnectedAccounts } from '../utils/twitterConnectedAccountRegistry.js';
 import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache.js';
 import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
+import { refreshTwitterOauth2IfNeeded } from '../utils/twitterRuntimeAuth.js';
 
 const router = express.Router();
 const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
@@ -560,9 +561,25 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
       });
     }
 
-    if (isTokenExpired(account.token_expires_at) && !hasOauth1Credentials(account)) {
+    // Attempt token refresh before hard-failing on expiry.
+    // This mirrors what the main tweet route does via ensureTwitterAccountReady.
+    if (isTokenExpired(account.token_expires_at) || account?.refresh_token) {
+      const refreshResult = await refreshTwitterOauth2IfNeeded({
+        dbPool: pool,
+        account,
+        accountType: accountScope,
+        force: isTokenExpired(account.token_expires_at) && !hasOauth1Credentials(account),
+        reason: 'cross-post',
+        onLog: (msg, meta) => logger.info(msg, { ...meta, userId: platformUserId, teamId: platformTeamId || null }),
+      });
+      if (refreshResult.account) {
+        account = refreshResult.account;
+      }
+    }
+
+    if (!hasOauth1Credentials(account) && isTokenExpired(account.token_expires_at)) {
       return res.status(401).json({
-        error: 'Twitter token expired',
+        error: 'Twitter token expired and could not be refreshed. Please reconnect your X account.',
         code: 'TWITTER_TOKEN_EXPIRED',
       });
     }
