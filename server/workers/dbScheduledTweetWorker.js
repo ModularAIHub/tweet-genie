@@ -119,6 +119,10 @@ async function claimDueScheduledTweets(limit) {
   return rows;
 }
 
+export async function runSchedulerTick() {
+  return schedulerTick();
+}
+
 async function schedulerTick() {
   if (tickInProgress) {
     return;

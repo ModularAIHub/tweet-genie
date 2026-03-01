@@ -1152,7 +1152,7 @@ export const useTweetComposer = () => {
 
       if (isThread) {
         const validTweets = threadTweets.filter((tweet) => tweet.trim().length > 0 && tweet !== '---');
-        await scheduling.create({
+        const threadScheduleRes = await scheduling.create({
           thread: validTweets,
           threadMedia,
           ...(normalizedCrossPost.linkedin && { postToLinkedin: true }),
@@ -1176,7 +1176,11 @@ export const useTweetComposer = () => {
           scheduled_for: dateString,
           timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
         });
-        if (hasAnyCrossPostTarget) {
+        const threadScheduleData = threadScheduleRes?.data || {};
+        const threadNeedsApproval = threadScheduleData.approval_status === 'pending_approval';
+        if (threadNeedsApproval) {
+          toast.success('Thread submitted for approval. An admin will need to approve it before it posts.');
+        } else if (hasAnyCrossPostTarget) {
           const labels = [
             normalizedCrossPost.linkedin ? 'LinkedIn' : null,
             normalizedCrossPost.threads ? 'Threads' : null,
@@ -1190,7 +1194,7 @@ export const useTweetComposer = () => {
         setThreadImages([]);
         setIsThread(false);
       } else {
-        await scheduling.create({
+        const singleScheduleRes = await scheduling.create({
           content: content.trim(),
           media: mediaIds.length > 0 ? mediaIds : undefined,
           ...(normalizedCrossPost.linkedin && { postToLinkedin: true }),
@@ -1214,7 +1218,11 @@ export const useTweetComposer = () => {
           scheduled_for: dateString,
           timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
         });
-        if (hasAnyCrossPostTarget) {
+        const singleScheduleData = singleScheduleRes?.data || {};
+        const singleNeedsApproval = singleScheduleData.approval_status === 'pending_approval';
+        if (singleNeedsApproval) {
+          toast.success('Tweet submitted for approval. An admin will need to approve it before it posts.');
+        } else if (hasAnyCrossPostTarget) {
           const labels = [
             normalizedCrossPost.linkedin ? 'LinkedIn' : null,
             normalizedCrossPost.threads ? 'Threads' : null,

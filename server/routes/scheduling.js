@@ -398,18 +398,16 @@ function buildExternalXScheduledRowFromLinkedIn(row) {
 
 async function fetchExternalLinkedinCrossSchedulesForX({ userId, teamId = null, statuses = null, limit = 100 }) {
   const safeLimit = Math.max(1, Math.min(200, Number(limit) || 100));
-  const ownerClause = teamId
-    ? `company_id::text = $1`
-    : `(user_id = $1 AND (company_id IS NULL OR company_id::text = ''))`;
-  const ownerValue = teamId ? String(teamId) : userId;
-
+  // Always query by user_id — LinkedIn company_id is a LinkedIn-internal team ID
+  // that does not match the Twitter team_id, so cross-app team filtering by ID
+  // would silently return zero rows.  Ownership is correctly established via user_id.
   const { rows } = await pool.query(
     `SELECT *
      FROM scheduled_linkedin_posts
-     WHERE ${ownerClause}
+     WHERE user_id = $1
      ORDER BY scheduled_time ASC
      LIMIT $2`,
-    [ownerValue, safeLimit]
+    [userId, safeLimit]
   );
 
   return rows
@@ -695,7 +693,6 @@ function filterScheduledRowsByTeamScope(rows, teamScope) {
       .filter(Boolean)
   );
   const scopedTeamId = String(teamScope.teamId || '').trim();
-  const allowOrphanFallback = Boolean(teamScope.allowOrphanFallback && scopedTeamId);
 
   return (Array.isArray(rows) ? rows : []).filter((row) => {
     const accountId = row?.account_id !== undefined && row?.account_id !== null
@@ -705,7 +702,10 @@ function filterScheduledRowsByTeamScope(rows, teamScope) {
       return true;
     }
 
-    if (allowOrphanFallback) {
+    // Always allow rows that have no account_id but belong to this team.
+    // This covers tweets scheduled when account_id could not be stored
+    // (e.g. column type mismatch) while team_id was saved correctly.
+    if (scopedTeamId) {
       const rowTeamId = row?.team_id !== undefined && row?.team_id !== null
         ? String(row.team_id).trim()
         : '';
@@ -940,8 +940,13 @@ async function fetchPersonalScheduledRows({ userId, twitterScope, statuses, safe
   const hasAuthorScope = Boolean(twitterScope?.twitterUserId);
   const statusParamIdx = hasAuthorScope ? 3 : 2;
   const statusClause = statuses ? `AND st.status = ANY($${statusParamIdx}::text[])` : '';
+  // When we have an author scope, prefer rows where author_id matches the connected
+  // Twitter account. Also include rows where author_id is null (legacy) or where
+  // user_id matches but author_id was set to a different value (e.g. account mismatch
+  // during save). The broader fallback ensures personal-mode users always see their
+  // own scheduled tweets regardless of how author_id was stored.
   const authorScopeClause = hasAuthorScope
-    ? 'AND (st.author_id = $2 OR (st.author_id IS NULL AND st.user_id = $1))'
+    ? 'AND (st.author_id = $2 OR st.author_id IS NULL OR st.user_id = $1)'
     : 'AND (st.author_id IS NULL AND st.user_id = $1)';
 
   const personalParams = hasAuthorScope

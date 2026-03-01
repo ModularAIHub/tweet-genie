@@ -45,7 +45,7 @@ import {
 // import { errorHandler } from './middleware/errorHandler.js';
 
 // Service imports
-import { getDbScheduledTweetWorkerStatus, startDbScheduledTweetWorker } from './workers/dbScheduledTweetWorker.js';
+import { getDbScheduledTweetWorkerStatus, startDbScheduledTweetWorker, runSchedulerTick } from './workers/dbScheduledTweetWorker.js';
 import { getAnalyticsAutoSyncStatus, startAnalyticsAutoSyncWorker, triggerAnalyticsSyncTick } from './workers/analyticsSyncWorker.js';
 import { startAutopilotWorker, getAutopilotWorkerStatus } from './workers/autopilotWorker.js';
 import {
@@ -468,6 +468,26 @@ app.post('/api/analytics/cron', async (req, res) => {
     return res.json({ ok: true, result });
   } catch (error) {
     console.error('[AnalyticsCron] Tick failed:', error?.message || error);
+    return res.status(500).json({ ok: false, error: error?.message || 'unknown_error' });
+  }
+});
+
+// Vercel Cron trigger for the tweet scheduler.
+// Called every minute by Vercel (see server/vercel.json). Auth via CRON_SECRET.
+// On Vercel, setInterval workers are killed between requests — this endpoint
+// is the reliable replacement: one HTTP call = one scheduler tick.
+app.post('/api/cron/scheduler', async (req, res) => {
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  const authHeader = req.headers['authorization'] || '';
+  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+  if (!cronSecret || providedToken !== cronSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    await runSchedulerTick();
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('[SchedulerCron] Tick failed:', error?.message || error);
     return res.status(500).json({ ok: false, error: error?.message || 'unknown_error' });
   }
 });
