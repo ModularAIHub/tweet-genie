@@ -4,7 +4,8 @@ import { authenticateToken, validateTwitterConnection } from '../middleware/auth
 import { hasProPlanAccess, resolveRequestPlanType, requireProPlan } from '../middleware/planAccess.js';
 import { buildTwitterScopeFilter, resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import { markTweetDeleted } from '../services/tweetRetentionService.js';
-import { createTwitterReadClient } from '../utils/twitterRuntimeAuth.js';
+import { createTwitterReadClient, refreshTwitterOauth2IfNeeded } from '../utils/twitterRuntimeAuth.js';
+import { inlineQuickSync, fetchAndPersistMetricsInline } from '../workers/analyticsSyncWorker.js';
 
 const router = express.Router();
 const SYNC_COOLDOWN_MS = Number(process.env.ANALYTICS_SYNC_COOLDOWN_MS || 3 * 60 * 1000);
@@ -332,6 +333,13 @@ const isRateLimitError = (error) => {
   return message.includes('429') || message.includes('rate limit');
 };
 
+const isTwitterAuthError = (error) => {
+  const status = error?.code || error?.status || error?.response?.status || error?.statusCode;
+  if (status === 401 || status === '401' || status === 403 || status === '403') return true;
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('401') || message.includes('403') || message.includes('unauthorized') || message.includes('forbidden') || message.includes('invalid token') || message.includes('token has been revoked');
+};
+
 const getRateLimitResetInfo = (error) => {
   const fallbackTimestamp = Date.now() + 15 * 60 * 1000;
   const candidates = [
@@ -426,6 +434,53 @@ router.get('/overview', authenticateToken, async (req, res) => {
       isProPlan,
     });
 
+    // Inline quick-sync: refresh hot tweets metrics before returning data.
+    // Runs within this request (serverless-safe). Adds ~1-2s but ensures fresh data.
+    let inlineSyncResult = null;
+    if (isProPlan && twitterScope.connected) {
+      try {
+        const quickSyncAccountId = twitterScope.mode === 'team' ? twitterScope.effectiveAccountId : null;
+        // Get the user's twitter auth for the inline fetch
+        let quickSyncAccount = null;
+        if (twitterScope.mode === 'team' && twitterScope.teamScope?.relatedAccountIds?.length > 0) {
+          const { rows: teamRows } = await pool.query(
+            `SELECT team_id, user_id, twitter_user_id, access_token, refresh_token, token_expires_at
+             FROM team_accounts WHERE active = true AND user_id = $1
+             ORDER BY updated_at DESC NULLS LAST LIMIT 1`,
+            [userId]
+          );
+          if (teamRows.length > 0) quickSyncAccount = teamRows[0];
+        }
+        if (!quickSyncAccount) {
+          const { rows: authRows } = await pool.query(
+            `SELECT id, user_id, access_token, refresh_token, token_expires_at, twitter_user_id
+             FROM twitter_auth WHERE user_id = $1 AND access_token IS NOT NULL AND twitter_user_id IS NOT NULL
+             ORDER BY updated_at DESC NULLS LAST LIMIT 1`,
+            [userId]
+          );
+          if (authRows.length > 0) quickSyncAccount = authRows[0];
+        }
+        if (quickSyncAccount?.access_token) {
+          inlineSyncResult = await inlineQuickSync({
+            userId,
+            accountId: quickSyncAccountId,
+            limit: 5,
+            account: quickSyncAccount,
+            accountType: twitterScope.mode === 'team' ? 'team' : 'personal',
+          });
+          if (inlineSyncResult?.updated > 0) {
+            analyticsInfo('Inline quick-sync refreshed metrics', {
+              userId,
+              updated: inlineSyncResult.updated,
+            });
+          }
+        }
+      } catch (quickSyncErr) {
+        // Non-fatal — analytics still loads with existing data
+        analyticsInfo('Inline quick-sync failed (non-fatal)', { message: quickSyncErr?.message });
+      }
+    }
+
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
     const overviewEndpointKey = isProPlan ? 'overview_pro' : 'overview_free';
@@ -454,8 +509,16 @@ router.get('/overview', authenticateToken, async (req, res) => {
         orphanUserId: userId,
       });
 
+      // In team mode, remove the user_id restriction so tweets posted by ALL
+      // team members for the same account are counted. The scope filter already
+      // limits rows by account_id / author_id.
+      let finalSql = baseSql;
+      if (twitterScope?.mode === 'team') {
+        finalSql = finalSql.replace(/\b(?:\w+\.)?user_id\s*=\s*\$1\b/, '1 = 1');
+      }
+
       return {
-        sql: injectScopeClause(baseSql, clause),
+        sql: injectScopeClause(finalSql, clause),
         params: [...baseParams, ...params],
       };
     };
@@ -792,7 +855,7 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
     await ensureTweetAnalyticsColumns();
 
     const userId = req.user.id;
-    const twitterAccount = req.twitterAccount;
+    let twitterAccount = req.twitterAccount;
     const selectedAccountId = req.headers['x-selected-account-id'];
     const requestTeamId = req.headers['x-team-id'] || null;
     const parsedRequestedDays = Number.parseInt(req.body?.days, 10);
@@ -881,7 +944,7 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
 
     log('Sync lock acquired', { syncKey });
 
-    const twitterClient = createTwitterReadClient(twitterAccount);
+    let twitterClient = createTwitterReadClient(twitterAccount);
     if (!twitterClient) {
       await setSyncState(syncKey, {
         userId,
@@ -1071,6 +1134,7 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
 
     // Use batch lookups to keep calls low and avoid client timeouts.
     const batchSize = 50;
+    let tokenRefreshedForRetry = false;
 
     for (let i = 0; i < tweetsToUpdate.length; i += batchSize) {
       const batch = tweetsToUpdate.slice(i, i + batchSize);
@@ -1157,6 +1221,75 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
           });
 
           return updatedCount > 0 ? res.status(200).json(payload) : res.status(429).json(payload);
+        }
+
+        if (isTwitterAuthError(batchError)) {
+          if (!tokenRefreshedForRetry) {
+            log('Twitter 401 during batch — attempting token refresh before retry', {
+              status: batchError?.code || batchError?.status,
+              message: batchError?.message,
+            });
+            try {
+              const refreshResult = await refreshTwitterOauth2IfNeeded({
+                dbPool: pool,
+                account: twitterAccount,
+                accountType: twitterAccount?.isTeamAccount ? 'team' : 'personal',
+                force: true,
+                reason: 'api_401_retry',
+              });
+              if (refreshResult.refreshed && refreshResult.account) {
+                log('Token refresh successful — retrying failed batch', {
+                  accountId: refreshResult.account.id,
+                  newExpiresAt: refreshResult.status?.expiresAtIso,
+                });
+                twitterAccount = refreshResult.account;
+                twitterClient = createTwitterReadClient(twitterAccount);
+                tokenRefreshedForRetry = true;
+                i -= batchSize; // step back so the loop retries this batch
+                continue;
+              }
+              log('Token refresh did not produce a new token — requesting reconnect', {
+                refreshed: refreshResult.refreshed,
+                error: refreshResult.error,
+              });
+            } catch (refreshErr) {
+              log('Token refresh threw during 401 recovery', { message: refreshErr?.message });
+            }
+          } else {
+            log('Twitter 401 persists after token refresh — token is fully revoked', {
+              status: batchError?.code || batchError?.status,
+            });
+          }
+
+          const completedAt = Date.now();
+          await setSyncState(syncKey, {
+            userId,
+            accountId: effectiveAccountId,
+            patch: {
+              inProgress: false,
+              lastSyncAt: completedAt,
+              nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+              lastResult: 'auth_error',
+            },
+          });
+          return res.status(401).json({
+            success: false,
+            error: 'Twitter authentication failed',
+            message: 'Your Twitter connection has expired or been revoked. Please reconnect your Twitter account.',
+            type: 'twitter_auth_error',
+            code: 'TWITTER_RECONNECT_REQUIRED',
+            requiresReconnect: true,
+            stats: {
+              metrics_updated: updatedCount,
+              errors: errorCount + Math.max(0, tweetsToUpdate.length - i),
+              total_processed: updatedCount + skippedTweetIds.size,
+              total_candidates: tweetsToUpdate.length,
+              skip_reasons: skipReasons,
+            },
+            debugInfo,
+            runId: syncRunId,
+            syncStatus: await getSyncStatusPayload(syncKey),
+          });
         }
 
         throw batchError;
@@ -1357,6 +1490,44 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
       status: error?.status || error?.response?.status,
     });
 
+    if (isTwitterAuthError(error)) {
+      log('Twitter auth error in sync outer catch — token revoked or invalid', {
+        status: error?.code || error?.status,
+        message: error?.message,
+      });
+      const completedAt = Date.now();
+      if (syncKey) {
+        await setSyncState(syncKey, {
+          userId: syncUserId || req.user.id,
+          accountId: syncAccountId,
+          patch: {
+            inProgress: false,
+            lastSyncAt: completedAt,
+            nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+            lastResult: 'auth_error',
+          },
+        });
+      }
+      return res.status(401).json({
+        success: false,
+        error: 'Twitter authentication failed',
+        message: 'Your Twitter connection has expired or been revoked. Please reconnect your Twitter account.',
+        type: 'twitter_auth_error',
+        code: 'TWITTER_RECONNECT_REQUIRED',
+        requiresReconnect: true,
+        stats: {
+          metrics_updated: updatedCount,
+          errors: errorCount,
+          total_processed: updatedCount + skippedTweetIds.size,
+          total_candidates: tweetsToUpdate.length,
+          skip_reasons: skipReasons,
+        },
+        debugInfo,
+        runId: syncRunId,
+        syncStatus: syncKey ? await getSyncStatusPayload(syncKey) : null,
+      });
+    }
+
     if (isRateLimitError(error)) {
       const { resetTimestamp, waitMinutes } = getRateLimitResetInfo(error);
       const resetTime = new Date(resetTimestamp);
@@ -1371,8 +1542,8 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
 
       if (syncKey) {
         await setSyncState(syncKey, {
-          userId,
-          accountId: effectiveAccountId,
+          userId: syncUserId || req.user.id,
+          accountId: syncAccountId,
           patch: {
             inProgress: false,
             lastSyncAt: completedAt,
@@ -1412,8 +1583,8 @@ router.post('/sync', requireProPlan('Sync Latest'), validateTwitterConnection, a
     if (syncKey) {
       const completedAt = Date.now();
       await setSyncState(syncKey, {
-        userId,
-        accountId: effectiveAccountId,
+        userId: syncUserId || req.user.id,
+        accountId: syncAccountId,
         patch: {
           inProgress: false,
           lastSyncAt: completedAt,
@@ -1514,7 +1685,8 @@ router.post('/tweets/:tweetId/refresh', requireProPlan('Tweet metric refresh'), 
     }
 
     const tweet = tweetResult.rows[0];
-    const twitterClient = createTwitterReadClient(req.twitterAccount);
+    let twitterAccount = req.twitterAccount;
+    let twitterClient = createTwitterReadClient(twitterAccount);
     if (!twitterClient) {
       return res.status(401).json({
         success: false,
@@ -1539,7 +1711,43 @@ router.post('/tweets/:tweetId/refresh', requireProPlan('Tweet metric refresh'), 
           resetTime: new Date(resetTimestamp).toISOString(),
         });
       }
-      throw lookupError;
+      if (isTwitterAuthError(lookupError)) {
+        // Force-refresh token and retry once
+        try {
+          const refreshResult = await refreshTwitterOauth2IfNeeded({
+            dbPool: pool,
+            account: twitterAccount,
+            accountType: twitterAccount?.isTeamAccount ? 'team' : 'personal',
+            force: true,
+            reason: 'single_tweet_refresh_401_retry',
+          });
+          if (refreshResult.refreshed && refreshResult.account) {
+            twitterAccount = refreshResult.account;
+            twitterClient = createTwitterReadClient(twitterAccount);
+            if (twitterClient) {
+              lookup = await twitterClient.v2.tweets([String(tweet.tweet_id)], {
+                'tweet.fields': ['public_metrics', 'created_at'],
+              });
+              // Retry succeeded — fall through to normal processing below
+            }
+          }
+        } catch (_retryErr) {
+          // Refresh or retry failed — fall through to reconnect error
+        }
+
+        if (!lookup) {
+          return res.status(401).json({
+            success: false,
+            error: 'Twitter authentication failed',
+            message: 'Your Twitter connection has expired or been revoked. Please reconnect your Twitter account.',
+            type: 'twitter_auth_error',
+            code: 'TWITTER_RECONNECT_REQUIRED',
+            requiresReconnect: true,
+          });
+        }
+      } else {
+        throw lookupError;
+      }
     }
 
     const dataRows = Array.isArray(lookup?.data) ? lookup.data : [];
@@ -1722,8 +1930,13 @@ router.get('/engagement', authenticateToken, requireProPlan('Advanced analytics'
         orphanUserId: userId,
       });
 
+      let finalSql = baseSql;
+      if (twitterScope?.mode === 'team') {
+        finalSql = finalSql.replace(/\b(?:\w+\.)?user_id\s*=\s*\$1\b/, '1 = 1');
+      }
+
       return {
-        sql: injectScopeClause(baseSql, clause),
+        sql: injectScopeClause(finalSql, clause),
         params: [...baseParams, ...params],
       };
     };
@@ -1913,8 +2126,13 @@ router.get('/audience', authenticateToken, requireProPlan('Advanced analytics'),
         orphanUserId: userId,
       });
 
+      let finalSql = baseSql;
+      if (twitterScope?.mode === 'team') {
+        finalSql = finalSql.replace(/\b(?:\w+\.)?user_id\s*=\s*\$1\b/, '1 = 1');
+      }
+
       return {
-        sql: injectScopeClause(baseSql, clause),
+        sql: injectScopeClause(finalSql, clause),
         params: [...baseParams, ...params],
       };
     };

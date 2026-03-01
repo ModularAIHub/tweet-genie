@@ -10,11 +10,11 @@ dotenv.config();
 
 const ANALYTICS_AUTO_SYNC_ENABLED = process.env.ANALYTICS_AUTO_SYNC_ENABLED !== 'false';
 const ANALYTICS_AUTO_SYNC_INTERVAL_MS = Number.parseInt(
-  process.env.ANALYTICS_AUTO_SYNC_INTERVAL_MS || '900000',
+  process.env.ANALYTICS_AUTO_SYNC_INTERVAL_MS || '300000',
   10
 );
 const ANALYTICS_AUTO_SYNC_INITIAL_DELAY_MS = Number.parseInt(
-  process.env.ANALYTICS_AUTO_SYNC_INITIAL_DELAY_MS || '60000',
+  process.env.ANALYTICS_AUTO_SYNC_INITIAL_DELAY_MS || '30000',
   10
 );
 const ANALYTICS_AUTO_SYNC_USER_BATCH = Number.parseInt(
@@ -22,7 +22,7 @@ const ANALYTICS_AUTO_SYNC_USER_BATCH = Number.parseInt(
   10
 );
 const ANALYTICS_AUTO_SYNC_CANDIDATE_LIMIT = Number.parseInt(
-  process.env.ANALYTICS_AUTO_SYNC_CANDIDATE_LIMIT || '8',
+  process.env.ANALYTICS_AUTO_SYNC_CANDIDATE_LIMIT || '12',
   10
 );
 const ANALYTICS_AUTO_SYNC_FORCE_REFRESH_COUNT = Number.parseInt(
@@ -43,11 +43,11 @@ const ANALYTICS_AUTO_SYNC_COOL_WINDOW_HOURS = Number.parseInt(
   10
 );
 const ANALYTICS_AUTO_SYNC_HOT_STALE_MINUTES = Number.parseInt(
-  process.env.ANALYTICS_AUTO_SYNC_HOT_STALE_MINUTES || '3',
+  process.env.ANALYTICS_AUTO_SYNC_HOT_STALE_MINUTES || '2',
   10
 );
 const ANALYTICS_AUTO_SYNC_WARM_STALE_MINUTES = Number.parseInt(
-  process.env.ANALYTICS_AUTO_SYNC_WARM_STALE_MINUTES || '15',
+  process.env.ANALYTICS_AUTO_SYNC_WARM_STALE_MINUTES || '8',
   10
 );
 const ANALYTICS_AUTO_SYNC_COOL_STALE_MINUTES = Number.parseInt(
@@ -78,7 +78,7 @@ let analyticsAutoSyncLastRun = {
 };
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
-const getSyncKey = (userId) => `${userId}:personal`;
+const getSyncKey = (userId, accountId) => `${userId}:${accountId || 'personal'}`;
 const toPositiveInt = (value, fallback) =>
   Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 
@@ -137,18 +137,25 @@ const ensureAnalyticsSyncStateTable = async () => {
   analyticsSyncStateReady = true;
 };
 
-const setSyncState = async (syncKey, { userId, patch = {} }) => {
+const setSyncState = async (syncKey, { userId, accountId = null, patch = {} }) => {
   await ensureAnalyticsSyncStateTable();
 
   await pool.query(
     `INSERT INTO analytics_sync_state (sync_key, user_id, account_id)
-     VALUES ($1, $2, NULL)
+     VALUES ($1, $2, $3)
      ON CONFLICT (sync_key) DO NOTHING`,
-    [syncKey, userId]
+    [syncKey, userId, accountId]
   );
 
   const values = [syncKey, userId];
-  const assignments = ['user_id = $2', 'account_id = NULL'];
+  const assignments = ['user_id = $2'];
+
+  if (accountId) {
+    values.push(accountId);
+    assignments.push(`account_id = $${values.length}`);
+  } else {
+    assignments.push('account_id = NULL');
+  }
 
   if (hasOwn(patch, 'inProgress')) {
     values.push(!!patch.inProgress);
@@ -179,7 +186,7 @@ const setSyncState = async (syncKey, { userId, patch = {} }) => {
   );
 };
 
-const acquireSyncLock = async ({ syncKey, userId }) => {
+const acquireSyncLock = async ({ syncKey, userId, accountId = null }) => {
   await ensureAnalyticsSyncStateTable();
   const staleBefore = new Date(Date.now() - SYNC_LOCK_STALE_MS);
 
@@ -187,10 +194,10 @@ const acquireSyncLock = async ({ syncKey, userId }) => {
     `INSERT INTO analytics_sync_state (
        sync_key, user_id, account_id, in_progress, started_at, last_result, updated_at
      )
-     VALUES ($1, $2, NULL, true, CURRENT_TIMESTAMP, 'running', CURRENT_TIMESTAMP)
+     VALUES ($1, $2, $4, true, CURRENT_TIMESTAMP, 'running', CURRENT_TIMESTAMP)
      ON CONFLICT (sync_key) DO UPDATE
        SET user_id = EXCLUDED.user_id,
-           account_id = NULL,
+           account_id = EXCLUDED.account_id,
            in_progress = true,
            started_at = CURRENT_TIMESTAMP,
            last_result = 'running',
@@ -199,7 +206,7 @@ const acquireSyncLock = async ({ syncKey, userId }) => {
         OR analytics_sync_state.started_at IS NULL
         OR analytics_sync_state.started_at < $3
      RETURNING sync_key`,
-    [syncKey, userId, staleBefore]
+    [syncKey, userId, staleBefore, accountId]
   );
 
   return rows.length > 0;
@@ -209,6 +216,13 @@ const isRateLimitError = (error) => {
   const status = error?.code || error?.status || error?.response?.status;
   if (status === 429 || status === '429') return true;
   return String(error?.message || '').toLowerCase().includes('rate limit');
+};
+
+const isTwitterAuthError = (error) => {
+  const status = error?.code || error?.status || error?.response?.status || error?.statusCode;
+  if (status === 401 || status === '401' || status === 403 || status === '403') return true;
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('401') || message.includes('403') || message.includes('unauthorized') || message.includes('forbidden') || message.includes('invalid token') || message.includes('token has been revoked');
 };
 
 const getRateLimitResetInfo = (error) => {
@@ -226,7 +240,7 @@ const getRateLimitResetInfo = (error) => {
   return { resetTimestamp, waitMinutes };
 };
 
-const refreshTwitterTokenIfNeeded = async (account) => {
+const refreshTwitterTokenIfNeeded = async (account, { accountType = 'personal', force = false } = {}) => {
   if (!account?.access_token) {
     return account;
   }
@@ -234,8 +248,9 @@ const refreshTwitterTokenIfNeeded = async (account) => {
   const refreshResult = await refreshTwitterOauth2IfNeeded({
     dbPool: pool,
     account,
-    accountType: 'personal',
-    reason: 'analytics-auto-sync',
+    accountType,
+    force,
+    reason: force ? 'analytics-auto-sync-force-retry' : 'analytics-auto-sync',
     onLog: (...args) => log(...args),
   });
 
@@ -304,6 +319,186 @@ const getEligibleAccounts = async () => {
   );
 
   return rows;
+};
+
+const getEligibleTeamAccounts = async () => {
+  await ensureAnalyticsSyncStateTable();
+
+  const userBatch = Number.isFinite(ANALYTICS_AUTO_SYNC_USER_BATCH) && ANALYTICS_AUTO_SYNC_USER_BATCH > 0
+    ? ANALYTICS_AUTO_SYNC_USER_BATCH
+    : 10;
+  const lookbackDays = Number.isFinite(SYNC_LOOKBACK_DAYS) && SYNC_LOOKBACK_DAYS > 0 ? SYNC_LOOKBACK_DAYS : 50;
+
+  const { rows } = await pool.query(
+    `SELECT
+       ta.team_id,
+       ta.user_id,
+       ta.twitter_user_id,
+       ta.access_token,
+       ta.refresh_token,
+       ta.token_expires_at,
+       ta.team_id || ':' || ta.twitter_user_id AS account_key
+     FROM team_accounts ta
+     WHERE ta.access_token IS NOT NULL
+       AND ta.twitter_user_id IS NOT NULL
+       AND ta.active = true
+     AND NOT EXISTS (
+       SELECT 1 FROM analytics_sync_state ass
+       WHERE ass.sync_key = ta.user_id || ':' || ta.team_id || ':' || ta.twitter_user_id
+         AND (
+           ass.in_progress = true
+           OR (ass.next_allowed_at IS NOT NULL AND ass.next_allowed_at > CURRENT_TIMESTAMP)
+         )
+     )
+     AND EXISTS (
+       SELECT 1
+       FROM tweets t
+       WHERE t.user_id = ta.user_id
+         AND t.account_id IS NOT NULL
+         AND t.account_id::text != '0'
+         AND t.status = 'posted'
+         AND t.tweet_id IS NOT NULL
+         AND COALESCE(t.external_created_at, t.created_at) >= NOW() - ($1::int * INTERVAL '1 day')
+     )
+     ORDER BY ta.updated_at ASC NULLS FIRST
+     LIMIT $2`,
+    [lookbackDays, userBatch]
+  );
+
+  return rows;
+};
+
+const getCandidatesForTeamAccount = async ({ userId, accountId, twitterUserId }) => {
+  const candidateLimit = Number.isFinite(ANALYTICS_AUTO_SYNC_CANDIDATE_LIMIT) && ANALYTICS_AUTO_SYNC_CANDIDATE_LIMIT > 0
+    ? ANALYTICS_AUTO_SYNC_CANDIDATE_LIMIT
+    : 10;
+  const lookbackDays = Number.isFinite(SYNC_LOOKBACK_DAYS) && SYNC_LOOKBACK_DAYS > 0 ? SYNC_LOOKBACK_DAYS : 50;
+  const {
+    hotWindowHours,
+    warmWindowHours,
+    coolWindowHours,
+    hotStaleMinutes,
+    warmStaleMinutes,
+    coolStaleMinutes,
+    coldStaleMinutes,
+  } = getAdaptivePolicy();
+  const forceRefreshCount = Math.min(
+    candidateLimit,
+    Math.max(1, Number.isFinite(ANALYTICS_AUTO_SYNC_FORCE_REFRESH_COUNT) ? ANALYTICS_AUTO_SYNC_FORCE_REFRESH_COUNT : 5)
+  );
+
+  // For team accounts, we look for tweets that have a non-null account_id (team tweets)
+  // We don't filter by specific account_id to catch all tweets posted under this user's team accounts
+  const { rows } = await pool.query(
+    `
+      WITH scoped_tweets AS (
+        SELECT
+          id,
+          tweet_id,
+          created_at,
+          external_created_at,
+          updated_at,
+          impressions,
+          COALESCE(external_created_at, created_at) AS sort_ts,
+          EXTRACT(EPOCH FROM (NOW() - COALESCE(external_created_at, created_at))) / 3600.0 AS age_hours
+        FROM tweets
+        WHERE user_id = $1
+          AND account_id IS NOT NULL
+          AND account_id::text != '0'
+          AND (author_id = $2 OR (author_id IS NULL AND user_id = $1))
+          AND status = 'posted'
+          AND tweet_id IS NOT NULL
+          AND COALESCE(external_created_at, created_at) >= NOW() - ($3::int * INTERVAL '1 day')
+      ),
+      force_candidates AS (
+        SELECT id, tweet_id, sort_ts
+        FROM scoped_tweets
+        ORDER BY sort_ts DESC
+        LIMIT $4
+      ),
+      adaptive_candidates AS (
+        SELECT
+          id,
+          tweet_id,
+          sort_ts,
+          CASE
+            WHEN age_hours <= $5 THEN 1
+            WHEN age_hours <= $6 THEN 2
+            WHEN age_hours <= $7 THEN 3
+            ELSE 4
+          END AS priority_bucket
+        FROM scoped_tweets
+        WHERE
+          (
+            age_hours <= $5
+            AND (updated_at IS NULL OR updated_at < NOW() - ($8::int * INTERVAL '1 minute'))
+          )
+          OR (
+            age_hours > $5
+            AND age_hours <= $6
+            AND (updated_at IS NULL OR updated_at < NOW() - ($9::int * INTERVAL '1 minute'))
+          )
+          OR (
+            age_hours > $6
+            AND age_hours <= $7
+            AND (updated_at IS NULL OR updated_at < NOW() - ($10::int * INTERVAL '1 minute'))
+          )
+          OR (
+            age_hours > $7
+            AND (
+              impressions IS NULL
+              OR impressions = 0
+              OR updated_at IS NULL
+              OR updated_at < NOW() - ($11::int * INTERVAL '1 minute')
+            )
+          )
+      ),
+      ordered_adaptive AS (
+        SELECT id, tweet_id, sort_ts
+        FROM adaptive_candidates
+        ORDER BY priority_bucket ASC, sort_ts DESC
+        LIMIT $12
+      ),
+      combined_candidates AS (
+        SELECT id, tweet_id, sort_ts FROM force_candidates
+        UNION ALL
+        SELECT id, tweet_id, sort_ts FROM ordered_adaptive
+      )
+      SELECT id, tweet_id
+      FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY id ORDER BY sort_ts DESC) AS rn
+        FROM combined_candidates
+      ) deduped
+      WHERE rn = 1
+      ORDER BY sort_ts DESC
+      LIMIT $12
+    `,
+    [
+      userId,
+      String(twitterUserId),
+      lookbackDays,
+      forceRefreshCount,
+      hotWindowHours,
+      warmWindowHours,
+      coolWindowHours,
+      hotStaleMinutes,
+      warmStaleMinutes,
+      coolStaleMinutes,
+      coldStaleMinutes,
+      candidateLimit,
+    ]
+  );
+
+  log('team candidate selection', {
+    userId,
+    accountId,
+    total: rows?.length || 0,
+    limit: candidateLimit,
+    forceRefreshCount,
+  });
+
+  return rows || [];
 };
 
 const getCandidatesForUser = async ({ userId, twitterUserId }) => {
@@ -488,23 +683,24 @@ const updateTweetMetrics = async (tweetIdMap, tweetErrors) => {
   return { updates, errors };
 };
 
-const syncPersonalAccountMetrics = async (account) => {
+const syncAccountMetrics = async (account, { accountType = 'personal', accountId = null } = {}) => {
   const userId = account.user_id;
-  const syncKey = getSyncKey(userId);
+  const syncKey = getSyncKey(userId, accountId);
   let lockOwned = false;
 
   try {
-    const lockAcquired = await acquireSyncLock({ syncKey, userId });
+    const lockAcquired = await acquireSyncLock({ syncKey, userId, accountId });
     if (!lockAcquired) {
       return { synced: false, reason: 'lock_unavailable', updates: 0, rateLimited: false };
     }
     lockOwned = true;
 
-    const refreshedAccount = await refreshTwitterTokenIfNeeded(account);
+    let refreshedAccount = await refreshTwitterTokenIfNeeded(account, { accountType });
     if (!refreshedAccount?.access_token) {
       const completedAt = Date.now();
       await setSyncState(syncKey, {
         userId,
+        accountId,
         patch: {
           inProgress: false,
           lastSyncAt: completedAt,
@@ -515,15 +711,15 @@ const syncPersonalAccountMetrics = async (account) => {
       return { synced: false, reason: 'missing_access_token', updates: 0, rateLimited: false };
     }
 
-    const candidates = await getCandidatesForUser({
-      userId,
-      twitterUserId: refreshedAccount.twitter_user_id,
-    });
+    const candidates = accountType === 'team'
+      ? await getCandidatesForTeamAccount({ userId, accountId, twitterUserId: refreshedAccount.twitter_user_id })
+      : await getCandidatesForUser({ userId, twitterUserId: refreshedAccount.twitter_user_id });
 
     if (candidates.length === 0) {
       const completedAt = Date.now();
       await setSyncState(syncKey, {
         userId,
+        accountId,
         patch: {
           inProgress: false,
           lastSyncAt: completedAt,
@@ -539,6 +735,7 @@ const syncPersonalAccountMetrics = async (account) => {
       const completedAt = Date.now();
       await setSyncState(syncKey, {
         userId,
+        accountId,
         patch: {
           inProgress: false,
           lastSyncAt: completedAt,
@@ -549,11 +746,12 @@ const syncPersonalAccountMetrics = async (account) => {
       return { synced: true, reason: 'noop', updates: 0, rateLimited: false };
     }
 
-    const twitterClient = createTwitterReadClient(refreshedAccount);
+    let twitterClient = createTwitterReadClient(refreshedAccount);
     if (!twitterClient) {
       throw new Error('Twitter auth unavailable for analytics sync');
     }
     let lookup;
+    let tokenRefreshedForRetry = false;
     try {
       lookup = await twitterClient.v2.tweets(tweetIds, {
         'tweet.fields': ['public_metrics', 'created_at'],
@@ -564,6 +762,7 @@ const syncPersonalAccountMetrics = async (account) => {
         const completedAt = Date.now();
         await setSyncState(syncKey, {
           userId,
+          accountId,
           patch: {
             inProgress: false,
             lastSyncAt: completedAt,
@@ -574,7 +773,69 @@ const syncPersonalAccountMetrics = async (account) => {
         return { synced: false, reason: 'rate_limited', updates: 0, rateLimited: true };
       }
 
-      throw error;
+      if (isTwitterAuthError(error) && !tokenRefreshedForRetry) {
+        log('Twitter 401 during auto-sync — attempting force token refresh', {
+          userId,
+          accountId,
+          status: error?.code || error?.status,
+          message: error?.message,
+        });
+        try {
+          const retryRefreshResult = await refreshTwitterOauth2IfNeeded({
+            dbPool: pool,
+            account: refreshedAccount,
+            accountType,
+            force: true,
+            reason: 'analytics-auto-sync-401-retry',
+            onLog: (...args) => log(...args),
+          });
+          if (retryRefreshResult.refreshed && retryRefreshResult.account) {
+            log('Token force-refresh successful — retrying lookup', { userId, accountId });
+            refreshedAccount = retryRefreshResult.account;
+            twitterClient = createTwitterReadClient(refreshedAccount);
+            tokenRefreshedForRetry = true;
+            if (twitterClient) {
+              try {
+                lookup = await twitterClient.v2.tweets(tweetIds, {
+                  'tweet.fields': ['public_metrics', 'created_at'],
+                });
+              } catch (retryErr) {
+                log('Retry after force-refresh also failed', {
+                  userId,
+                  accountId,
+                  message: retryErr?.message,
+                });
+                throw retryErr;
+              }
+            } else {
+              throw new Error('Could not create Twitter client after force-refresh');
+            }
+          } else {
+            log('Force-refresh did not produce a new token — marking auth_error', { userId, accountId });
+            const completedAt = Date.now();
+            await setSyncState(syncKey, {
+              userId,
+              accountId,
+              patch: {
+                inProgress: false,
+                lastSyncAt: completedAt,
+                nextAllowedAt: completedAt + SYNC_COOLDOWN_MS,
+                lastResult: 'auth_error',
+              },
+            });
+            return { synced: false, reason: 'auth_error', updates: 0, rateLimited: false };
+          }
+        } catch (refreshErr) {
+          log('Token force-refresh threw during 401 recovery', {
+            userId,
+            accountId,
+            message: refreshErr?.message,
+          });
+          throw refreshErr;
+        }
+      } else {
+        throw error;
+      }
     }
 
     const dataRows = Array.isArray(lookup?.data) ? lookup.data : [];
@@ -601,6 +862,7 @@ const syncPersonalAccountMetrics = async (account) => {
     const completedAt = Date.now();
     await setSyncState(syncKey, {
       userId,
+      accountId,
       patch: {
         inProgress: false,
         lastSyncAt: completedAt,
@@ -615,6 +877,7 @@ const syncPersonalAccountMetrics = async (account) => {
     try {
       await setSyncState(syncKey, {
         userId,
+        accountId,
         patch: {
           inProgress: false,
           lastSyncAt: completedAt,
@@ -625,12 +888,12 @@ const syncPersonalAccountMetrics = async (account) => {
     } catch {
       // no-op
     }
-    log('syncPersonalAccountMetrics failed', { userId, message: error?.message });
+    log('syncAccountMetrics failed', { userId, accountId, accountType, message: error?.message });
     return { synced: false, reason: 'error', updates: 0, rateLimited: false };
   } finally {
     if (lockOwned) {
       try {
-        await setSyncState(syncKey, { userId, patch: { inProgress: false } });
+        await setSyncState(syncKey, { userId, accountId, patch: { inProgress: false } });
       } catch {
         // no-op
       }
@@ -652,12 +915,13 @@ const runAnalyticsAutoSyncTick = async () => {
   let errorMessage = null;
 
   try {
-    const accounts = await getEligibleAccounts();
-    usersScanned = accounts.length;
+    // --- Personal accounts ---
+    const personalAccounts = await getEligibleAccounts();
+    usersScanned = personalAccounts.length;
     log(`eligible personal accounts: ${usersScanned}`);
 
-    for (const account of accounts) {
-      const result = await syncPersonalAccountMetrics(account);
+    for (const account of personalAccounts) {
+      const result = await syncAccountMetrics(account, { accountType: 'personal' });
       if (result.synced) {
         usersSynced += 1;
       }
@@ -666,6 +930,42 @@ const runAnalyticsAutoSyncTick = async () => {
       if (result.rateLimited) {
         rateLimited = true;
         break;
+      }
+    }
+
+    // --- Team accounts ---
+    if (!rateLimited) {
+      try {
+        const teamAccounts = await getEligibleTeamAccounts();
+        const teamCount = teamAccounts.length;
+        log(`eligible team accounts: ${teamCount}`);
+        usersScanned += teamCount;
+
+        for (const teamAccount of teamAccounts) {
+          const teamAccountId = `${teamAccount.team_id}:${teamAccount.twitter_user_id}`;
+          const result = await syncAccountMetrics(teamAccount, {
+            accountType: 'team',
+            accountId: teamAccountId,
+          });
+          if (result.synced) {
+            usersSynced += 1;
+          }
+          tweetsUpdated += result.updates || 0;
+
+          if (result.rateLimited) {
+            rateLimited = true;
+            break;
+          }
+        }
+      } catch (teamError) {
+        // If team_accounts table doesn't exist yet, just skip team sync
+        const isTableMissing = String(teamError?.message || '').includes('does not exist')
+          || String(teamError?.message || '').includes('relation');
+        if (isTableMissing) {
+          log('team_accounts table not found, skipping team sync');
+        } else {
+          throw teamError;
+        }
       }
     }
   } catch (error) {
@@ -752,4 +1052,195 @@ export function getAnalyticsAutoSyncStatus() {
     policy,
     lastRun: analyticsAutoSyncLastRun,
   };
+}
+
+// ─── Inline metrics fetch (serverless-compatible) ─────────────────────────────
+// On Vercel serverless, setTimeout/setInterval die when the function finishes.
+// Instead, we expose synchronous (awaitable) helpers that callers can invoke
+// inline within the same HTTP request before sending the response.
+
+/**
+ * Fetch and persist metrics for a batch of tweet IDs in one Twitter API call.
+ * Designed to be awaited inline within a request handler (serverless-safe).
+ *
+ * @param {Object} opts
+ * @param {string[]} opts.tweetIds - Twitter tweet IDs to look up
+ * @param {string}   opts.userId   - Owner user
+ * @param {Object}   opts.account  - Twitter account object with access_token
+ * @param {string}   [opts.accountType] - 'personal' or 'team'
+ * @returns {Promise<{ updated: number, errors: number }>}
+ */
+export async function fetchAndPersistMetricsInline({ tweetIds, userId, account, accountType = 'personal' }) {
+  if (!tweetIds?.length || !userId || !account?.access_token) {
+    return { updated: 0, errors: 0 };
+  }
+
+  let result = { updated: 0, errors: 0 };
+
+  try {
+    let refreshedAccount = account;
+    const refreshResult = await refreshTwitterOauth2IfNeeded({
+      dbPool: pool,
+      account: refreshedAccount,
+      accountType,
+      reason: 'inline-metrics-fetch',
+      onLog: (...args) => log(...args),
+    });
+    if (refreshResult.account) {
+      refreshedAccount = refreshResult.account;
+    }
+
+    const twitterClient = createTwitterReadClient(refreshedAccount);
+    if (!twitterClient) {
+      log('inline-fetch: no twitter client', { userId });
+      return result;
+    }
+
+    // Batch lookup (max 100 per call)
+    const batches = [];
+    for (let i = 0; i < tweetIds.length; i += 100) {
+      batches.push(tweetIds.slice(i, i + 100));
+    }
+
+    for (const batch of batches) {
+      try {
+        const lookup = await twitterClient.v2.tweets(batch, {
+          'tweet.fields': ['public_metrics', 'created_at'],
+        });
+
+        const dataRows = Array.isArray(lookup?.data) ? lookup.data : [];
+        for (const row of dataRows) {
+          const metrics = row.public_metrics;
+          if (!metrics) continue;
+
+          try {
+            await pool.query(
+              `UPDATE tweets SET
+                 impressions = $1,
+                 likes = $2,
+                 retweets = $3,
+                 replies = $4,
+                 quote_count = $5,
+                 bookmark_count = $6,
+                 analytics_fetched_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+               WHERE tweet_id = $7 AND user_id = $8`,
+              [
+                metrics.impression_count || 0,
+                metrics.like_count || 0,
+                metrics.retweet_count || 0,
+                metrics.reply_count || 0,
+                metrics.quote_count || 0,
+                metrics.bookmark_count || 0,
+                String(row.id),
+                userId,
+              ]
+            );
+            result.updated += 1;
+          } catch (updateErr) {
+            log('inline-fetch: DB update error', { tweetId: row.id, message: updateErr?.message });
+            result.errors += 1;
+          }
+        }
+
+        // Handle deleted / not-found tweets
+        const lookupErrors = Array.isArray(lookup?.errors) ? lookup.errors : [];
+        for (const errItem of lookupErrors) {
+          const isNotFound =
+            errItem?.type?.includes('resource-not-found') ||
+            String(errItem?.title || '').toLowerCase().includes('not found');
+          if (isNotFound) {
+            const errorTweetId = errItem?.resource_id || errItem?.value;
+            if (errorTweetId) {
+              try {
+                const { rows: matchRows } = await pool.query(
+                  `SELECT id FROM tweets WHERE tweet_id = $1 AND user_id = $2 LIMIT 1`,
+                  [String(errorTweetId), userId]
+                );
+                if (matchRows.length > 0) {
+                  await markTweetDeleted(matchRows[0].id);
+                }
+              } catch {
+                // silent
+              }
+            }
+          }
+        }
+      } catch (batchErr) {
+        log('inline-fetch: batch error', { message: batchErr?.message });
+        result.errors += batch.length;
+      }
+    }
+
+    log('inline-fetch: completed', { userId, updated: result.updated, errors: result.errors });
+  } catch (err) {
+    log('inline-fetch: error', { userId, message: err?.message });
+  }
+
+  return result;
+}
+
+/**
+ * Inline quick-sync for a user: fetch the N most recent hot tweets and refresh
+ * their metrics. Safe for serverless — fully awaitable.
+ *
+ * @param {Object} opts
+ * @param {string} opts.userId
+ * @param {string} [opts.accountId] - team account ID if applicable
+ * @param {number} [opts.limit=5]   - how many hot tweets to refresh
+ * @param {Object} opts.account     - twitter auth object
+ * @param {string} [opts.accountType='personal']
+ * @returns {Promise<{ updated: number, skipped: boolean }>}
+ */
+export async function inlineQuickSync({ userId, accountId = null, limit = 5, account, accountType = 'personal' }) {
+  if (!userId || !account?.access_token) {
+    return { updated: 0, skipped: true };
+  }
+
+  try {
+    await ensureAnalyticsSyncStateTable();
+    const syncKey = getSyncKey(userId, accountId);
+
+    // Don't sync if already running or in cooldown
+    const { rows } = await pool.query(
+      `SELECT in_progress, next_allowed_at FROM analytics_sync_state WHERE sync_key = $1`,
+      [syncKey]
+    );
+    if (rows.length > 0) {
+      const row = rows[0];
+      if (row.in_progress) return { updated: 0, skipped: true };
+      if (row.next_allowed_at && new Date(row.next_allowed_at) > new Date()) {
+        return { updated: 0, skipped: true };
+      }
+    }
+
+    // Get the N most recent posted tweets that are stale (not refreshed in last 2 min)
+    const scopeFilter = accountId
+      ? `AND account_id IS NOT NULL AND account_id::text != '0'`
+      : `AND (account_id IS NULL OR account_id::text = '0')`;
+
+    const { rows: hotTweets } = await pool.query(
+      `SELECT tweet_id FROM tweets
+       WHERE user_id = $1
+         ${scopeFilter}
+         AND status = 'posted'
+         AND tweet_id IS NOT NULL
+         AND COALESCE(external_created_at, created_at) >= NOW() - INTERVAL '7 days'
+         AND (analytics_fetched_at IS NULL OR analytics_fetched_at < NOW() - INTERVAL '2 minutes')
+       ORDER BY COALESCE(external_created_at, created_at) DESC
+       LIMIT $2`,
+      [userId, limit]
+    );
+
+    if (hotTweets.length === 0) {
+      return { updated: 0, skipped: false };
+    }
+
+    const tweetIds = hotTweets.map((t) => String(t.tweet_id)).filter(Boolean);
+    const result = await fetchAndPersistMetricsInline({ tweetIds, userId, account, accountType });
+    return { updated: result.updated, skipped: false };
+  } catch (err) {
+    log('inlineQuickSync: error', { userId, message: err?.message });
+    return { updated: 0, skipped: true };
+  }
 }

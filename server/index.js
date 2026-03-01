@@ -453,13 +453,13 @@ app.use(
 app.use('/api/autopilot', authenticateToken, validateTwitterConnection, autopilotRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
-// Vercel Cron trigger for analytics auto-sync.
+// Vercel/QStash Cron trigger for analytics auto-sync.
 // Must be registered BEFORE the authenticateToken-wrapped /api/analytics mount.
-// Vercel calls this every 15 min (see server/vercel.json). Auth via CRON_SECRET.
+// QStash calls this every 15 min. Auth via CRON_SECRET (query param or Bearer header).
 app.post('/api/analytics/cron', async (req, res) => {
   const cronSecret = (process.env.CRON_SECRET || '').trim();
   const authHeader = req.headers['authorization'] || '';
-  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (authHeader || req.query.secret || '');
   if (!cronSecret || providedToken !== cronSecret) {
     return res.status(401).json({ error: 'Unauthorized' });
   }

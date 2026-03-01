@@ -325,6 +325,7 @@ export const ensureTwitterAccountReady = async ({
   thresholdMs = TWITTER_REFRESH_THRESHOLD_MS,
   reason = 'unknown',
   onLog = null,
+  force = false,
 } = {}) => {
   if (!account) {
     throw new TwitterReconnectRequiredError('not_connected', 'Twitter account not connected.');
@@ -334,14 +335,14 @@ export const ensureTwitterAccountReady = async ({
   let currentAccount = account;
   let status = getTwitterConnectionStatus(currentAccount, { thresholdMs });
 
-  if ((status.needsRefresh || (!status.postingCapable && status.canRefreshOauth2)) && status.canRefreshOauth2) {
+  if (force || ((status.needsRefresh || (!status.postingCapable && status.canRefreshOauth2)) && status.canRefreshOauth2)) {
     const refreshResult = await refreshTwitterOauth2IfNeeded({
       dbPool,
       account: currentAccount,
       accountType,
       thresholdMs,
       reason,
-      force: !status.postingCapable,
+      force: force || !status.postingCapable,
       onLog,
     });
 

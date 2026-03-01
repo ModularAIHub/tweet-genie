@@ -24,6 +24,7 @@ import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPost
 import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache.js';
 import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
 import { createTwitterPostingClient } from '../utils/twitterRuntimeAuth.js';
+import { fetchAndPersistMetricsInline } from '../workers/analyticsSyncWorker.js';
 
 const invalidateUserAnalyticsCache = async (userId) => {
   if (!userId) return;
@@ -457,6 +458,7 @@ async function runValidateTwitterConnectionForRetry(req) {
       ...req,
       headers: { ...(req.headers || {}) },
       user: req.user,
+      _forceTwitterRefresh: true,
     };
 
     const mockRes = {
@@ -992,7 +994,31 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       );
       await invalidateUserAnalyticsCache(userId);
 
-      // â”€â”€ Parallel cross-post: LinkedIn + Threads fire simultaneously â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // Inline initial metrics fetch for the just-posted tweet (serverless-safe)
+      try {
+        const postedTweetId = tweetResponse?.data?.id;
+        if (postedTweetId) {
+          const accountType = twitterAccount.isTeamAccount ? 'team' : 'personal';
+          await fetchAndPersistMetricsInline({
+            tweetIds: [postedTweetId],
+            userId,
+            account: twitterAccount,
+            accountType,
+          });
+          logger.info('[POST /tweets] Inline metrics fetch completed for new tweet', {
+            userId,
+            tweetId: postedTweetId,
+            accountType,
+          });
+        }
+      } catch (metricErr) {
+        logger.warn('[POST /tweets] Inline metrics fetch failed (non-fatal)', {
+          userId,
+          error: metricErr?.message || String(metricErr),
+        });
+      }
+
+      // Parallel cross-post: LinkedIn + Threads fire simultaneously
       const mediaDetected = detectCrossPostMedia({ media, threadMedia });
       const crossPostResult = buildCrossPostResultShape({
         linkedinEnabled: normalizedCrossPostTargets.linkedin,

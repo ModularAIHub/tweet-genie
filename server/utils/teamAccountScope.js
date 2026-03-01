@@ -93,7 +93,10 @@ export const buildTeamAccountFilter = ({
   if (includeAuthorFallback && scope.twitterUserId) {
     const authorIdIndex = startIndex + params.length;
     params.push(scope.twitterUserId);
-    conditions.push(`${qualify(alias, 'author_id')} = $${authorIdIndex}`);
+    // Only match by author_id when the row actually has a non-null account_id
+    // (i.e., it's a team-originated tweet). Without this guard, personal tweets
+    // (account_id IS NULL) by the same Twitter user would leak into the team view.
+    conditions.push(`(${qualify(alias, 'author_id')} = $${authorIdIndex} AND ${qualify(alias, 'account_id')} IS NOT NULL)`);
   }
 
   if (includeOrphanFallback) {

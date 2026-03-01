@@ -643,12 +643,14 @@ export const validateTwitterConnection = async (req, res, next) => {
     }
     
     try {
+      const forceRefresh = !!req._forceTwitterRefresh;
       const readyResult = await ensureTwitterAccountReady({
         dbPool: pool,
         account: twitterAuthData,
         accountType: isTeamAccount ? 'team' : 'personal',
-        reason: 'validateTwitterConnection',
+        reason: forceRefresh ? 'validateTwitterConnection_401_retry' : 'validateTwitterConnection',
         onLog: (...args) => authLog(...args),
+        force: forceRefresh,
       });
 
       twitterAuthData = readyResult.account;

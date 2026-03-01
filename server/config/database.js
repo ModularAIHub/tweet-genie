@@ -8,7 +8,9 @@ const PG_TIMESTAMP_OID = 1114;
 const DB_DEBUG = process.env.DB_DEBUG === 'true';
 const DB_ERROR_LOG_THROTTLE_MS = Number.parseInt(process.env.DB_ERROR_LOG_THROTTLE_MS || '30000', 10);
 const DB_POOL_MAX = Number.parseInt(process.env.DB_POOL_MAX || '10', 10);
-const DB_POOL_IDLE_TIMEOUT_MS = Number.parseInt(process.env.DB_POOL_IDLE_TIMEOUT_MS || '30000', 10);
+// Default below Supabase's 30-second idle connection reaper so the pool drops
+// connections before the DB kills them (avoids "Connection terminated" errors).
+const DB_POOL_IDLE_TIMEOUT_MS = Number.parseInt(process.env.DB_POOL_IDLE_TIMEOUT_MS || '20000', 10);
 const DB_POOL_CONNECTION_TIMEOUT_MS = Number.parseInt(process.env.DB_POOL_CONNECTION_TIMEOUT_MS || '10000', 10);
 const DB_STATEMENT_TIMEOUT_MS = Number.parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '30000', 10);
 const DB_QUERY_TIMEOUT_MS = Number.parseInt(process.env.DB_QUERY_TIMEOUT_MS || '30000', 10);
@@ -62,7 +64,7 @@ Object.assign(config, {
   idleTimeoutMillis:
     Number.isFinite(DB_POOL_IDLE_TIMEOUT_MS) && DB_POOL_IDLE_TIMEOUT_MS > 0
       ? DB_POOL_IDLE_TIMEOUT_MS
-      : 30000,
+      : 20000,
   connectionTimeoutMillis:
     Number.isFinite(DB_POOL_CONNECTION_TIMEOUT_MS) && DB_POOL_CONNECTION_TIMEOUT_MS > 0
       ? DB_POOL_CONNECTION_TIMEOUT_MS
@@ -77,6 +79,7 @@ Object.assign(config, {
       : 30000,
   maxUses: Number.isFinite(DB_POOL_MAX_USES) && DB_POOL_MAX_USES > 0 ? DB_POOL_MAX_USES : 7500,
   keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 });
 
 dbDebug('Tweet Genie Database config:', {

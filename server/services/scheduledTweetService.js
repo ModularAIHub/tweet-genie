@@ -6,6 +6,7 @@ import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPost
 import { fetchLatestPersonalTwitterAuth } from '../utils/personalTwitterAuth.js';
 import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache.js';
 import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
+import { fetchAndPersistMetricsInline } from '../workers/analyticsSyncWorker.js';
 import {
   createTwitterPostingClient,
   refreshTwitterOauth2IfNeeded,
@@ -1352,6 +1353,28 @@ class ScheduledTweetService {
         await clearAnalyticsPrecomputeCache(pool, { userId: scheduledTweet.user_id });
       } catch (cacheError) {
         console.warn('[Scheduled Tweet] Failed to invalidate analytics cache:', cacheError?.message || cacheError);
+      }
+
+      // Inline initial metrics fetch for the just-posted scheduled tweet (serverless-safe)
+      try {
+        const allPostedIds = [tweetResponse.data.id, ...threadTweetIds.map(t => t.tweetId)].filter(Boolean);
+        if (allPostedIds.length > 0 && scheduledTweet.access_token) {
+          const metricsAccountType = scheduledTweet.isTeamAccount ? 'team' : 'personal';
+          await fetchAndPersistMetricsInline({
+            tweetIds: allPostedIds,
+            userId: scheduledTweet.user_id,
+            account: {
+              access_token: scheduledTweet.access_token,
+              refresh_token: scheduledTweet.refresh_token,
+              token_expires_at: scheduledTweet.token_expires_at,
+              id: scheduledTweet.account_id || null,
+            },
+            accountType: metricsAccountType,
+          });
+          console.log(`[Scheduled Tweet] Inline metrics fetch completed for ${allPostedIds.length} tweet(s)`);
+        }
+      } catch (metricErr) {
+        console.warn('[Scheduled Tweet] Inline metrics fetch failed (non-fatal):', metricErr?.message || metricErr);
       }
 
       let crossPostResult = null;
