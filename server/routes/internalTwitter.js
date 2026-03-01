@@ -644,6 +644,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
         mediaDetected: Boolean(effectiveMediaDetected),
         mediaStatus,
         mediaCount,
+        accountId: account?.id ? String(account.id) : null,
       });
 
     } else {
@@ -675,6 +676,7 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
         tweetUrl,
         mediaStatus,
         mediaCount,
+        accountId: account?.id ? String(account.id) : null,
       });
     }
 

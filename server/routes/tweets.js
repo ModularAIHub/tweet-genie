@@ -637,6 +637,8 @@ async function crossPostToTwitterAccount({
       tweetUrl: body?.tweetUrl || null,
       mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : (mediaDetected ? 'posted' : 'none'),
       mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : (mediaDetected ? undefined : 0),
+      // The resolved team_accounts.id used for posting — authoritative for history saves
+      resolvedAccountId: body?.accountId ? String(body.accountId) : null,
     };
   } catch (error) {
     if (error?.name === 'AbortError') return { status: 'timeout' };
@@ -1084,10 +1086,15 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
             })
               .then(async (result) => {
                 if (result?.status === 'posted') {
+                  // Use resolvedAccountId returned by the cross-post endpoint — this is the
+                  // authoritative team_accounts.id used to post, regardless of what ID format
+                  // the client sent as targetAccountId (registry id vs team_accounts id).
+                  const historyTargetAccountId =
+                    result?.resolvedAccountId || normalizedCrossPostTargetAccountIds.twitter || null;
                   await saveTwitterCrossPostToHistory({
                     userId,
                     teamId: twitterAccount.isTeamAccount ? requestTeamId : null,
-                    targetAccountId: normalizedCrossPostTargetAccountIds.twitter || null,
+                    targetAccountId: historyTargetAccountId,
                     content: twitterCrossPostMode === 'thread'
                       ? twitterCrossPostThreadParts.join('\n---\n')
                       : mainContent,

@@ -106,14 +106,16 @@ export async function saveTwitterHistoryRow({
 
   const normalizedTweetId = String(tweetId || '').trim() || null;
   if (normalizedTweetId) {
-    const { rows: existingRows } = await dbPool.query(
-      `SELECT id
-       FROM tweets
-       WHERE user_id = $1
-         AND tweet_id = $2
-       LIMIT 1`,
-      [platformUserId, normalizedTweetId]
-    );
+    // For team accounts, deduplicate by (account_id, tweet_id) so cross-posts to different
+    // accounts are always distinct records even if posted by the same user.
+    // For personal accounts, deduplicate by (user_id, tweet_id) as before.
+    const dedupQuery = platformTeamId && account?.id
+      ? `SELECT id FROM tweets WHERE account_id = $1 AND tweet_id = $2 LIMIT 1`
+      : `SELECT id FROM tweets WHERE user_id = $1 AND tweet_id = $2 LIMIT 1`;
+    const dedupParams = platformTeamId && account?.id
+      ? [account.id, normalizedTweetId]
+      : [platformUserId, normalizedTweetId];
+    const { rows: existingRows } = await dbPool.query(dedupQuery, dedupParams);
     if (existingRows.length > 0) {
       return {
         success: true,

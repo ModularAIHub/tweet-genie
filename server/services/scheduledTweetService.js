@@ -514,6 +514,8 @@ async function crossPostScheduledToTwitterAccount({
       tweetUrl: body?.tweetUrl || null,
       mediaStatus: typeof body?.mediaStatus === 'string' ? body.mediaStatus : (mediaDetected ? 'posted' : 'none'),
       mediaCount: Number.isFinite(Number(body?.mediaCount)) ? Number(body.mediaCount) : (mediaDetected ? undefined : 0),
+      // The resolved team_accounts.id used for posting — authoritative for history saves
+      resolvedAccountId: body?.accountId ? String(body.accountId) : null,
     };
   } catch (error) {
     if (error?.name === 'AbortError') return { status: 'timeout' };
@@ -1468,10 +1470,15 @@ class ScheduledTweetService {
                     media: scheduledMainSourceMedia,
                   });
                   if (twitterCrossPost?.status === 'posted') {
+                    // Use resolvedAccountId returned by the cross-post endpoint — this is the
+                    // authoritative team_accounts.id used to post, regardless of what ID format
+                    // the scheduler stored as twitterTargetRouteId.
+                    const historyTargetAccountId =
+                      twitterCrossPost?.resolvedAccountId || twitterTargetRouteId;
                     await saveScheduledTwitterCrossPostToHistory({
                       userId: scheduledTweet.user_id,
                       teamId: isTeamCrossPost ? scheduledTweet.team_id || null : null,
-                      targetAccountId: twitterTargetRouteId,
+                      targetAccountId: historyTargetAccountId,
                       content: twitterPostMode === 'thread'
                         ? twitterThreadParts.join('\n---\n')
                         : cleanContent,
