@@ -214,6 +214,8 @@ const normalizeTwitterOAuthProfile = (twitterUser = {}) => {
       ? Number(publicMetrics.tweet_count)
       : null,
     verified: Boolean(data?.verified),
+    bio: typeof data?.description === 'string' ? data.description.trim() : null,
+    websiteUrl: data?.entities?.url?.urls?.[0]?.expanded_url || (typeof data?.url === 'string' ? data.url : null),
   };
 };
 
@@ -529,7 +531,7 @@ async function handleOAuth2Callback(req, res) {
     pkceStore.delete(sessionKey);
     console.log('[OAuth2 Callback] Step 9: Code verifier cleaned up');
 
-    const userResponse = await fetch('https://api.twitter.com/2/users/me?user.fields=public_metrics,verified,profile_image_url', {
+    const userResponse = await fetch('https://api.twitter.com/2/users/me?user.fields=public_metrics,verified,profile_image_url,description,url,entities', {
       headers: { 'Authorization': `Bearer ${tokens.access_token}` },
     });
     const twitterUser = await userResponse.json();
@@ -578,8 +580,8 @@ async function handleOAuth2Callback(req, res) {
             INSERT INTO team_accounts (
               team_id, user_id, twitter_user_id, twitter_username, twitter_display_name,
               access_token, refresh_token, token_expires_at, twitter_profile_image_url,
-              followers_count, following_count, tweet_count, verified, active, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true, CURRENT_TIMESTAMP)
+              followers_count, following_count, tweet_count, verified, bio, website_url, active, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, true, CURRENT_TIMESTAMP)
             ON CONFLICT (team_id, twitter_user_id) DO UPDATE SET
               twitter_username = $4,
               twitter_display_name = $5,
@@ -591,6 +593,8 @@ async function handleOAuth2Callback(req, res) {
               following_count = $11,
               tweet_count = $12,
               verified = $13,
+              bio = $14,
+              website_url = $15,
               active = true,
               updated_at = CURRENT_TIMESTAMP
             RETURNING *
@@ -609,6 +613,8 @@ async function handleOAuth2Callback(req, res) {
             normalizedTwitterProfile.followingCount,
             normalizedTwitterProfile.tweetCount,
             normalizedTwitterProfile.verified,
+            normalizedTwitterProfile.bio,
+            normalizedTwitterProfile.websiteUrl,
           ]
         );
         const teamAccountRow = upsertedTeamRows[0];
@@ -652,8 +658,8 @@ async function handleOAuth2Callback(req, res) {
               user_id, access_token, refresh_token, token_expires_at,
               twitter_user_id, twitter_username, twitter_display_name,
               twitter_profile_image_url, followers_count, following_count,
-              tweet_count, verified, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
+              tweet_count, verified, bio, website_url, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, CURRENT_TIMESTAMP)
             ON CONFLICT (user_id) DO UPDATE SET
               access_token = $2,
               refresh_token = $3,
@@ -666,6 +672,8 @@ async function handleOAuth2Callback(req, res) {
               following_count = $10,
               tweet_count = $11,
               verified = $12,
+              bio = $13,
+              website_url = $14,
               updated_at = CURRENT_TIMESTAMP
             RETURNING *
           `,
@@ -682,6 +690,8 @@ async function handleOAuth2Callback(req, res) {
             normalizedTwitterProfile.followingCount,
             normalizedTwitterProfile.tweetCount,
             normalizedTwitterProfile.verified,
+            normalizedTwitterProfile.bio,
+            normalizedTwitterProfile.websiteUrl,
           ]
         );
         const deletedDuplicateCount = await cleanupDuplicatePersonalTwitterAuth(client, userId);

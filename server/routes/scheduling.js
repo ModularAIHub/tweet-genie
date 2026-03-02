@@ -1832,34 +1832,37 @@ router.get('/status', async (req, res) => {
         return res.status(403).json({ error: 'Not a member of this team' });
       }
 
-      const { rows: statusRows } = await pool.query(
-        `SELECT status, COUNT(*)::int AS count
-         FROM scheduled_tweets
-         WHERE team_id = $1
-         GROUP BY status`,
-        [teamId]
-      );
-      const countsByStatus = statusRows.reduce((acc, row) => {
+      // Parallelize both DB queries
+      const [statusResult, dueResult] = await Promise.all([
+        pool.query(
+          `SELECT status, COUNT(*)::int AS count
+           FROM scheduled_tweets
+           WHERE team_id = $1
+           GROUP BY status`,
+          [teamId]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS count
+           FROM scheduled_tweets
+           WHERE team_id = $1
+             AND status = 'pending'
+             AND (approval_status = 'approved' OR approval_status IS NULL)
+             AND scheduled_for <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
+          [teamId]
+        ),
+      ]);
+
+      const countsByStatus = statusResult.rows.reduce((acc, row) => {
         acc[row.status] = row.count;
         return acc;
       }, {});
-
-      const { rows: dueRows } = await pool.query(
-        `SELECT COUNT(*)::int AS count
-         FROM scheduled_tweets
-         WHERE team_id = $1
-           AND status = 'pending'
-           AND (approval_status = 'approved' OR approval_status IS NULL)
-           AND scheduled_for <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
-        [teamId]
-      );
 
       return res.json({
         success: true,
         scheduler,
         userQueue: {
           countsByStatus,
-          dueNowCount: dueRows[0]?.count || 0,
+          dueNowCount: dueResult.rows[0]?.count || 0,
         },
       });
     }
@@ -1867,46 +1870,49 @@ router.get('/status', async (req, res) => {
     const twitterScope = await resolveTwitterScope(pool, { userId, selectedAccountId, teamId: null });
     const scopeAuthorId = twitterScope.twitterUserId || null;
 
-    const { rows: statusRows } = await pool.query(
-      `SELECT st.status, COUNT(*)::int AS count
-       FROM scheduled_tweets st
-       WHERE st.user_id = $1
-         AND (st.team_id IS NULL OR st.team_id::text = '')
-         AND (
-           $2::text IS NULL
-           OR st.author_id = $2
-           OR (st.author_id IS NULL AND st.user_id = $1)
-         )
-       GROUP BY st.status`,
-      [userId, scopeAuthorId]
-    );
-    const countsByStatus = statusRows.reduce((acc, row) => {
+    // Parallelize both DB queries
+    const [statusResult, dueResult] = await Promise.all([
+      pool.query(
+        `SELECT st.status, COUNT(*)::int AS count
+         FROM scheduled_tweets st
+         WHERE st.user_id = $1
+           AND (st.team_id IS NULL OR st.team_id::text = '')
+           AND (
+             $2::text IS NULL
+             OR st.author_id = $2
+             OR (st.author_id IS NULL AND st.user_id = $1)
+           )
+         GROUP BY st.status`,
+        [userId, scopeAuthorId]
+      ),
+      pool.query(
+        `SELECT COUNT(*)::int AS count
+         FROM scheduled_tweets st
+         WHERE st.user_id = $1
+           AND (st.team_id IS NULL OR st.team_id::text = '')
+           AND (
+             $2::text IS NULL
+             OR st.author_id = $2
+             OR (st.author_id IS NULL AND st.user_id = $1)
+           )
+           AND st.status = 'pending'
+           AND (st.approval_status = 'approved' OR st.approval_status IS NULL)
+           AND st.scheduled_for <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
+        [userId, scopeAuthorId]
+      ),
+    ]);
+
+    const countsByStatus = statusResult.rows.reduce((acc, row) => {
       acc[row.status] = row.count;
       return acc;
     }, {});
-
-    const { rows: dueRows } = await pool.query(
-      `SELECT COUNT(*)::int AS count
-       FROM scheduled_tweets st
-       WHERE st.user_id = $1
-         AND (st.team_id IS NULL OR st.team_id::text = '')
-         AND (
-           $2::text IS NULL
-           OR st.author_id = $2
-           OR (st.author_id IS NULL AND st.user_id = $1)
-         )
-         AND st.status = 'pending'
-         AND (st.approval_status = 'approved' OR st.approval_status IS NULL)
-         AND st.scheduled_for <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
-      [userId, scopeAuthorId]
-    );
 
     return res.json({
       success: true,
       scheduler,
       userQueue: {
         countsByStatus,
-        dueNowCount: dueRows[0]?.count || 0,
+        dueNowCount: dueResult.rows[0]?.count || 0,
       },
     });
   } catch (error) {

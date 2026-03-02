@@ -19,6 +19,7 @@ const AuthCallback = lazy(() => import('./pages/AuthCallback'));
 const Features = lazy(() => import('./pages/Features'));
 const Pricing = lazy(() => import('./pages/Pricing'));
 const Docs = lazy(() => import('./pages/Docs'));
+const ContentReview = lazy(() => import('./pages/ContentReview'));
 
 // Loading fallback component
 const PageLoader = () => (
@@ -64,6 +65,7 @@ function App() {
                         <Route path="/features" element={<Features />} />
                         <Route path="/pricing" element={<Pricing />} />
                         <Route path="/docs" element={<Docs />} />
+                        <Route path="/content-review" element={<ContentReview />} />
                       </Routes>
                     </Suspense>
                   </Layout>

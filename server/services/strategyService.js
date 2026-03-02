@@ -818,6 +818,83 @@ class StrategyService {
     return newRows[0];
   }
 
+  // ─── initWithAnalysis — entry point called by the analysis flow ────────
+  // Orchestrates the profile analysis pipeline and stores the analysis cache
+  // inside the strategy's metadata so the frontend can read it back.
+  async initWithAnalysis(strategyId, userId) {
+    const { profileAnalysisService } = await import('./profileAnalysisService.js');
+
+    // Run the full analysis pipeline (jobs 1-4)
+    const result = await profileAnalysisService.runFullAnalysis(userId, strategyId);
+
+    // Store analysis_cache in strategy metadata for the frontend
+    const analysisCache = {
+      analysis_id: result.analysisId,
+      confidence: result.confidence,
+      confidence_reason: result.confidenceReason,
+      tweets_analysed: result.tweetsAnalysed,
+      tweet_source: result.tweetSource,
+      niche: result.analysisData?.niche || null,
+      audience: result.analysisData?.audience || null,
+      tone: result.analysisData?.tone || null,
+      top_topics: result.analysisData?.top_topics || [],
+      posting_frequency: result.analysisData?.posting_frequency || null,
+      best_days: result.analysisData?.best_days || [],
+      best_hours: result.analysisData?.best_hours || null,
+      content_gaps: result.analysisData?.content_gaps || [],
+      content_mistakes: result.analysisData?.content_mistakes || [],
+      trending_topics: result.trendingTopics || [],
+      analysed_at: new Date().toISOString(),
+    };
+
+    await pool.query(
+      `UPDATE user_strategies SET
+        metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb,
+        updated_at = NOW()
+      WHERE id = $2`,
+      [
+        JSON.stringify({
+          analysis_cache: analysisCache,
+          profile_analysis_id: result.analysisId,
+          analysis_mode: true,
+        }),
+        strategyId,
+      ]
+    );
+
+    return result;
+  }
+
+  // ─── applyAnalysisConfirmation — persist a single confirmation step ────
+  async applyAnalysisConfirmation(strategyId, analysisId, step, value) {
+    const { profileAnalysisService } = await import('./profileAnalysisService.js');
+
+    // Delegate to the profileAnalysisService which handles both
+    // the profile_analyses row AND the strategy columns update
+    const updatedData = await profileAnalysisService.confirmAnalysisStep(analysisId, step, value);
+
+    // Also patch the analysis_cache in strategy metadata so it stays in sync
+    const patchKey = step === 'goals' ? 'content_goals_confirmed'
+      : step === 'topics' ? 'top_topics_confirmed'
+      : `${step}_confirmed`;
+
+    const cachePatch = { [step]: value, [patchKey]: true };
+
+    await pool.query(
+      `UPDATE user_strategies SET
+        metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{analysis_cache}',
+          (COALESCE(metadata->'analysis_cache', '{}'::jsonb) || $1::jsonb)
+        ),
+        updated_at = NOW()
+      WHERE id = $2`,
+      [JSON.stringify(cachePatch), strategyId]
+    );
+
+    return updatedData;
+  }
+
   // Create new strategy with initial data
   async createStrategy(userId, teamId = null, data = {}) {
     const {

@@ -34,6 +34,7 @@ import cleanupRoutes from './routes/cleanup.js';
 import strategyBuilderRoutes from './routes/strategyBuilder.js';
 import strategyAnalyticsRoutes from './routes/strategy-analytics.js';
 import autopilotRoutes from './routes/autopilot.js';
+import contentReviewRoutes from './routes/contentReview.js';
 
 // Middleware imports
 import {
@@ -52,6 +53,7 @@ import {
   getDeletedTweetRetentionWorkerStatus,
   startDeletedTweetRetentionWorker,
 } from './workers/deletedTweetRetentionWorker.js';
+import { handleWeeklyContentCron } from './workers/weeklyContentWorker.js';
 import pool from './config/database.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +92,8 @@ const START_DB_SCHEDULER_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DB_SCHEDULER_WORKER, true);
 const START_DELETED_TWEET_RETENTION_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DELETED_TWEET_RETENTION_WORKER, true);
+// Weekly content generation uses the cron endpoint POST /api/cron/weekly-content only.
+// No setInterval worker needed — Vercel kills intervals between requests.
 const READINESS_CHECK_INTERVAL_MS = Number.parseInt(process.env.READINESS_CHECK_INTERVAL_MS || '30000', 10);
 
 const tweetGenieRuntimeState = {
@@ -103,6 +107,7 @@ const tweetGenieRuntimeState = {
     autopilot: false,
     dbScheduler: false,
     deletedRetention: false,
+    // Weekly content: cron-only (POST /api/cron/weekly-content), no interval worker.
   },
 };
 
@@ -219,6 +224,8 @@ const maybeStartBackgroundWorkers = async () => {
       logger.error('Deleted tweet retention worker initialization error', { error: error?.message || error });
     }
   }
+
+  // Weekly content generation is triggered via POST /api/cron/weekly-content only (no setInterval worker).
 };
 
 const startTweetGenieReadinessLoop = () => {
@@ -451,6 +458,7 @@ app.use(
   strategyAnalyticsRoutes
 );
 app.use('/api/autopilot', authenticateToken, validateTwitterConnection, autopilotRoutes);
+app.use('/api/content-review', contentReviewRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
 // Vercel/QStash Cron trigger for analytics auto-sync.
@@ -492,6 +500,23 @@ app.post('/api/cron/scheduler', async (req, res) => {
   }
 });
 
+// Vercel/QStash Cron trigger for weekly content generation.
+// Should be called once per week (e.g. Monday 7:00 UTC).
+app.post('/api/cron/weekly-content', async (req, res) => {
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  const authHeader = req.headers['authorization'] || '';
+  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (authHeader || req.query.secret || '');
+  if (!cronSecret || providedToken !== cronSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const result = await handleWeeklyContentCron();
+    return res.json({ ok: true, result });
+  } catch (error) {
+    console.error('[WeeklyContentCron] Tick failed:', error?.message || error);
+    return res.status(500).json({ ok: false, error: error?.message || 'unknown_error' });
+  }
+});
 app.use('/api/analytics', authenticateToken, analyticsRoutes);
 // Global error handler to always set CORS headers, even for body parser errors (e.g., 413)
 app.use((err, req, res, next) => {

@@ -80,6 +80,8 @@ Object.assign(config, {
   maxUses: Number.isFinite(DB_POOL_MAX_USES) && DB_POOL_MAX_USES > 0 ? DB_POOL_MAX_USES : 7500,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10000,
+  application_name: 'tweet-genie',
+  allowExitOnIdle: false,
 });
 
 dbDebug('Tweet Genie Database config:', {
@@ -105,6 +107,19 @@ pool.on('connect', () => {
 
 pool.on('error', (err) => {
   dbError('Tweet Genie database connection error:', err?.message || err);
+});
+
+// Log pool exhaustion warnings (waiting clients > 0 means pool is saturated)
+let lastPoolWarnAt = 0;
+const POOL_WARN_INTERVAL_MS = 15000;
+pool.on('acquire', () => {
+  const now = Date.now();
+  if (now - lastPoolWarnAt < POOL_WARN_INTERVAL_MS) return;
+  const waitingCount = pool.waitingCount;
+  if (waitingCount > 0) {
+    lastPoolWarnAt = now;
+    console.warn(`[DB Pool] ${waitingCount} queries waiting for connection (pool: ${pool.totalCount}/${config.max}, idle: ${pool.idleCount})`);
+  }
 });
 
 const isRetryableConnectionError = (error) => {

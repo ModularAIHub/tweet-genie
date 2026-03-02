@@ -349,13 +349,24 @@ router.post('/generate', authenticateToken, async (req, res) => {
         }
 
         if (chosenEval.critical) {
-          const qualityFailureError = new Error(
-            `Strategy generation quality check failed: ${
-              (chosenEval.issues || []).join('; ') || 'Critical validation failure'
-            }`
-          );
-          qualityFailureError.code = 'STRATEGY_QUALITY_FAILED';
-          throw qualityFailureError;
+          // Only hard-fail if truly critical (empty output).
+          // For threads that got some content but wrong format, log warning and proceed
+          // with whatever we have — the client will handle display.
+          if (isThread && chosenAttempt?.content && chosenAttempt.content.trim().length > 50) {
+            console.warn(
+              `[AI generation][strategy] Thread quality issues but content exists (${chosenAttempt.content.length} chars). Proceeding with best effort. Issues: ${(chosenEval.issues || []).join(' | ')}`
+            );
+            qualityGuard.passed = false;
+            qualityGuard.issues = chosenEval.issues || [];
+          } else {
+            const qualityFailureError = new Error(
+              `Strategy generation quality check failed: ${
+                (chosenEval.issues || []).join('; ') || 'Critical validation failure'
+              }`
+            );
+            qualityFailureError.code = 'STRATEGY_QUALITY_FAILED';
+            throw qualityFailureError;
+          }
         }
 
         qualityGuard.passed = Boolean(chosenEval.passed);

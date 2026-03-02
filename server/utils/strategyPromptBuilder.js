@@ -106,12 +106,19 @@ export const buildStrategyGenerationPrompt = ({
   if (isThread) {
     lines.push(
       '',
-      'Thread requirements:',
-      '- Produce exactly 3 to 5 tweets.',
-      '- Separate tweets using --- on its own line.',
+      'Thread requirements (CRITICAL — follow exactly):',
+      '- You MUST produce exactly 3, 4, or 5 separate tweets.',
+      '- You MUST separate each tweet with --- on its own line.',
       '- Keep each tweet under 280 characters.',
-      '- Make the thread flow logically: hook → body → takeaway.',
-      '- Complete every tweet fully — no unfinished sentences.'
+      '- Structure: Tweet 1 = attention-grabbing hook, middle tweets = supporting points/examples, final tweet = CTA or takeaway.',
+      '- Complete every tweet fully — no unfinished sentences.',
+      '',
+      'Example format (follow this EXACTLY):',
+      'Hook tweet goes here',
+      '---',
+      'Supporting point tweet goes here',
+      '---',
+      'Final CTA tweet goes here'
     );
   } else {
     lines.push(
@@ -261,6 +268,24 @@ export const normalizeThreadContent = (content = '', { minParts = 3, maxParts = 
   }
 
   const threadParts = bestParts.map((part) => part.trim()).filter(Boolean);
+
+  // If we only got 1 part but the content is long enough for a thread,
+  // force-split into sentence-based chunks as a last resort
+  if (threadParts.length < minParts && threadParts.length === 1 && threadParts[0].length > 300) {
+    const forceSplit = buildPartsFromSentences(threadParts[0], 250);
+    const merged = mergePartsToMax(forceSplit, maxParts);
+    if (merged.length >= minParts) {
+      const normalizedContent = merged.join('\n---\n');
+      return {
+        valid: true,
+        critical: false,
+        issues: [],
+        threadParts: merged,
+        normalizedContent,
+      };
+    }
+  }
+
   if (threadParts.length < minParts || threadParts.length > maxParts) {
     issues.push(`Thread must have ${minParts}-${maxParts} tweets (got ${threadParts.length || 0})`);
   }
@@ -274,9 +299,14 @@ export const normalizeThreadContent = (content = '', { minParts = 3, maxParts = 
 
   const normalizedContent = threadParts.join('\n---\n');
 
+  // Only mark as critical if truly empty. If we have 1-2 parts with decent
+  // content, treat as non-critical so the retry prompt can fix it
+  // rather than hard-failing and refunding credits.
+  const isCritical = threadParts.length === 0;
+
   return {
     valid: issues.length === 0,
-    critical: threadParts.length === 0 || threadParts.length < minParts,
+    critical: isCritical,
     issues,
     threadParts,
     normalizedContent,

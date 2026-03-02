@@ -150,7 +150,7 @@ api.interceptors.request.use(
     if (token) {
       config.headers['Authorization'] = `Bearer ${token}`;
     }
-    
+
     const skipAccountScope = Boolean(config._skipAccountScope);
     delete config._skipAccountScope;
 
@@ -168,7 +168,7 @@ api.interceptors.request.use(
         config.headers['x-team-id'] = teamId;
       }
     }
-    
+
     return config;
   },
   (error) => Promise.reject(error)
@@ -186,7 +186,7 @@ const processQueue = (error, token = null) => {
       prom.resolve(token);
     }
   });
-  
+
   failedQueue = [];
 };
 
@@ -250,11 +250,11 @@ api.interceptors.response.use(
 
     // Only attempt token refresh for 401 errors on protected routes
     // Exclude auth endpoints, csrf token, and already retried requests
-    if (error.response?.status === 401 && 
-        !originalRequest._retry && 
-        !originalRequest.url.includes('/api/auth/refresh') &&
-        !originalRequest.url.includes('/api/auth/login') &&
-        !originalRequest.url.includes('/api/csrf-token')) {
+    if (error.response?.status === 401 &&
+      !originalRequest._retry &&
+      !originalRequest.url.includes('/api/auth/refresh') &&
+      !originalRequest.url.includes('/api/auth/login') &&
+      !originalRequest.url.includes('/api/csrf-token')) {
       if (isRefreshing) {
         // If refresh is already in progress, queue this request
         return new Promise((resolve, reject) => {
@@ -270,7 +270,7 @@ api.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        
+
         // Fetch CSRF token and send in header for refresh
         let csrfToken = null;
         try {
@@ -279,7 +279,7 @@ api.interceptors.response.use(
         } catch (err) {
           console.error('Failed to fetch CSRF token for refresh:', err);
         }
-        
+
         // Use tweet-genie's own refresh endpoint instead of platform's
         const refreshResponse = await api.post('/api/auth/refresh', {}, {
           headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {}
@@ -299,16 +299,16 @@ api.interceptors.response.use(
         const currentPath = window.location.pathname;
         const hasRedirectedRecently = sessionStorage.getItem('auth_redirect_time');
         const now = Date.now();
-        
+
         // Prevent redirect loop - only redirect once every 2 seconds
         if (hasRedirectedRecently && (now - parseInt(hasRedirectedRecently)) < 2000) {
           console.log('Skipping redirect to prevent loop');
           return Promise.reject(refreshError);
         }
-        
-        if (!currentPath.includes('/auth/callback') && 
-            !currentPath.includes('/login') &&
-            !currentPath.includes('/secure-login')) {
+
+        if (!currentPath.includes('/auth/callback') &&
+          !currentPath.includes('/login') &&
+          !currentPath.includes('/secure-login')) {
           console.log('Redirecting to platform for re-authentication');
           sessionStorage.setItem('auth_redirect_time', now.toString());
           const currentUrl = encodeURIComponent(window.location.href);
@@ -479,7 +479,7 @@ export const ai = {
     const [prompt, style = 'casual', isThread = false] = args;
     return api.post('/api/ai/generate', { prompt, style, isThread });
   },
-  generateOptions: (prompt, style = 'casual', count = 3) => 
+  generateOptions: (prompt, style = 'casual', count = 3) =>
     api.post('/api/ai/generate-options', { prompt, style, count }),
   bulkGenerate: (prompts, options) => api.post('/api/ai/bulk-generate', { prompts, options }),
   // Removed queue-based endpoints for bulk generation
@@ -487,9 +487,9 @@ export const ai = {
 
 // AI Image Generation endpoints
 export const imageGeneration = {
-  generate: (prompt, style = 'natural') => api.post('/imageGeneration', 
-    { prompt, style }, 
-    { 
+  generate: (prompt, style = 'natural') => api.post('/imageGeneration',
+    { prompt, style },
+    {
       timeout: 90000, // 90 seconds for image generation
       maxContentLength: Infinity,
       maxBodyLength: Infinity
@@ -510,6 +510,30 @@ export const strategy = {
   toggleFavorite: (promptId) => api.post(`/api/strategy/prompts/${promptId}/favorite`),
   update: (strategyId, data) => api.patch(`/api/strategy/${strategyId}`, data),
   delete: (strategyId) => api.delete(`/api/strategy/${strategyId}`),
+};
+
+// Profile Analysis endpoints (routed under /api/strategy)
+export const profileAnalysis = {
+  analyse: (strategyId, options = {}) => api.post('/api/strategy/init-analysis', { strategyId, ...options }, { timeout: 120000 }),
+  getStatus: (analysisId) => api.get(`/api/strategy/analysis-status/${analysisId}`),
+  getLatest: (strategyId) => api.get('/api/strategy/latest-analysis', { params: { strategyId } }),
+  confirmStep: (analysisId, step, value) => api.post('/api/strategy/apply-analysis', { analysisId, step, value }),
+  analyseReferenceAccounts: (analysisId, handles) => api.post('/api/strategy/reference-analysis', { analysisId, handles }),
+  generatePrompts: (analysisId, strategyId) => api.post('/api/strategy/generate-analysis-prompts', { analysisId, strategyId }, { timeout: 120000 }),
+};
+
+// Content Review Queue endpoints
+export const contentReview = {
+  list: (params) => api.get('/api/content-review', { params }),
+  stats: () => api.get('/api/content-review/stats'),
+  generate: (strategyId) => api.post('/api/content-review/generate', { strategy_id: strategyId }),
+  update: (id, data) => api.patch(`/api/content-review/${id}`, data),
+  approve: (id) => api.post(`/api/content-review/${id}/approve`),
+  reject: (id) => api.post(`/api/content-review/${id}/reject`),
+  schedule: (id, data) => api.post(`/api/content-review/${id}/schedule`, data),
+  batchApprove: (itemIds) => api.post('/api/content-review/batch-approve', { item_ids: itemIds }),
+  batchSchedule: (itemIds) => api.post('/api/content-review/batch-schedule', { item_ids: itemIds }),
+  remove: (id) => api.delete(`/api/content-review/${id}`),
 };
 
 export default api;

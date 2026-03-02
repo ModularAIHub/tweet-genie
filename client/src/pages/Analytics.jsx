@@ -485,12 +485,23 @@ const Analytics = () => {
 
       if (result.changed) {
         toast.success('Metrics updated from Twitter for this tweet.');
+        
+        // Update the tweet in the current state immediately
+        if (result.tweet) {
+          setAnalyticsData((prev) => ({
+            ...prev,
+            tweets: prev.tweets.map(tweet => 
+              tweet.id === tweetDbId ? { ...tweet, ...result.tweet } : tweet
+            ),
+          }));
+        }
       } else {
         toast.success('Checked Twitter: metrics unchanged for this tweet.');
       }
 
+      // Invalidate cache and refresh in background
       analyticsAPI.invalidateCache();
-      await fetchAnalytics({ silent: true });
+      fetchAnalytics({ silent: true });
     } catch (refreshError) {
       if (refreshError?.response?.status === 429) {
         const waitMinutes = refreshError?.response?.data?.waitMinutes || 1;

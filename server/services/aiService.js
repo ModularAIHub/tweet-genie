@@ -146,10 +146,12 @@ async function getUserPreferenceAndKeys(userToken, maxRetries = 3) {
 const CONTENT_TEMPERATURE = 0.62;
 
 // Higher token limit = no truncated/incomplete content
+// 1024 is fine for single tweets, 2048 for threads to avoid cut-off
 const CONTENT_MAX_TOKENS = 1024;
+const THREAD_MAX_TOKENS = 2048;
 
 // Stable Gemini model for production
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-3-flash-preview';
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AIService {
@@ -599,9 +601,8 @@ User request: ${prompt}`;
           }],
           generationConfig: {
             temperature: CONTENT_TEMPERATURE,
-            topK: 1,
-            topP: 1,
-            maxOutputTokens: CONTENT_MAX_TOKENS,
+            topP: 0.95,
+            maxOutputTokens: systemPrompt.includes('thread') || systemPrompt.includes('---') ? THREAD_MAX_TOKENS : CONTENT_MAX_TOKENS,
           },
           safetySettings: [
             {

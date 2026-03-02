@@ -12,8 +12,10 @@ import {
   Wand2,
   Lock,
   X,
+  Sparkles,
 } from 'lucide-react';
 import ChatInterface from './ChatInterface';
+import AnalysisFlow from './AnalysisFlow';
 import StrategyOverview from './StrategyOverview';
 import PromptLibrary from './PromptLibrary';
 import { strategy as strategyApi } from '../../utils/api';
@@ -45,6 +47,7 @@ const StrategyBuilder = () => {
   const hasProAccess = hasProPlanAccess(user);
   const upgradeUrl = getSuiteGenieProUpgradeUrl();
   const [currentView, setCurrentView] = useState('chat');
+  const [isGeneratingPrompts, setIsGeneratingPrompts] = useState(false);
   const [strategy, setStrategy] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -61,6 +64,7 @@ const StrategyBuilder = () => {
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [strategyOptions, setStrategyOptions] = useState([]);
   const [switchingStrategyId, setSwitchingStrategyId] = useState('');
+  const [showAnalysisFlow, setShowAnalysisFlow] = useState(false);
 
   const normalizeListItem = (value) => value.trim().replace(/\s+/g, ' ').slice(0, 80);
   const normalizeExtraContext = (value) =>
@@ -107,6 +111,7 @@ const StrategyBuilder = () => {
     setExtraContextInput('');
     setFormMode('create');
     setShowCreateForm(true);
+    setShowAnalysisFlow(false);
     setCurrentView('chat');
   };
 
@@ -167,15 +172,29 @@ const StrategyBuilder = () => {
       setError(null);
       setIsDisconnected(false);
 
-      const response = await strategyApi.getCurrent();
-      const loadedStrategy = response?.data?.strategy;
+      // Fire both requests in parallel for faster loading
+      const [currentResponse, listResponse] = await Promise.all([
+        strategyApi.getCurrent(),
+        strategyApi.list(),
+      ]);
+
+      const loadedStrategy = currentResponse?.data?.strategy;
 
       if (!loadedStrategy) {
         throw new Error('Strategy payload missing');
       }
 
+      // Apply list data directly (avoids extra network call)
+      const list = Array.isArray(listResponse?.data) ? listResponse.data : [];
+      setStrategyOptions(list);
+      if (list.length) {
+        const hasPreferred = list.some((item) => item.id === loadedStrategy.id);
+        setSwitchingStrategyId(hasPreferred ? loadedStrategy.id : list[0]?.id || '');
+      } else {
+        setSwitchingStrategyId('');
+      }
+
       applyLoadedStrategy(loadedStrategy);
-      await fetchStrategyList(loadedStrategy.id);
     } catch (loadError) {
       if (isReconnectRequiredError(loadError)) {
         setIsDisconnected(true);
@@ -354,7 +373,77 @@ const StrategyBuilder = () => {
   };
 
   const handleGeneratePrompts = () => {
+    setIsGeneratingPrompts(true);
     setCurrentView('prompts');
+  };
+
+  const handleStartAnalysisFlow = async () => {
+    // Create strategy first if needed, then switch to analysis flow
+    try {
+      setCreatingTeam(true);
+      setError(null);
+
+      let savedStrategy = strategy;
+      if (!strategy?.id) {
+        const basicProfileMetadata = {
+          basic_profile_completed: false,
+          analysis_mode: true,
+        };
+        const response = await strategyApi.create({
+          niche: teamName.trim() || 'Auto-analysing...',
+          target_audience: teamDescription.trim(),
+          posting_frequency: '',
+          status: 'draft',
+          metadata: basicProfileMetadata,
+        });
+        savedStrategy = response.data;
+        setStrategy(savedStrategy);
+        setSwitchingStrategyId(savedStrategy.id);
+      }
+
+      setShowCreateForm(false);
+      setShowAnalysisFlow(true);
+      setCurrentView('analysis');
+    } catch (saveError) {
+      if (isReconnectRequiredError(saveError)) {
+        setIsDisconnected(true);
+        setShowCreateForm(false);
+        setError(null);
+        return;
+      }
+      setError(saveError.response?.data?.error || saveError.message || 'Failed to start analysis.');
+    } finally {
+      setCreatingTeam(false);
+    }
+  };
+
+  const handleAnalysisComplete = async () => {
+    // Reload strategy to get updated data
+    try {
+      setLoading(true);
+      setShowAnalysisFlow(false);
+      const response = await strategyApi.getById(strategy.id);
+      const updatedStrategy = response?.data?.strategy;
+      if (updatedStrategy) {
+        setStrategy(updatedStrategy);
+        setCurrentView('overview');
+        await fetchStrategyList(updatedStrategy.id);
+      }
+    } catch (refreshError) {
+      console.error('Failed to refresh strategy after analysis:', refreshError);
+      setCurrentView('overview');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAnalysisCancel = () => {
+    setShowAnalysisFlow(false);
+    if (strategy?.status === 'active') {
+      setCurrentView('overview');
+    } else {
+      setShowCreateForm(true);
+    }
   };
 
   const handleSwitchStrategy = async (event) => {
@@ -452,10 +541,41 @@ const StrategyBuilder = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-12 h-12 text-blue-600 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">Loading Strategy Builder...</p>
+      <div className="min-h-screen bg-gray-50">
+        {/* Skeleton header */}
+        <div className="bg-white border-b border-gray-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 bg-gray-200 rounded-lg animate-pulse" />
+              <div className="space-y-2">
+                <div className="h-6 w-48 bg-gray-200 rounded animate-pulse" />
+                <div className="h-4 w-72 bg-gray-100 rounded animate-pulse" />
+              </div>
+            </div>
+            <div className="flex gap-2 mt-4">
+              <div className="h-10 w-24 bg-gray-200 rounded animate-pulse" />
+              <div className="h-10 w-24 bg-gray-100 rounded animate-pulse" />
+              <div className="h-10 w-24 bg-gray-100 rounded animate-pulse" />
+            </div>
+          </div>
+        </div>
+        {/* Skeleton body */}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="bg-white rounded-xl border border-gray-200 p-6 space-y-3">
+                <div className="h-4 w-24 bg-gray-200 rounded animate-pulse" />
+                <div className="h-6 w-full bg-gray-100 rounded animate-pulse" />
+                <div className="h-4 w-3/4 bg-gray-100 rounded animate-pulse" />
+              </div>
+            ))}
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+            <div className="h-5 w-40 bg-gray-200 rounded animate-pulse" />
+            <div className="h-4 w-full bg-gray-100 rounded animate-pulse" />
+            <div className="h-4 w-5/6 bg-gray-100 rounded animate-pulse" />
+            <div className="h-4 w-2/3 bg-gray-100 rounded animate-pulse" />
+          </div>
         </div>
       </div>
     );
@@ -686,24 +806,36 @@ const StrategyBuilder = () => {
 
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <p className="text-sm text-blue-900">
-                <strong>Next:</strong> You can answer 7 guided questions or use AI quick setup from chat to auto-complete faster.
+                <strong>Next:</strong> You can answer 7 guided questions, use AI quick setup from chat, or let us auto-analyse your Twitter account.
               </p>
             </div>
 
-            <button
-              onClick={handleSaveStrategy}
-              disabled={!teamName.trim() || creatingTeam}
-              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {creatingTeam ? (
-                <>
-                  <Loader2 size={20} className="animate-spin" />
-                  {isAdvancedEditMode ? 'Updating...' : 'Creating...'}
-                </>
-              ) : (
-                <>{isAdvancedEditMode ? 'Update Strategy' : 'Continue to Setup Questions'}</>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={handleSaveStrategy}
+                disabled={!teamName.trim() || creatingTeam}
+                className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {creatingTeam ? (
+                  <>
+                    <Loader2 size={20} className="animate-spin" />
+                    {isAdvancedEditMode ? 'Updating...' : 'Creating...'}
+                  </>
+                ) : (
+                  <>{isAdvancedEditMode ? 'Update Strategy' : 'Set up manually'}</>
+                )}
+              </button>
+              {!isAdvancedEditMode && (
+                <button
+                  onClick={handleStartAnalysisFlow}
+                  disabled={creatingTeam}
+                  className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 rounded-lg font-semibold hover:from-purple-700 hover:to-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <Sparkles size={20} />
+                  Analyse my account
+                </button>
               )}
-            </button>
+            </div>
 
             {strategy && hasCompletedBasicProfile && (
               <button
@@ -859,13 +991,21 @@ const StrategyBuilder = () => {
           </div>
         )}
 
-        {currentView === 'chat' && strategy && (
+        {showAnalysisFlow && strategy && (
+          <AnalysisFlow
+            strategyId={strategy.id}
+            onComplete={handleAnalysisComplete}
+            onCancel={handleAnalysisCancel}
+          />
+        )}
+
+        {currentView === 'chat' && strategy && !showAnalysisFlow && (
           <div className="max-w-4xl mx-auto h-[calc(100dvh-170px)] min-h-[540px] sm:h-[calc(100vh-200px)]">
             <ChatInterface strategyId={strategy.id} onComplete={handleChatComplete} />
           </div>
         )}
 
-        {currentView === 'overview' && strategy && (
+        {currentView === 'overview' && strategy && !showAnalysisFlow && (
           <StrategyOverview
             strategy={strategy}
             onGeneratePrompts={handleGeneratePrompts}
@@ -873,10 +1013,12 @@ const StrategyBuilder = () => {
           />
         )}
 
-        {currentView === 'prompts' && strategy && (
+        {currentView === 'prompts' && strategy && !showAnalysisFlow && (
           <PromptLibrary
             strategyId={strategy.id}
             strategyExtraContext={strategy?.metadata?.extra_context || ''}
+            fromAnalysis={isGeneratingPrompts}
+            onPromptsLoaded={() => setIsGeneratingPrompts(false)}
           />
         )}
       </div>

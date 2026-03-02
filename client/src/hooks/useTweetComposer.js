@@ -12,7 +12,7 @@ import toast from 'react-hot-toast';
 
 // â”€â”€ Character limit constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const DEFAULT_CHAR_LIMIT = 280;
-export const PREMIUM_CHAR_LIMIT = 2000;
+export const PREMIUM_CHAR_LIMIT = 25000;
 
 // Utility function to calculate base64 image size in bytes
 const getBase64Size = (base64String) => {

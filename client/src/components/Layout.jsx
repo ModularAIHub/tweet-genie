@@ -10,7 +10,7 @@ import { isPageVisible } from '../utils/requestCache';
 import {
   LayoutDashboard,
   Edit3,
-  Calendar,
+  CalendarDays,
   BarChart3,
   Settings,
   LogOut,
@@ -21,6 +21,7 @@ import {
   Lock,
   History,
   Sparkles,
+  ClipboardList,
 } from 'lucide-react';
 
 const Layout = ({ children }) => {
@@ -39,8 +40,9 @@ const Layout = ({ children }) => {
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Compose', href: '/compose', icon: Edit3 },
     { name: 'Strategy Builder', href: '/strategy', icon: Sparkles, badge: 'New', proOnly: true },
+    { name: 'Content Queue', href: '/content-review', icon: ClipboardList, badge: 'New', proOnly: true },
     { name: 'Bulk Generation', href: '/bulk-generation', icon: BarChart3, proOnly: true },
-    { name: 'Scheduling', href: '/scheduling', icon: Calendar },
+    { name: 'Scheduling', href: '/scheduling', icon: CalendarDays },
     { name: 'History', href: '/history', icon: History },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },

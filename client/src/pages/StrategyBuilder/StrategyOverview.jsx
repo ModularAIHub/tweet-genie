@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Target,
   TrendingUp,
@@ -12,9 +13,12 @@ import {
   CheckCircle2,
   Circle,
   Rocket,
+  Clock,
+  Zap,
+  Loader2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { strategy as strategyApi } from '../../utils/api';
+import api, { strategy as strategyApi } from '../../utils/api';
 
 const CARD_STYLE = {
   blue: { iconBg: 'bg-blue-100', iconText: 'text-blue-600' },
@@ -71,7 +75,9 @@ const normalizeExtraContext = (value = '') =>
   String(value || '').replace(/\r\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim().slice(0, 2000);
 
 const StrategyOverview = ({ strategy, onGeneratePrompts, onStrategyUpdated }) => {
+  const navigate = useNavigate();
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingContent, setIsGeneratingContent] = useState(false);
   const [promptCount, setPromptCount] = useState(0);
   const [addMode, setAddMode] = useState('manual');
   const [manualGoalsInput, setManualGoalsInput] = useState('');
@@ -409,6 +415,94 @@ const StrategyOverview = ({ strategy, onGeneratePrompts, onStrategyUpdated }) =>
           Content Topics
         </h3>
         <ArrayDisplay items={strategy.topics} emptyText="No topics defined yet" />
+      </div>
+
+      {/* Recommended Posting Times — from analysis */}
+      {(() => {
+        const cache = strategy?.metadata?.analysis_cache;
+        const bestDays = cache?.best_days || [];
+        const bestHours = cache?.best_hours || null;
+        const confidence = cache?.confidence || null;
+        const tweetsAnalysed = cache?.tweets_analysed || 0;
+
+        if (!bestDays.length && !bestHours) return null;
+
+        return (
+          <div className="bg-white rounded-xl p-6 border border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-emerald-600" />
+              Recommended Posting Times
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {bestDays.length > 0 && (
+                <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                  <p className="text-sm font-medium text-emerald-800 mb-2">Best days to post</p>
+                  <div className="flex flex-wrap gap-2">
+                    {bestDays.map((day, idx) => (
+                      <span key={idx} className="px-3 py-1 bg-emerald-100 text-emerald-700 rounded-full text-sm font-medium">
+                        {day}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {bestHours && (
+                <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                  <p className="text-sm font-medium text-blue-800 mb-2">Best time window</p>
+                  <p className="text-lg font-semibold text-blue-900">{bestHours}</p>
+                </div>
+              )}
+            </div>
+            {confidence && (
+              <p className="text-xs text-gray-500 mt-3">
+                {confidence === 'high'
+                  ? `Based on analysis of ${tweetsAnalysed} tweets with engagement data`
+                  : confidence === 'medium'
+                  ? `Based on analysis of ${tweetsAnalysed} tweets — limited data`
+                  : 'Estimated from bio analysis — post more to improve accuracy'}
+              </p>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Generate Weekly Content CTA */}
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-6 border border-blue-200">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <Zap className="w-5 h-5 text-blue-600" />
+              Weekly Content Generation
+            </h3>
+            <p className="text-sm text-gray-600 mt-1">
+              AI will craft 7 ready-to-post tweets based on your strategy, audience, and trending topics.
+            </p>
+          </div>
+          <button
+            onClick={async () => {
+              if (!strategy?.id) return;
+              setIsGeneratingContent(true);
+              try {
+                await api.post('/api/content-review/generate', { strategy_id: strategy.id });
+                toast.success('Content generated! Redirecting to review queue...');
+                setTimeout(() => navigate('/content-review'), 800);
+              } catch (err) {
+                toast.error(err.response?.data?.error || 'Failed to generate content');
+              } finally {
+                setIsGeneratingContent(false);
+              }
+            }}
+            disabled={isGeneratingContent}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap font-medium"
+          >
+            {isGeneratingContent ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            {isGeneratingContent ? 'Generating...' : "Generate My Week's Content"}
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl p-6 border border-gray-200">

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
   Star,
   Search,
@@ -10,8 +10,9 @@ import {
   Square,
   CheckSquare,
   Send,
+  Loader2,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { strategy as strategyApi } from '../../utils/api';
 
@@ -118,7 +119,7 @@ const buildStructuredStrategyPrompt = (prompt, strategyId, strategyExtraContext 
   };
 };
 
-const PromptLibrary = ({ strategyId, strategyExtraContext = '' }) => {
+const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = false, onPromptsLoaded }) => {
   const navigate = useNavigate();
   const [prompts, setPrompts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -127,10 +128,78 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '' }) => {
   const [copiedId, setCopiedId] = useState(null);
   const [selectedPromptIds, setSelectedPromptIds] = useState([]);
   const [generatedPromptIds, setGeneratedPromptIds] = useState([]);
+  
+  // Detect if we're in generating mode
+  const [isGenerating, setIsGenerating] = useState(fromAnalysis && prompts.length === 0);
+  const pollIntervalRef = useRef(null);
 
+  // Update generating state when fromAnalysis prop changes
+  useEffect(() => {
+    if (fromAnalysis && prompts.length === 0) {
+      setIsGenerating(true);
+    }
+  }, [fromAnalysis, prompts.length]);
+
+  // Initial load
   useEffect(() => {
     loadPrompts();
   }, [strategyId]);
+  
+  // Start polling if generating
+  useEffect(() => {
+    if (!isGenerating) return;
+    
+    const startPolling = () => {
+      pollIntervalRef.current = setInterval(async () => {
+        const response = await strategyApi.getPrompts(strategyId).catch(() => null);
+        const newPrompts = Array.isArray(response?.data) ? response.data : [];
+        if (newPrompts.length > 0) {
+          setPrompts(newPrompts);
+        }
+      }, 3000);
+    };
+
+    startPolling();
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [strategyId, isGenerating]);
+
+  // Stop generating when prompts arrive
+  useEffect(() => {
+    if (prompts.length > 0 && pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+      setIsGenerating(false);
+      
+      // Notify parent that prompts loaded
+      if (onPromptsLoaded) {
+        onPromptsLoaded();
+      }
+    }
+  }, [prompts, onPromptsLoaded]);
+  
+  // Timeout fallback after 60 seconds
+  useEffect(() => {
+    if (!isGenerating) return;
+    
+    const timeout = setTimeout(() => {
+      setIsGenerating(false);
+      if (prompts.length === 0) {
+        toast.error('Prompt generation is taking longer than expected. Please refresh the page.');
+      }
+      // Notify parent even on timeout
+      if (onPromptsLoaded) {
+        onPromptsLoaded();
+      }
+    }, 60000);
+    
+    return () => clearTimeout(timeout);
+  }, [isGenerating, prompts.length, onPromptsLoaded]);
 
   useEffect(() => {
     if (!strategyId) return;
@@ -388,6 +457,25 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '' }) => {
         <div className="flex flex-col items-center gap-3">
           <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
           <p className="text-gray-600">Loading prompts...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show generating state when redirected from analysis flow
+  if (isGenerating && prompts.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="flex flex-col items-center gap-4 max-w-md text-center">
+          <Loader2 className="w-16 h-16 text-blue-600 animate-spin" />
+          <div>
+            <h3 className="text-xl font-semibold text-gray-900 mb-2">
+              Generating your personalized prompts...
+            </h3>
+            <p className="text-gray-600">
+              This may take up to 60 seconds. Your prompts will appear automatically when ready.
+            </p>
+          </div>
         </div>
       </div>
     );
