@@ -484,6 +484,20 @@ const Settings = () => {
     }
   };
 
+  const handleChangePostsPerDay = async (value) => {
+    if (!selectedStrategyId) return;
+    setAutopilotUpdating(true);
+    try {
+      const res = await autopilotAPI.updateConfig(selectedStrategyId, { posts_per_day: value });
+      setAutopilotConfig(res.data?.data || res.data || null);
+      toast.success(`Posting frequency set to ${value}x per day`);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update frequency');
+    } finally {
+      setAutopilotUpdating(false);
+    }
+  };
+
   const handleUndoTweet = async (scheduledTweetId) => {
     try {
       await autopilotAPI.undoTweet(scheduledTweetId);
@@ -986,6 +1000,29 @@ const Settings = () => {
                           }}
                         />
                       </button>
+                    </div>
+
+                    {/* Posts Per Day Selector */}
+                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                      <p className="text-sm font-medium text-gray-900 mb-1">Posting Frequency</p>
+                      <p className="text-xs text-gray-500 mb-3">How many tweets per day should autopilot schedule?</p>
+                      <div className="flex items-center gap-2">
+                        {[1, 2, 3, 4, 5].map((n) => (
+                          <button
+                            key={n}
+                            onClick={() => handleChangePostsPerDay(n)}
+                            disabled={autopilotUpdating}
+                            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                              (autopilotConfig?.posts_per_day || 3) === n
+                                ? 'bg-blue-600 text-white border-blue-600'
+                                : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:text-blue-600'
+                            } disabled:opacity-50`}
+                          >
+                            {n}x
+                          </button>
+                        ))}
+                        <span className="text-xs text-gray-500 ml-2">per day</span>
+                      </div>
                     </div>
 
                     <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">

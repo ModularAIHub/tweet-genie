@@ -156,11 +156,23 @@ export async function getNextOptimalPostingTime(strategyId, config) {
       }
     }
     
-    // Fallback: use custom hours or default to spreading throughout the day
+    // Fallback: use custom hours or derive from posts_per_day
     // Spread across multiple days with conflict checking
-    const customHours = config.custom_posting_hours && config.custom_posting_hours.length > 0
-      ? config.custom_posting_hours
-      : [9, 12, 17]; // Default hours: 9 AM, 12 PM, 5 PM
+    const postsPerDay = config.posts_per_day || 3;
+    let customHours;
+    if (config.custom_posting_hours && config.custom_posting_hours.length > 0) {
+      customHours = config.custom_posting_hours;
+    } else {
+      // Evenly distribute slots across the day based on posts_per_day
+      const slotMap = {
+        1: [12],                    // 12 PM
+        2: [9, 17],                 // 9 AM, 5 PM
+        3: [9, 12, 17],             // 9 AM, 12 PM, 5 PM
+        4: [8, 11, 14, 18],         // 8 AM, 11 AM, 2 PM, 6 PM
+        5: [8, 10, 12, 15, 18],     // 8 AM, 10 AM, 12 PM, 3 PM, 6 PM
+      };
+      customHours = slotMap[Math.min(postsPerDay, 5)] || slotMap[3];
+    }
     
     const now = new Date();
     
@@ -440,7 +452,9 @@ export async function fillQueue(strategyId) {
     );
     
     const currentCount = parseInt(countResult.rows[0].count);
-    const targetCount = config.max_queue_size || 10;
+    // Target: enough content for ~7 days based on posts_per_day, capped by max_queue_size
+    const postsPerDay = config.posts_per_day || 3;
+    const targetCount = Math.min(postsPerDay * 7, config.max_queue_size || 10);
     const needToGenerate = Math.max(0, targetCount - currentCount);
     
     const generated = [];
