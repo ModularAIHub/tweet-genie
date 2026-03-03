@@ -188,6 +188,8 @@ export async function getNextOptimalPostingTime(strategyId, config) {
     const nowMoment = moment.tz(userTz);
     const now = nowMoment.toDate();
     
+    console.log(`[Autopilot] Custom hours path: hours=${JSON.stringify(customHours)}, tz=${userTz}, use_optimal=${config.use_optimal_times}`);
+    
     // Check up to 14 days ahead to find an open slot
     for (let daysAhead = 0; daysAhead < 14; daysAhead++) {
       const checkMoment = nowMoment.clone().add(daysAhead, 'days');
@@ -462,10 +464,11 @@ export async function fillQueue(strategyId) {
     );
     
     const currentCount = parseInt(countResult.rows[0].count);
-    // Target: enough content for ~7 days based on posts_per_day, capped by max_queue_size
+    // Target: enough content for a full 7-day week based on posts_per_day
     const postsPerDay = config.posts_per_day || 3;
-    const targetCount = Math.min(postsPerDay * 7, config.max_queue_size || 10);
+    const targetCount = postsPerDay * 7; // e.g. 3/day × 7 = 21 posts
     const needToGenerate = Math.max(0, targetCount - currentCount);
+    console.log(`🤖 Autopilot fillQueue: strategy=${strategyId}, postsPerDay=${postsPerDay}, target=${targetCount}, current=${currentCount}, toGenerate=${needToGenerate}`);
     
     const generated = [];
     

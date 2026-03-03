@@ -18,6 +18,7 @@ import {
   XCircle,
   Inbox,
   Send,
+  Info,
 } from 'lucide-react';
 import { twitter, providers, autopilot as autopilotAPI, strategy as strategyAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -1120,6 +1121,59 @@ const Settings = () => {
                         </div>
                       )}
                     </div>
+
+                    {/* ── How Autopilot Works Guide ─────────────────────── */}
+                    <details className="group">
+                      <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-blue-700 hover:text-blue-800 select-none p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                        <Info className="h-4 w-4 flex-shrink-0" />
+                        How does Autopilot work?
+                        <span className="ml-auto text-xs text-blue-500 group-open:hidden">Click to expand</span>
+                        <span className="ml-auto text-xs text-blue-500 hidden group-open:inline">Click to collapse</span>
+                      </summary>
+                      <div className="mt-2 p-4 bg-blue-50/50 border border-blue-100 rounded-lg space-y-3 text-sm text-gray-700">
+                        <div>
+                          <p className="font-semibold text-gray-900 mb-1">📅 Scheduling</p>
+                          <p>
+                            Autopilot generates <strong>{autopilotConfig?.posts_per_day || 3} tweets per day</strong> for 
+                            a full week ({(autopilotConfig?.posts_per_day || 3) * 7} total). Each tweet is assigned to a 
+                            different time slot based on your chosen posting times, spread evenly across all 7 days.
+                          </p>
+                        </div>
+
+                        <div>
+                          <p className="font-semibold text-gray-900 mb-1">⏰ Posting Times</p>
+                          <ul className="list-disc list-inside space-y-1 text-gray-600">
+                            <li><strong>AI Optimal:</strong> Uses your analytics to pick the highest-engagement hours automatically.</li>
+                            <li><strong>Custom Times:</strong> Posts only at the hours you select (e.g. 10 AM, 11 AM, 6 PM). Times are in your local timezone.</li>
+                          </ul>
+                        </div>
+
+                        <div>
+                          <p className="font-semibold text-gray-900 mb-1">✅ Approval Flow</p>
+                          <ul className="list-disc list-inside space-y-1 text-gray-600">
+                            <li><strong>Require Approval ON:</strong> Tweets appear in Content Queue as "Pending". You review, edit, and approve each one before it gets scheduled.</li>
+                            <li><strong>Require Approval OFF:</strong> Tweets are auto-approved and scheduled immediately — fully hands-free. Each has a 1-hour undo window.</li>
+                          </ul>
+                        </div>
+
+                        <div>
+                          <p className="font-semibold text-gray-900 mb-1">🔄 Content Queue</p>
+                          <p>
+                            Go to <strong>Content Queue</strong> (in the sidebar) to see all queued tweets. 
+                            You can approve, reject, or edit any tweet before it posts. Approved tweets move 
+                            to the <strong>Scheduling</strong> calendar where you can also reschedule them.
+                          </p>
+                        </div>
+
+                        <div>
+                          <p className="font-semibold text-gray-900 mb-1">🤖 Auto-Refill</p>
+                          <p>
+                            The queue auto-refills every hour. As tweets get posted, new ones are generated to 
+                            keep the next 7 days full. You'll always have upcoming content ready.
+                          </p>
+                        </div>
+                      </div>
+                    </details>
 
                     <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
                       <p className="text-sm text-amber-800 flex items-center gap-1.5">

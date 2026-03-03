@@ -12,8 +12,8 @@ import {
   refreshTwitterOauth2IfNeeded,
 } from '../utils/twitterRuntimeAuth.js';
 
-const THREAD_REPLY_DELAY_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_MS || '600', 10);
-const THREAD_REPLY_DELAY_JITTER_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_JITTER_MS || '250', 10);
+const THREAD_REPLY_DELAY_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_MS || '2000', 10);
+const THREAD_REPLY_DELAY_JITTER_MS = Number.parseInt(process.env.SCHEDULED_THREAD_DELAY_JITTER_MS || '1000', 10);
 const SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD = Number.parseInt(process.env.SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD || '6', 10);
 const SCHEDULED_RATE_LIMIT_MAX_RETRIES = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_MAX_RETRIES || '2', 10);
 const SCHEDULED_RATE_LIMIT_WAIT_MS = Number.parseInt(process.env.SCHEDULED_RATE_LIMIT_WAIT_MS || '90000', 10);
@@ -579,8 +579,8 @@ function toUtcDbTimestamp(value) {
 }
 
 function getScheduledThreadDelayMs() {
-  const baseDelay = Number.isFinite(THREAD_REPLY_DELAY_MS) ? Math.max(0, THREAD_REPLY_DELAY_MS) : 600;
-  const jitter = Number.isFinite(THREAD_REPLY_DELAY_JITTER_MS) ? Math.max(0, THREAD_REPLY_DELAY_JITTER_MS) : 250;
+  const baseDelay = Number.isFinite(THREAD_REPLY_DELAY_MS) ? Math.max(0, THREAD_REPLY_DELAY_MS) : 2000;
+  const jitter = Number.isFinite(THREAD_REPLY_DELAY_JITTER_MS) ? Math.max(0, THREAD_REPLY_DELAY_JITTER_MS) : 1000;
   if (!jitter) return baseDelay;
   return baseDelay + Math.floor(Math.random() * (jitter + 1));
 }
@@ -658,18 +658,20 @@ async function withRateLimitRetry(operation, { label, retries = SCHEDULED_RATE_L
 }
 
 function getAdaptiveScheduledThreadDelayMs({ index, totalParts, mediaCount = 0 }) {
+  // Base delay 2-3s (same as compose) to avoid 429 rate limits
   let delayMs = getScheduledThreadDelayMs();
 
+  // Larger threads get extra breathing room
   if (Number.isFinite(totalParts) && totalParts > SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD) {
-    delayMs += Math.min(3000, (totalParts - SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD) * 300);
+    delayMs += Math.min(2500, (totalParts - SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD) * 250);
   }
 
   if (Number.isFinite(mediaCount) && mediaCount > 0) {
-    delayMs += Math.min(2400, mediaCount * 450);
+    delayMs += Math.min(2000, mediaCount * 400);
   }
 
   if (Number.isFinite(index) && index > 5) {
-    delayMs += 350;
+    delayMs += 300;
   }
 
   return Math.min(delayMs, SCHEDULED_RATE_LIMIT_MAX_WAIT_MS);
@@ -1414,17 +1416,15 @@ class ScheduledTweetService {
             let threadMediaIds = Array.isArray(threadMediaArr) && threadMediaArr[i + 1] ? threadMediaArr[i + 1] : [];
             const mediaCountForTweet = Array.isArray(threadMediaIds) ? threadMediaIds.length : 0;
             const totalParts = scheduledTweet.thread_tweets.length + 1;
-            const shouldThrottle = i > 0 || totalParts > SCHEDULED_THREAD_LARGE_SIZE_THRESHOLD || mediaCountForTweet > 0;
 
-            if (shouldThrottle) {
-              const delayMs = getAdaptiveScheduledThreadDelayMs({
-                index: i + 1,
-                totalParts,
-                mediaCount: mediaCountForTweet,
-              });
-              console.log(`[Thread ${i + 1}/${scheduledTweet.thread_tweets.length}] Waiting ${delayMs}ms before next reply`);
-              await wait(delayMs);
-            }
+            // Always delay 2-3s between replies (like compose) to avoid 429
+            const delayMs = getAdaptiveScheduledThreadDelayMs({
+              index: i + 1,
+              totalParts,
+              mediaCount: mediaCountForTweet,
+            });
+            console.log(`[Thread ${i + 1}/${scheduledTweet.thread_tweets.length}] Waiting ${delayMs}ms before next reply`);
+            await wait(delayMs);
             const threadTweet = scheduledTweet.thread_tweets[i];
             const cleanThreadContent = stripMarkdown(threadTweet.content);
             postedThreadContents.push(cleanThreadContent);
@@ -1434,10 +1434,7 @@ class ScheduledTweetService {
               reply: { in_reply_to_tweet_id: previousTweetId },
               ...(Array.isArray(threadMediaIds) && threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
             };
-            const threadResponse = await withRateLimitRetry(
-              () => twitterClient.v2.tweet(threadTweetData),
-              { label: `scheduled-thread-post-${i + 1}` }
-            );
+            const threadResponse = await twitterClient.v2.tweet(threadTweetData);
             previousTweetId = threadResponse.data.id;
             threadTweetIds.push({
               tweetId: threadResponse.data.id,
