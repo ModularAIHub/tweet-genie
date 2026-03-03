@@ -1,6 +1,7 @@
 // Auto-Pilot Worker - Runs periodically to fill queues for enabled strategies
 import pool from '../config/database.js';
 import * as autopilotService from '../services/autopilotService.js';
+import { calculateOptimalPostingTimes } from '../services/analyticsService.js';
 
 const AUTOPILOT_WORKER_INTERVAL_MS = Number(process.env.AUTOPILOT_WORKER_INTERVAL_MS || 60 * 60 * 1000); // 1 hour
 const AUTOPILOT_DEBUG = process.env.AUTOPILOT_DEBUG === 'true';
@@ -48,6 +49,16 @@ async function processAutopilotStrategies() {
       try {
         autopilotLog(`Processing strategy: ${config.strategy_id} (${config.niche})`);
         
+        // Refresh optimal posting times from analytics data before scheduling
+        if (config.use_optimal_times !== false) {
+          try {
+            await calculateOptimalPostingTimes(config.strategy_id);
+            autopilotLog(`📊 Refreshed optimal posting times for strategy ${config.strategy_id}`);
+          } catch (err) {
+            autopilotLog(`⚠️ Could not refresh optimal times: ${err.message}`);
+          }
+        }
+
         // Fill queue for this strategy
         const generated = await autopilotService.fillQueue(config.strategy_id);
         

@@ -498,6 +498,38 @@ const Settings = () => {
     }
   };
 
+  const handleToggleUseOptimalTimes = async () => {
+    if (!selectedStrategyId) return;
+    setAutopilotUpdating(true);
+    const next = !autopilotConfig?.use_optimal_times;
+    try {
+      const res = await autopilotAPI.updateConfig(selectedStrategyId, { use_optimal_times: next });
+      setAutopilotConfig(res.data?.data || res.data || null);
+      toast.success(next ? 'Using AI-optimized posting times from your analytics.' : 'Switched to custom posting times.');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update setting');
+    } finally {
+      setAutopilotUpdating(false);
+    }
+  };
+
+  const handleToggleCustomHour = async (hour) => {
+    if (!selectedStrategyId) return;
+    setAutopilotUpdating(true);
+    const current = autopilotConfig?.custom_posting_hours || [];
+    const next = current.includes(hour)
+      ? current.filter(h => h !== hour)
+      : [...current, hour].sort((a, b) => a - b);
+    try {
+      const res = await autopilotAPI.updateConfig(selectedStrategyId, { custom_posting_hours: next });
+      setAutopilotConfig(res.data?.data || res.data || null);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update posting times');
+    } finally {
+      setAutopilotUpdating(false);
+    }
+  };
+
   const handleUndoTweet = async (scheduledTweetId) => {
     try {
       await autopilotAPI.undoTweet(scheduledTweetId);
@@ -1023,6 +1055,70 @@ const Settings = () => {
                         ))}
                         <span className="text-xs text-gray-500 ml-2">per day</span>
                       </div>
+                    </div>
+
+                    {/* Posting Times — Optimal vs Custom */}
+                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                      <p className="text-sm font-medium text-gray-900 mb-1">Posting Times</p>
+                      <p className="text-xs text-gray-500 mb-3">Choose when autopilot posts your tweets.</p>
+
+                      <div className="flex gap-2 mb-3">
+                        <button
+                          onClick={handleToggleUseOptimalTimes}
+                          disabled={autopilotUpdating}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                            autopilotConfig?.use_optimal_times !== false
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                          } disabled:opacity-50`}
+                        >
+                          Optimal (from analytics)
+                        </button>
+                        <button
+                          onClick={handleToggleUseOptimalTimes}
+                          disabled={autopilotUpdating}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                            autopilotConfig?.use_optimal_times === false
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                          } disabled:opacity-50`}
+                        >
+                          Custom Times
+                        </button>
+                      </div>
+
+                      {autopilotConfig?.use_optimal_times !== false ? (
+                        <p className="text-xs text-gray-500">
+                          Autopilot automatically picks the best times based on when your audience is most engaged. Times refresh every hour from your analytics data.
+                        </p>
+                      ) : (
+                        <div>
+                          <p className="text-xs text-gray-500 mb-2">Pick the hours you want to post (your timezone):</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {[6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21].map((h) => {
+                              const selected = (autopilotConfig?.custom_posting_hours || []).includes(h);
+                              const label = h <= 12 ? `${h === 0 ? 12 : h}${h < 12 ? 'am' : 'pm'}` : `${h - 12}pm`;
+                              return (
+                                <button
+                                  key={h}
+                                  onClick={() => handleToggleCustomHour(h)}
+                                  disabled={autopilotUpdating}
+                                  className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${
+                                    selected
+                                      ? 'bg-blue-600 text-white border-blue-600'
+                                      : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                                  } disabled:opacity-50`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {(autopilotConfig?.custom_posting_hours || []).length === 0 && (
+                            <p className="text-xs text-amber-600 mt-2">Select at least one hour. Default (9am, 12pm, 5pm) will be used if none selected.</p>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
