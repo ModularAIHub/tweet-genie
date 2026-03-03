@@ -1447,17 +1447,70 @@ class ScheduledTweetService {
             console.log(`✅ Thread tweet ${i + 1} posted successfully: ${threadResponse.data.id}`);
           } catch (threadErr) {
             console.error(`❌ Error posting thread tweet ${i + 1}:`, threadErr);
-            threadSuccess = false;
-            threadError = threadErr;
+
+            // 401 auth failure — token invalid mid-thread, cannot continue
+            if (isScheduledUnauthorizedError(threadErr)) {
+              console.error(`🔒 Auth failure on thread part ${i + 1}. Stopping remaining parts.`);
+              threadSuccess = false;
+              threadError = threadErr;
+              break;
+            }
+
+            // 403 duplicate — skip this part, continue posting remaining parts
+            if (threadErr.code === 403 || (threadErr.data && threadErr.data.status === 403)) {
+              console.warn(`⚠️ Thread part ${i + 1} got 403 (likely duplicate). Skipping, continuing remaining parts.`);
+              threadSuccess = false;
+              threadError = threadError || threadErr;
+              continue;
+            }
+
+            // 429 rate limit (withRateLimitRetry already exhausted its retries) — wait and retry once more
             if (isRateLimitedError(threadErr)) {
               const waitMs = getRateLimitWaitMs(threadErr);
-              const waitSeconds = Math.ceil(waitMs / 1000);
-              console.error(`Stopping remaining thread tweets after rate limit on part ${i + 1}. Retry after ~${waitSeconds}s.`);
+              console.warn(`⏳ Thread part ${i + 1} rate-limited after retries. Waiting ${waitMs}ms for one final attempt...`);
+              await wait(waitMs);
+              try {
+                const threadTweet = scheduledTweet.thread_tweets[i];
+                const retryContent = stripMarkdown(threadTweet.content);
+                const retryData = {
+                  text: decodeHTMLEntities(retryContent),
+                  reply: { in_reply_to_tweet_id: previousTweetId },
+                  ...(Array.isArray(threadMediaIds) && threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
+                };
+                const retryResponse = await twitterClient.v2.tweet(retryData);
+                previousTweetId = retryResponse.data.id;
+                threadTweetIds.push({ tweetId: retryResponse.data.id, content: retryContent, mediaIds: threadMediaIds });
+                console.log(`✅ Thread tweet ${i + 1} posted on final retry: ${retryResponse.data.id}`);
+                continue;
+              } catch (retryErr) {
+                console.error(`❌ Thread part ${i + 1} final retry also failed:`, retryErr.message);
+                threadSuccess = false;
+                threadError = threadError || retryErr;
+                continue;
+              }
             }
-            if (threadErr.code === 403 || (threadErr.data && threadErr.data.status === 403)) {
-              console.error('⚠️ Thread failed with 403 - likely duplicate content. Main tweet was posted successfully.');
+
+            // Other transient errors (network, timeout) — one retry with 5s delay
+            console.warn(`⏳ Thread part ${i + 1} failed with transient error. Retrying in 5s...`);
+            await wait(5000);
+            try {
+              const threadTweet = scheduledTweet.thread_tweets[i];
+              const retryContent = stripMarkdown(threadTweet.content);
+              const retryData = {
+                text: decodeHTMLEntities(retryContent),
+                reply: { in_reply_to_tweet_id: previousTweetId },
+                ...(Array.isArray(threadMediaIds) && threadMediaIds.length > 0 && { media: { media_ids: threadMediaIds } })
+              };
+              const retryResponse = await twitterClient.v2.tweet(retryData);
+              previousTweetId = retryResponse.data.id;
+              threadTweetIds.push({ tweetId: retryResponse.data.id, content: retryContent, mediaIds: threadMediaIds });
+              console.log(`✅ Thread tweet ${i + 1} posted on retry: ${retryResponse.data.id}`);
+            } catch (retryErr) {
+              console.error(`❌ Thread part ${i + 1} retry also failed:`, retryErr.message);
+              threadSuccess = false;
+              threadError = threadError || retryErr;
+              // Continue to next part instead of breaking
             }
-            break;
           }
         }
       }
@@ -1707,8 +1760,12 @@ class ScheduledTweetService {
         }
       }
 
+      const totalThreadParts = scheduledTweet.thread_tweets ? scheduledTweet.thread_tweets.length : 0;
+      const postedThreadParts = threadTweetIds.length;
       const finalStatus = threadSuccess ? 'completed' : 'partially_completed';
-      const errorMsg = threadSuccess ? null : `Main tweet posted, but thread failed: ${threadError?.message || 'Unknown error'}`;
+      const errorMsg = threadSuccess
+        ? null
+        : `Main tweet posted. Thread: ${postedThreadParts}/${totalThreadParts} parts posted. Error: ${threadError?.message || 'Unknown error'}`;
       const nextMetadata = metadataColumnAvailable
         ? (() => {
             const baseMetadata = scheduledCrossPost?.metadata || parseJsonObject(scheduledTweet?.metadata, {});

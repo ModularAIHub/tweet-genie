@@ -540,7 +540,11 @@ export const contentReview = {
 // Autopilot endpoints
 export const autopilot = {
   getConfig: (strategyId) => api.get(`/api/autopilot/${strategyId}/config`),
-  updateConfig: (strategyId, data) => api.put(`/api/autopilot/${strategyId}/config`, data),
+  updateConfig: (strategyId, data) => {
+    // Always include the browser timezone so autopilot schedules in the user's local time
+    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    return api.put(`/api/autopilot/${strategyId}/config`, { ...data, timezone: browserTz });
+  },
   getQueue: (strategyId, params) => api.get(`/api/autopilot/${strategyId}/queue`, { params }),
   approveItem: (queueId) => api.post(`/api/autopilot/queue/${queueId}/approve`),
   rejectItem: (queueId, reason) => api.post(`/api/autopilot/queue/${queueId}/reject`, { reason }),

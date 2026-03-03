@@ -1,5 +1,6 @@
 import pool from '../config/database.js';
 import axios from 'axios';
+import moment from 'moment-timezone';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const GEMINI_MODEL = 'gemini-3-flash-preview';
@@ -184,9 +185,10 @@ Return ONLY valid JSON:
   }
 
   // ─── Auto-schedule tweets directly (bypass review queue) ───────────────
-  async autopilotSchedule(userId, strategyId, scheduledItems, libraryPrompts) {
+  async autopilotSchedule(userId, strategyId, scheduledItems, libraryPrompts, userTz = 'UTC') {
     const UNDO_WINDOW_MS = 60 * 60 * 1000; // 1 hour
     const scheduledTweets = [];
+    const tz = userTz && moment.tz.zone(userTz) ? userTz : 'UTC';
 
     for (const item of scheduledItems) {
       if (!item.suggestedTime || item.suggestedTime <= new Date()) continue;
@@ -197,7 +199,6 @@ Return ONLY valid JSON:
       }
 
       const undoDeadline = new Date(Date.now() + UNDO_WINDOW_MS);
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
       // Insert directly into scheduled_tweets
       const { rows: [scheduled] } = await pool.query(
@@ -296,12 +297,13 @@ Return ONLY valid JSON:
       );
     }
 
-    // Calculate suggested times for each tweet
-    const scheduledItems = this.assignSuggestedTimes(tweets, strategy.metadata?.analysis_cache);
+    // Calculate suggested times for each tweet (use user's timezone from autopilot config)
+    const userTz = autopilotConfig?.timezone || 'UTC';
+    const scheduledItems = this.assignSuggestedTimes(tweets, strategy.metadata?.analysis_cache, userTz);
 
     // ─── Autopilot path: skip review queue, schedule directly ──────────
     if (isAutopilot) {
-      const autoScheduled = await this.autopilotSchedule(userId, strategyId, scheduledItems, libraryPrompts);
+      const autoScheduled = await this.autopilotSchedule(userId, strategyId, scheduledItems, libraryPrompts, userTz);
       return { count: autoScheduled.length, items: autoScheduled, autopilot: true };
     }
 
@@ -331,7 +333,7 @@ Return ONLY valid JSON:
         strategyId,
         item.content,
         item.suggestedTime?.toISOString() || null,
-        Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        userTz,
         item.reason || '',
         'weekly_generation',
         item.category || null,
@@ -529,7 +531,8 @@ Return ONLY valid JSON:
   }
 
   // ─── Assign suggested posting times ────────────────────────────────────
-  assignSuggestedTimes(tweets, analysisCache = {}) {
+  assignSuggestedTimes(tweets, analysisCache = {}, userTz = 'UTC') {
+    const tz = userTz && moment.tz.zone(userTz) ? userTz : 'UTC';
     const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const bestDays = (analysisCache?.best_days || ['Tuesday', 'Thursday'])
       .map((d) => dayNames.indexOf(d))
@@ -544,26 +547,22 @@ Return ONLY valid JSON:
       if (hourMatch[2].toLowerCase() === 'am' && targetHour === 12) targetHour = 0;
     }
 
-    const now = new Date();
+    const nowMoment = moment.tz(tz);
     const results = [];
 
     // Find next occurrence of each best day
     const availableSlots = [];
     for (let offset = 1; offset <= 14; offset++) {
-      const candidate = new Date(now);
-      candidate.setDate(now.getDate() + offset);
-      candidate.setHours(targetHour, 0, 0, 0);
-      if (bestDays.includes(candidate.getDay())) {
-        availableSlots.push(new Date(candidate));
+      const candidate = nowMoment.clone().add(offset, 'days').startOf('day').hour(targetHour);
+      if (bestDays.includes(candidate.day())) {
+        availableSlots.push(candidate);
       }
     }
 
     // If no matching slots, generate fallback slots
     if (availableSlots.length === 0) {
       for (let i = 1; i <= 7; i++) {
-        const d = new Date(now);
-        d.setDate(now.getDate() + i);
-        d.setHours(targetHour, 0, 0, 0);
+        const d = nowMoment.clone().add(i, 'days').startOf('day').hour(targetHour);
         availableSlots.push(d);
       }
     }
@@ -572,12 +571,12 @@ Return ONLY valid JSON:
       const tweet = tweets[i];
       const slotIndex = i % availableSlots.length;
       // Stagger by 30 mins within a day for multiple tweets on same day
-      const baseTime = new Date(availableSlots[slotIndex]);
-      baseTime.setMinutes(baseTime.getMinutes() + Math.floor(i / availableSlots.length) * 30);
+      const baseTime = availableSlots[slotIndex].clone()
+        .add(Math.floor(i / availableSlots.length) * 30, 'minutes');
 
       results.push({
         content: tweet.content || tweet.text || '',
-        suggestedTime: baseTime,
+        suggestedTime: baseTime.toDate(),
         reason: tweet.reason || '',
         source: tweet.source || 'weekly_generation',
         category: tweet.category || null,
