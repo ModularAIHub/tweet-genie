@@ -524,6 +524,12 @@ const Settings = () => {
     try {
       const res = await autopilotAPI.updateConfig(selectedStrategyId, { custom_posting_hours: next });
       setAutopilotConfig(res.data?.data || res.data || null);
+      if (next.length > 0) {
+        const labels = next.map(h => h <= 12 ? `${h === 0 ? 12 : h}${h < 12 ? 'am' : 'pm'}` : `${h - 12}pm`);
+        toast.success(`Custom posting times saved: ${labels.join(', ')}`);
+      } else {
+        toast.success('Custom time removed — defaults (9am, 12pm, 5pm) will be used.');
+      }
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to update posting times');
     } finally {
@@ -930,10 +936,19 @@ const Settings = () => {
                       When enabled, weekly generated tweets are automatically scheduled — skipping the review queue.
                     </p>
                     {autopilotConfig?.is_enabled ? (
-                      <p className="text-xs text-green-700 flex items-center gap-1">
-                        <Check className="h-3 w-3" />
-                        Active — tweets auto-schedule with a 1-hour undo window
-                      </p>
+                      autopilotConfig?.paused_reason ? (
+                        <p className="text-xs text-amber-700 flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" />
+                          Paused — {autopilotConfig.paused_reason === 'prompts_exhausted'
+                            ? 'all prompts used, generate more in Strategy Builder'
+                            : 'insufficient credits, purchase more to continue'}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-green-700 flex items-center gap-1">
+                          <Check className="h-3 w-3" />
+                          Active — tweets auto-schedule with a 1-hour undo window
+                        </p>
+                      )
                     ) : (
                       <p className="text-xs text-gray-500">
                         Disabled — tweets go to review queue for manual approval
@@ -994,6 +1009,33 @@ const Settings = () => {
 
                 {autopilotConfig?.is_enabled && (
                   <div className="mt-5 space-y-4">
+                    {/* Paused reason banners */}
+                    {autopilotConfig?.paused_reason === 'prompts_exhausted' && (
+                      <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-300 rounded-lg">
+                        <AlertTriangle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-semibold text-amber-800">All prompts have been used</p>
+                          <p className="text-xs text-amber-700 mt-1">
+                            Autopilot has used every prompt in your strategy. New content generation is paused.
+                            Go to <strong>Strategy Builder</strong> and generate more prompts, then toggle
+                            Autopilot off and back on to resume.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    {autopilotConfig?.paused_reason === 'insufficient_credits' && (
+                      <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-300 rounded-lg">
+                        <AlertTriangle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-semibold text-red-800">Insufficient credits</p>
+                          <p className="text-xs text-red-700 mt-1">
+                            You don't have enough credits for autopilot to generate new content.
+                            Purchase more credits, then toggle Autopilot off and back on to resume.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Require Approval Toggle */}
                     <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
                       <div className="flex-1">
@@ -1134,9 +1176,11 @@ const Settings = () => {
                         <div>
                           <p className="font-semibold text-gray-900 mb-1">📅 Scheduling</p>
                           <p>
-                            Autopilot generates <strong>{autopilotConfig?.posts_per_day || 3} tweets per day</strong> for 
-                            a full week ({(autopilotConfig?.posts_per_day || 3) * 7} total). Each tweet is assigned to a 
-                            different time slot based on your chosen posting times, spread evenly across all 7 days.
+                            Autopilot targets <strong>{autopilotConfig?.posts_per_day || 3} tweets per day</strong> for 
+                            a full week ({(autopilotConfig?.posts_per_day || 3) * 7} total). To avoid overwhelming the AI,
+                            it generates up to <strong>6 tweets per hour</strong> and fills the rest in the next cycle.
+                            Each tweet is assigned to a different time slot based on your chosen posting times,
+                            spread evenly across all 7 days.
                           </p>
                         </div>
 
@@ -1168,8 +1212,10 @@ const Settings = () => {
                         <div>
                           <p className="font-semibold text-gray-900 mb-1">🤖 Auto-Refill</p>
                           <p>
-                            The queue auto-refills every hour. As tweets get posted, new ones are generated to 
-                            keep the next 7 days full. You'll always have upcoming content ready.
+                            The queue auto-refills every hour (up to 6 tweets at a time). As tweets get posted,
+                            new ones are generated to keep the next 7 days full. Each generation costs <strong>1.2 credits</strong>.
+                            If you run out of credits or all prompts have been used, autopilot pauses automatically
+                            and you'll see a warning here.
                           </p>
                         </div>
                       </div>

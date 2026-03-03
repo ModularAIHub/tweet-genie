@@ -35,6 +35,7 @@ async function processAutopilotStrategies() {
       FROM autopilot_config ac
       JOIN user_strategies us ON ac.strategy_id = us.id
       WHERE ac.is_enabled = true
+        AND ac.paused_reason IS NULL
         AND us.status = 'active'
     `);
     

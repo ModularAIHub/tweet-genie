@@ -187,8 +187,12 @@ router.put('/:strategyId/config', async (req, res) => {
     
     const config = await autopilotService.updateAutopilotConfig(strategyId, updates);
     
-    // If autopilot was just enabled, fill the queue
+    // If autopilot was just enabled, clear any paused reason and fill the queue
     if (updates.is_enabled === true) {
+      await pool.query(
+        `UPDATE autopilot_config SET paused_reason = NULL WHERE strategy_id = $1`,
+        [strategyId]
+      );
       autopilotService.fillQueue(strategyId).catch(err => {
         console.error('Error filling queue after enabling autopilot:', err);
       });

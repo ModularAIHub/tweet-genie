@@ -1,7 +1,14 @@
 // Auto-Pilot Service for Strategy Builder (Phase 4)
 import pool from '../config/database.js';
 import { aiService } from './aiService.js';
+import { creditService } from './creditService.js';
 import moment from 'moment-timezone';
+
+// Credit cost per autopilot-generated post (matches compose cost)
+const AUTOPILOT_CREDIT_COST = 1.2;
+
+// Max posts to generate per worker run (spreads AI load across hourly cycles)
+const AUTOPILOT_BATCH_SIZE = 6;
 
 /**
  * Get or create autopilot configuration for a strategy
@@ -277,21 +284,19 @@ export async function selectNextPrompt(strategyId) {
 
     let result = await pool.query(query, params);
 
-    // If all prompts are already in queue, fall back to least-used overall
+    // If all prompts are already in queue, do NOT recycle — stop generation
     if (result.rows.length === 0) {
-      result = await pool.query(
-        `SELECT sp.*,
-           COALESCE(sp.usage_count, 0) as eff_usage_count
-         FROM strategy_prompts sp
-         WHERE sp.strategy_id = $1
-         ORDER BY eff_usage_count ASC, RANDOM()
-         LIMIT 1`,
+      const totalResult = await pool.query(
+        `SELECT COUNT(*) as total FROM strategy_prompts WHERE strategy_id = $1`,
         [strategyId]
       );
-    }
-
-    if (result.rows.length === 0) {
-      throw new Error('No prompts available for this strategy');
+      if (parseInt(totalResult.rows[0].total) === 0) {
+        throw new Error('No prompts available for this strategy');
+      }
+      // All prompts have been used — signal exhaustion
+      const err = new Error('PROMPTS_EXHAUSTED');
+      err.code = 'PROMPTS_EXHAUSTED';
+      throw err;
     }
     
     return result.rows[0];
@@ -322,13 +327,25 @@ export async function generateAndQueueContent(strategyId, options = {}) {
     const strategy = strategyResult.rows[0];
     const config = await getAutopilotConfig(strategyId);
     
-    // Select prompt
+    // Select prompt FIRST (may throw PROMPTS_EXHAUSTED — no credits deducted yet)
     const prompt = options.promptId
       ? (await pool.query('SELECT * FROM strategy_prompts WHERE id = $1', [options.promptId])).rows[0]
       : await selectNextPrompt(strategyId);
     
     if (!prompt) {
       throw new Error('No prompt available');
+    }
+
+    // Check and deduct credits AFTER prompt selection (only charge when we have work to do)
+    const creditCheck = await creditService.checkAndDeductCredits(
+      strategy.user_id, 'autopilot_generation', AUTOPILOT_CREDIT_COST
+    );
+    if (!creditCheck.success) {
+      const err = new Error('INSUFFICIENT_CREDITS');
+      err.code = 'INSUFFICIENT_CREDITS';
+      err.available = creditCheck.available;
+      err.required = AUTOPILOT_CREDIT_COST;
+      throw err;
     }
     
     // Generate content
@@ -417,6 +434,20 @@ export async function generateAndQueueContent(strategyId, options = {}) {
   } catch (error) {
     console.error('Error generating and queuing content:', error);
     
+    // Refund credits if they were already deducted and the error is NOT
+    // a credit/prompt issue (those didn't generate anything)
+    if (error.code !== 'INSUFFICIENT_CREDITS' && error.code !== 'PROMPTS_EXHAUSTED') {
+      try {
+        const strat = (await pool.query('SELECT user_id FROM user_strategies WHERE id = $1', [strategyId])).rows[0];
+        if (strat) {
+          await creditService.refundCredits(strat.user_id, 'autopilot_generation_failed', AUTOPILOT_CREDIT_COST);
+          console.log(`💳 Refunded ${AUTOPILOT_CREDIT_COST} credits to user ${strat.user_id} after failed autopilot generation`);
+        }
+      } catch (refundErr) {
+        console.error('Failed to refund credits after autopilot error:', refundErr.message);
+      }
+    }
+
     // Log failure
     await pool.query(
       `INSERT INTO autopilot_history 
@@ -467,8 +498,10 @@ export async function fillQueue(strategyId) {
     // Target: enough content for a full 7-day week based on posts_per_day
     const postsPerDay = config.posts_per_day || 3;
     const targetCount = postsPerDay * 7; // e.g. 3/day × 7 = 21 posts
-    const needToGenerate = Math.max(0, targetCount - currentCount);
-    console.log(`🤖 Autopilot fillQueue: strategy=${strategyId}, postsPerDay=${postsPerDay}, target=${targetCount}, current=${currentCount}, toGenerate=${needToGenerate}`);
+    const deficit = Math.max(0, targetCount - currentCount);
+    // Cap to AUTOPILOT_BATCH_SIZE per run so AI load is spread across hourly worker cycles
+    const needToGenerate = Math.min(deficit, AUTOPILOT_BATCH_SIZE);
+    console.log(`🤖 Autopilot fillQueue: strategy=${strategyId}, postsPerDay=${postsPerDay}, target=${targetCount}, current=${currentCount}, deficit=${deficit}, batchCap=${AUTOPILOT_BATCH_SIZE}, toGenerate=${needToGenerate}`);
     
     const generated = [];
     
@@ -477,9 +510,26 @@ export async function fillQueue(strategyId) {
         const queued = await generateAndQueueContent(strategyId);
         generated.push(queued);
         
-        // Small delay to avoid overwhelming the API
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Delay between generations to avoid overwhelming the AI API
+        await new Promise(resolve => setTimeout(resolve, 3000));
       } catch (error) {
+        // Stop generation loop on exhaustion / credit errors and persist reason
+        if (error.code === 'PROMPTS_EXHAUSTED') {
+          console.warn(`⚠️ Autopilot: All prompts exhausted for strategy ${strategyId} — pausing.`);
+          await pool.query(
+            `UPDATE autopilot_config SET paused_reason = 'prompts_exhausted', updated_at = NOW() WHERE strategy_id = $1`,
+            [strategyId]
+          );
+          break;
+        }
+        if (error.code === 'INSUFFICIENT_CREDITS') {
+          console.warn(`⚠️ Autopilot: Insufficient credits for strategy ${strategyId} — pausing.`);
+          await pool.query(
+            `UPDATE autopilot_config SET paused_reason = 'insufficient_credits', updated_at = NOW() WHERE strategy_id = $1`,
+            [strategyId]
+          );
+          break;
+        }
         console.error(`Error generating content ${i + 1}/${needToGenerate}:`, error.message);
       }
     }
