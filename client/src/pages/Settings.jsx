@@ -19,6 +19,7 @@ import {
   Inbox,
   Send,
   Info,
+  Mail,
 } from 'lucide-react';
 import { twitter, providers, autopilot as autopilotAPI, strategy as strategyAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -52,6 +53,8 @@ const Settings = () => {
   const [autopilotQueue, setAutopilotQueue] = useState([]);
   const [queueLoading, setQueueLoading] = useState(false);
   const [queueActionLoading, setQueueActionLoading] = useState({});
+  const [emailNotifPrefs, setEmailNotifPrefs] = useState(null);
+  const [emailNotifUpdating, setEmailNotifUpdating] = useState(false);
 
   const getAllowedPopupOrigins = () => {
     const allowed = new Set([window.location.origin]);
@@ -587,12 +590,37 @@ const Settings = () => {
     }
   };
 
+  const fetchEmailNotifPrefs = async () => {
+    try {
+      const res = await autopilotAPI.getNotificationPrefs();
+      setEmailNotifPrefs(res.data?.data || null);
+    } catch {
+      setEmailNotifPrefs(null);
+    }
+  };
+
+  const handleToggleEmailNotif = async (key) => {
+    if (!emailNotifPrefs) return;
+    setEmailNotifUpdating(true);
+    const next = !emailNotifPrefs[key];
+    try {
+      const res = await autopilotAPI.updateNotificationPrefs({ [key]: next });
+      setEmailNotifPrefs(res.data?.data || { ...emailNotifPrefs, [key]: next });
+      toast.success(next ? 'Notification enabled' : 'Notification disabled');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update preferences');
+    } finally {
+      setEmailNotifUpdating(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'autopilot') {
       fetchStrategies();
       fetchActivityLog();
       fetchPendingUndos();
       fetchAutopilotQueue();
+      fetchEmailNotifPrefs();
     }
   }, [activeTab]);
 
@@ -1354,6 +1382,59 @@ const Settings = () => {
               </div>
 
               {/* Activity Log */}
+              {/* Email Notifications */}
+              <div className="card">
+                <h3 className="text-lg font-semibold text-gray-900 mb-1 flex items-center gap-2">
+                  <Mail className="h-5 w-5 text-blue-600" />
+                  Email Notifications
+                </h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  Choose which email updates you'd like to receive. We won't spam — each type has a cooldown.
+                </p>
+                {emailNotifPrefs ? (
+                  <div className="space-y-3">
+                    {[
+                      { key: 'notify_tweet_failures', label: 'Tweet failures & partial threads', desc: 'Get notified when a scheduled tweet fails or a thread posts partially.' },
+                      { key: 'notify_autopilot_paused', label: 'Autopilot paused', desc: 'When autopilot pauses due to exhausted prompts or low credits.' },
+                      { key: 'notify_low_credits', label: 'Low credit warnings', desc: 'When your credit balance drops below 5 credits.' },
+                      { key: 'notify_weekly_digest', label: 'Weekly digest', desc: 'A Monday summary of posts sent, failures, and credits.' },
+                    ].map(({ key, label, desc }) => (
+                      <div key={key} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                        <div className="flex-1 mr-4">
+                          <p className="text-sm font-medium text-gray-900">{label}</p>
+                          <p className="text-xs text-gray-500 mt-0.5">{desc}</p>
+                        </div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={!!emailNotifPrefs[key]}
+                          disabled={emailNotifUpdating}
+                          onClick={() => handleToggleEmailNotif(key)}
+                          className="relative flex-shrink-0 disabled:opacity-60"
+                          style={{
+                            width: '40px', height: '22px', borderRadius: '999px',
+                            background: emailNotifPrefs[key] ? '#059669' : '#d1d5db',
+                            border: 'none', padding: 0,
+                            cursor: emailNotifUpdating ? 'not-allowed' : 'pointer',
+                            transition: 'background 0.2s ease',
+                          }}
+                        >
+                          <div style={{
+                            position: 'absolute', top: '2px',
+                            left: emailNotifPrefs[key] ? '20px' : '2px',
+                            width: '18px', height: '18px', borderRadius: '50%',
+                            background: 'white', boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+                            transition: 'left 0.2s ease',
+                          }} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500 text-center py-4">Loading preferences...</p>
+                )}
+              </div>
+
               <div className="card">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
                   <Activity className="h-5 w-5 text-blue-600" />

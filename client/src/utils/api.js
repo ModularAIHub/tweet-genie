@@ -551,6 +551,8 @@ export const autopilot = {
   getActivityLog: (params) => api.get('/api/autopilot/activity-log', { params }),
   getPendingUndo: () => api.get('/api/autopilot/pending-undo'),
   undoTweet: (scheduledTweetId) => api.post(`/api/autopilot/undo/${scheduledTweetId}`),
+  getNotificationPrefs: () => api.get('/api/autopilot/notification-prefs'),
+  updateNotificationPrefs: (data) => api.put('/api/autopilot/notification-prefs', data),
 };
 
 // Repurpose endpoints

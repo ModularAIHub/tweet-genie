@@ -1,6 +1,7 @@
 import { pool } from '../config/database.js';
 import { creditService } from './creditService.js';
 import { mediaService } from './mediaService.js';
+import { notifyTweetFailed } from './emailNotificationService.js';
 import { decodeHTMLEntities } from '../utils/decodeHTMLEntities.js';
 import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPostOptimizer.js';
 import { fetchLatestPersonalTwitterAuth } from '../utils/personalTwitterAuth.js';
@@ -1811,6 +1812,13 @@ class ScheduledTweetService {
         console.log(`✅ Successfully posted scheduled tweet and thread: ${scheduledTweet.id}`);
       } else {
         console.log(`⚠️ Main tweet posted but thread failed: ${scheduledTweet.id}`);
+        // Notify user about partial thread post
+        notifyTweetFailed(scheduledTweet.user_id, {
+          tweetId: scheduledTweet.id,
+          content: scheduledTweet.content,
+          errorMessage: errorMsg,
+          isPartial: true,
+        }).catch(() => {});
       }
       return {
         outcome: threadSuccess ? 'succeeded' : 'partial',
@@ -1971,6 +1979,13 @@ class ScheduledTweetService {
          WHERE id = $3`,
         ['failed', errorMessage, scheduledTweet.id]
       );
+      // Notify user about complete failure
+      notifyTweetFailed(scheduledTweet.user_id, {
+        tweetId: scheduledTweet.id,
+        content: scheduledTweet.content,
+        errorMessage,
+        isPartial: false,
+      }).catch(() => {});
       try {
         const { rows: tweetRows } = await pool.query(
           'SELECT user_id, credits_used FROM tweets WHERE id = $1',

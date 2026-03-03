@@ -2,6 +2,7 @@
 import pool from '../config/database.js';
 import * as autopilotService from '../services/autopilotService.js';
 import { calculateOptimalPostingTimes } from '../services/analyticsService.js';
+import { sendAllWeeklyDigests } from '../services/emailNotificationService.js';
 
 const AUTOPILOT_WORKER_INTERVAL_MS = Number(process.env.AUTOPILOT_WORKER_INTERVAL_MS || 60 * 60 * 1000); // 1 hour
 const AUTOPILOT_DEBUG = process.env.AUTOPILOT_DEBUG === 'true';
@@ -79,6 +80,17 @@ async function processAutopilotStrategies() {
       console.error('❌ Error processing approved queue:', error.message);
     }
     
+    // Weekly digest: send on Mondays between 9–10 AM UTC
+    const now = new Date();
+    if (now.getUTCDay() === 1 && now.getUTCHours() >= 9 && now.getUTCHours() < 10) {
+      autopilotLog('📧 Monday morning — sending weekly digests');
+      try {
+        await sendAllWeeklyDigests();
+      } catch (err) {
+        console.error('❌ Error sending weekly digests:', err.message);
+      }
+    }
+
     autopilotLog('🎉 Autopilot worker cycle complete');
   } catch (error) {
     console.error('Autopilot worker error:', error);

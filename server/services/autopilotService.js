@@ -2,6 +2,7 @@
 import pool from '../config/database.js';
 import { aiService } from './aiService.js';
 import { creditService } from './creditService.js';
+import { notifyAutopilotPaused, checkAndNotifyLowCredits } from './emailNotificationService.js';
 import moment from 'moment-timezone';
 
 // Credit cost per autopilot-generated post (matches compose cost)
@@ -347,6 +348,9 @@ export async function generateAndQueueContent(strategyId, options = {}) {
       err.required = AUTOPILOT_CREDIT_COST;
       throw err;
     }
+
+    // Check for low credits and notify user if below threshold
+    checkAndNotifyLowCredits(strategy.user_id).catch(() => {});
     
     // Generate content
     const generatedContent = await generateContentFromPrompt(prompt, strategy);
@@ -520,6 +524,9 @@ export async function fillQueue(strategyId) {
             `UPDATE autopilot_config SET paused_reason = 'prompts_exhausted', updated_at = NOW() WHERE strategy_id = $1`,
             [strategyId]
           );
+          // Email user about exhaustion
+          const { rows: [strat] } = await pool.query('SELECT user_id, niche FROM user_strategies WHERE id = $1', [strategyId]);
+          if (strat) notifyAutopilotPaused(strat.user_id, { reason: 'prompts_exhausted', strategyNiche: strat.niche }).catch(() => {});
           break;
         }
         if (error.code === 'INSUFFICIENT_CREDITS') {
@@ -528,6 +535,9 @@ export async function fillQueue(strategyId) {
             `UPDATE autopilot_config SET paused_reason = 'insufficient_credits', updated_at = NOW() WHERE strategy_id = $1`,
             [strategyId]
           );
+          // Email user about credit shortage
+          const { rows: [strat2] } = await pool.query('SELECT user_id, niche FROM user_strategies WHERE id = $1', [strategyId]);
+          if (strat2) notifyAutopilotPaused(strat2.user_id, { reason: 'insufficient_credits', strategyNiche: strat2.niche }).catch(() => {});
           break;
         }
         console.error(`Error generating content ${i + 1}/${needToGenerate}:`, error.message);

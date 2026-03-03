@@ -2,6 +2,7 @@
 import express from 'express';
 import pool from '../config/database.js';
 import * as autopilotService from '../services/autopilotService.js';
+import { getNotificationPrefsForUser, updateNotificationPrefs } from '../services/emailNotificationService.js';
 
 const router = express.Router();
 
@@ -462,6 +463,36 @@ router.delete('/queue/:queueId', async (req, res) => {
   } catch (error) {
     console.error('Error deleting content:', error);
     res.status(500).json({ error: 'Failed to delete content' });
+  }
+});
+
+// ─── Email Notification Preferences ───────────────────────────────────────
+
+/**
+ * GET /api/autopilot/notification-prefs
+ * Get email notification preferences for the authenticated user
+ */
+router.get('/notification-prefs', async (req, res) => {
+  try {
+    const prefs = await getNotificationPrefsForUser(req.user.id);
+    res.json({ success: true, data: prefs });
+  } catch (error) {
+    console.error('Error fetching notification prefs:', error);
+    res.status(500).json({ error: 'Failed to fetch notification preferences' });
+  }
+});
+
+/**
+ * PUT /api/autopilot/notification-prefs
+ * Update email notification preferences
+ */
+router.put('/notification-prefs', async (req, res) => {
+  try {
+    const updated = await updateNotificationPrefs(req.user.id, req.body);
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error('Error updating notification prefs:', error);
+    res.status(500).json({ error: 'Failed to update notification preferences' });
   }
 });
 
