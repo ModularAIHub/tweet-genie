@@ -139,20 +139,13 @@ const AnalysisFlow = ({ strategyId, onComplete, onCancel }) => {
             </div>
           </div>
           
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          <div className="flex justify-center">
             <button
               onClick={() => startAnalysis()}
               className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 transition-colors"
             >
               <Search className="w-5 h-5" />
               Analyse my account
-            </button>
-            <button
-              onClick={() => onCancel?.()}
-              className="inline-flex items-center justify-center gap-2 px-6 py-3 border border-gray-300 text-gray-700 rounded-xl font-semibold hover:bg-gray-50 transition-colors"
-            >
-              <Edit2 className="w-5 h-5" />
-              Set up manually
             </button>
           </div>
           <p className="text-xs text-gray-400 mt-4">Uses 5 credits for analysis + 10 for prompt generation</p>

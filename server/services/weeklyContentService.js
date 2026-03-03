@@ -39,6 +39,7 @@ Return format:
             temperature: 0.5,
             maxOutputTokens: TRENDING_MAX_TOKENS,
           },
+          tools: [{ googleSearch: {} }],
         },
         {
           headers: { 'Content-Type': 'application/json' },
@@ -49,6 +50,11 @@ Return format:
       const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (!content) return [];
 
+      const grounding = response.data.candidates?.[0]?.groundingMetadata;
+      if (grounding) {
+        console.log(`[WeeklyContent] Trending grounded with ${grounding.groundingChunks?.length || 0} search sources`);
+      }
+
       return this.parseJSONArray(content);
     } catch (error) {
       console.error('[WeeklyContent] Trending topics fetch error:', error.message);
@@ -57,7 +63,7 @@ Return format:
   }
 
   // ─── Generate weekly tweets for a strategy ──────────────────────────────
-  async generateWeeklyTweets(strategy, trendingTopics = []) {
+  async generateWeeklyTweets(strategy, trendingTopics = [], libraryPrompts = [], performanceContext = null) {
     if (!this.googleApiKey) {
       throw new Error('Google AI API key not configured');
     }
@@ -102,6 +108,13 @@ Return format:
       competitorSection = parts.join('\n');
     }
 
+    // Build prompt library section if we have prompts to inject
+    let promptLibrarySection = '';
+    if (libraryPrompts.length > 0) {
+      const promptLines = libraryPrompts.map((p, idx) => `${idx + 1}. [${p.category || 'general'}] ${p.prompt_text}`).join('\n');
+      promptLibrarySection = `PROMPT LIBRARY IDEAS — use ${Math.min(libraryPrompts.length, 3)} of these as the basis for this week's tweets. Turn each idea into a complete, ready-to-post tweet:\n${promptLines}\n\nFor each tweet based on a library idea, set "source_prompt_index" to the idea number (0-indexed). For non-library tweets, set it to null.`;
+    }
+
     const prompt = `You are a Twitter content strategist. Generate exactly ${TWEETS_PER_WEEK} ready-to-post tweets for this week.
 
 CREATOR PROFILE:
@@ -121,7 +134,9 @@ TRENDING IN THEIR NICHE THIS WEEK:
 ${trendingSection}
 
 ${competitorSection ? `COMPETITOR INTELLIGENCE:\n${competitorSection}\n` : ''}
+${promptLibrarySection ? `${promptLibrarySection}\n` : ''}
 ${extraContext ? `ADDITIONAL CONTEXT:\n${extraContext}\n` : ''}
+${performanceContext ? `${performanceContext}\n` : ''}
 
 IMPORTANT RULES:
 1. Each tweet must be COMPLETELY written — ready to copy-paste and post.
@@ -133,6 +148,7 @@ IMPORTANT RULES:
 7. Include a "reason" explaining why this tweet was created and which goal it serves.
 8. Include a "category" from: educational, engagement, storytelling, tips, promotional, inspirational.
 ${competitorSection ? '9. At least 1-2 tweets should fill competitor gaps or differentiate from their content angles.' : ''}
+${promptLibrarySection ? `${competitorSection ? '10' : '9'}. Use the PROMPT LIBRARY IDEAS to create ${Math.min(libraryPrompts.length, 3)} of the ${TWEETS_PER_WEEK} tweets this week. Turn each idea into a complete, publish-ready tweet.` : ''}
 
 Return ONLY valid JSON:
 {
@@ -143,7 +159,8 @@ Return ONLY valid JSON:
       "suggested_time": "${bestHours}",
       "category": "string — one of the 6 categories",
       "reason": "string — why this tweet and which goal it serves",
-      "origin": "string — niche_fit | trending | audience_need | engagement_hook"
+      "origin": "string — niche_fit | trending | audience_need | engagement_hook | prompt_library",
+      "source_prompt_index": "number | null — 0-based index of the prompt library idea used, or null"
     }
   ]
 }`;
@@ -153,9 +170,78 @@ Return ONLY valid JSON:
     return parsed?.tweets || [];
   }
 
+  // ─── Check if autopilot is enabled for a strategy ────────────────────
+  async getAutopilotConfig(strategyId) {
+    try {
+      const { rows } = await pool.query(
+        'SELECT * FROM autopilot_config WHERE strategy_id = $1 AND is_enabled = true',
+        [strategyId]
+      );
+      return rows[0] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ─── Auto-schedule tweets directly (bypass review queue) ───────────────
+  async autopilotSchedule(userId, strategyId, scheduledItems, libraryPrompts) {
+    const UNDO_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+    const scheduledTweets = [];
+
+    for (const item of scheduledItems) {
+      if (!item.suggestedTime || item.suggestedTime <= new Date()) continue;
+
+      let matchedPromptId = null;
+      if (item.source_prompt_index != null && libraryPrompts[item.source_prompt_index]) {
+        matchedPromptId = libraryPrompts[item.source_prompt_index].id;
+      }
+
+      const undoDeadline = new Date(Date.now() + UNDO_WINDOW_MS);
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+      // Insert directly into scheduled_tweets
+      const { rows: [scheduled] } = await pool.query(
+        `INSERT INTO scheduled_tweets 
+           (user_id, content, scheduled_for, timezone, status, approval_status, 
+            source, undo_deadline, autopilot_strategy_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'pending', 'approved', 'autopilot', $5, $6, NOW(), NOW())
+         RETURNING id`,
+        [userId, item.content, item.suggestedTime.toISOString(), tz, undoDeadline.toISOString(), strategyId]
+      );
+
+      // Also insert into content_review_queue as 'scheduled' for tracking
+      await pool.query(
+        `INSERT INTO content_review_queue 
+           (user_id, strategy_id, content, suggested_time, timezone, reason, source, category, prompt_id, status, scheduled_tweet_id)
+         VALUES ($1, $2, $3, $4, $5, $6, 'autopilot', $7, $8, 'scheduled', $9)`,
+        [userId, strategyId, item.content, item.suggestedTime.toISOString(), tz,
+         item.reason || '', item.category || null, matchedPromptId, scheduled.id]
+      );
+
+      scheduledTweets.push(scheduled);
+    }
+
+    // Log to autopilot_history
+    if (scheduledTweets.length > 0) {
+      await pool.query(
+        `INSERT INTO autopilot_history 
+           (strategy_id, action, actor, success, tweets_count, details)
+         VALUES ($1, 'auto_scheduled', 'system', true, $2, $3)`,
+        [strategyId, scheduledTweets.length, JSON.stringify({
+          tweet_ids: scheduledTweets.map(t => t.id),
+          scheduled_at: new Date().toISOString(),
+          undo_window_minutes: 60,
+        })]
+      );
+    }
+
+    console.log(`[WeeklyContent] 🤖 Autopilot auto-scheduled ${scheduledTweets.length} tweets for strategy=${strategyId}`);
+    return scheduledTweets;
+  }
+
   // ─── Generate for a single user ────────────────────────────────────────
-  async generateForUser(userId, strategyId) {
-    console.log(`[WeeklyContent] Generating for user=${userId}, strategy=${strategyId}`);
+  async generateForUser(userId, strategyId, performanceContext = null) {
+    console.log(`[WeeklyContent] Generating for user=${userId}, strategy=${strategyId}${performanceContext ? ' (with performance data)' : ''}`);
 
     // Fetch strategy
     const { rows: [strategy] } = await pool.query(
@@ -169,28 +255,76 @@ Return ONLY valid JSON:
 
     const niche = strategy.niche || strategy.metadata?.analysis_cache?.niche || 'general';
 
+    // Check if autopilot is enabled for this strategy
+    const autopilotConfig = await this.getAutopilotConfig(strategyId);
+    const isAutopilot = !!autopilotConfig;
+
+    if (isAutopilot) {
+      console.log(`[WeeklyContent] 🤖 Autopilot mode active for strategy=${strategyId}`);
+    }
+
     // Fetch fresh trending topics
     const trendingTopics = await this.fetchTrendingTopics(niche);
 
-    // Generate tweets
-    const tweets = await this.generateWeeklyTweets(strategy, trendingTopics);
+    // Fetch 3 least-used prompts from the prompt library to fuel this week's content
+    const { rows: libraryPrompts } = await pool.query(
+      `SELECT id, prompt_text, category, variables FROM strategy_prompts
+       WHERE strategy_id = $1
+       ORDER BY usage_count ASC, RANDOM()
+       LIMIT 3`,
+      [strategyId]
+    );
+
+    if (libraryPrompts.length > 0) {
+      console.log(`[WeeklyContent] Injecting ${libraryPrompts.length} prompt library ideas for strategy=${strategyId}`);
+    }
+
+    // Generate tweets (with performance context if available)
+    const tweets = await this.generateWeeklyTweets(strategy, trendingTopics, libraryPrompts, performanceContext);
 
     if (!tweets.length) {
       console.warn(`[WeeklyContent] No tweets generated for user=${userId}`);
-      return { count: 0, items: [] };
+      return { count: 0, items: [], autopilot: isAutopilot };
+    }
+
+    // Increment usage_count on the prompts we fed into generation
+    if (libraryPrompts.length > 0) {
+      const promptIds = libraryPrompts.map((p) => p.id);
+      await pool.query(
+        `UPDATE strategy_prompts SET usage_count = usage_count + 1, last_used_at = NOW() WHERE id = ANY($1)`,
+        [promptIds]
+      );
     }
 
     // Calculate suggested times for each tweet
     const scheduledItems = this.assignSuggestedTimes(tweets, strategy.metadata?.analysis_cache);
 
-    // Insert into content_review_queue
+    // ─── Autopilot path: skip review queue, schedule directly ──────────
+    if (isAutopilot) {
+      const autoScheduled = await this.autopilotSchedule(userId, strategyId, scheduledItems, libraryPrompts);
+      return { count: autoScheduled.length, items: autoScheduled, autopilot: true };
+    }
+
+    // ─── Normal path: insert into review queue for manual approval ─────
+    // Build a lookup of prompt_text → prompt_id for matching generated tweets to source prompts
+    const promptTextMap = new Map();
+    for (const lp of libraryPrompts) {
+      const key = (lp.prompt_text || '').toLowerCase().slice(0, 40).trim();
+      if (key) promptTextMap.set(key, lp.id);
+    }
+
     const insertValues = [];
     const insertParams = [];
     let paramIdx = 1;
 
     for (const item of scheduledItems) {
+      let matchedPromptId = null;
+      if (item.source_prompt_index != null && libraryPrompts[item.source_prompt_index]) {
+        matchedPromptId = libraryPrompts[item.source_prompt_index].id;
+      }
+
       insertValues.push(
-        `($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++})`
+        `($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++})`
       );
       insertParams.push(
         userId,
@@ -201,11 +335,12 @@ Return ONLY valid JSON:
         item.reason || '',
         'weekly_generation',
         item.category || null,
+        matchedPromptId,
       );
     }
 
     const { rows: inserted } = await pool.query(
-      `INSERT INTO content_review_queue (user_id, strategy_id, content, suggested_time, timezone, reason, source, category)
+      `INSERT INTO content_review_queue (user_id, strategy_id, content, suggested_time, timezone, reason, source, category, prompt_id)
        VALUES ${insertValues.join(', ')}
        RETURNING *`,
       insertParams
@@ -213,11 +348,11 @@ Return ONLY valid JSON:
 
     console.log(`[WeeklyContent] Inserted ${inserted.length} items for user=${userId}`);
 
-    return { count: inserted.length, items: inserted };
+    return { count: inserted.length, items: inserted, autopilot: false };
   }
 
   // ─── Run weekly generation for ALL active strategy users ───────────────
-  async runWeeklyGeneration() {
+  async runWeeklyGeneration(performanceContextMap = new Map()) {
     console.log('[WeeklyContent] Starting weekly content generation run...');
 
     const { rows: activeStrategies } = await pool.query(
@@ -235,7 +370,9 @@ Return ONLY valid JSON:
     for (const row of activeStrategies) {
       results.processed++;
       try {
-        const result = await this.generateForUser(row.user_id, row.strategy_id);
+        // Phase 5: Pass performance context if available
+        const perfContext = performanceContextMap.get(row.strategy_id) || null;
+        const result = await this.generateForUser(row.user_id, row.strategy_id, perfContext);
         if (result.count > 0) {
           results.succeeded++;
         }
@@ -259,29 +396,33 @@ Return ONLY valid JSON:
 
   // ─── Get review queue for a user ───────────────────────────────────────
   async getQueue(userId, filters = {}) {
-    const conditions = ['user_id = $1'];
+    const conditions = ['crq.user_id = $1'];
     const params = [userId];
     let paramIdx = 2;
 
     if (filters.status) {
-      conditions.push(`status = $${paramIdx++}`);
+      conditions.push(`crq.status = $${paramIdx++}`);
       params.push(filters.status);
     }
 
     if (filters.strategyId) {
-      conditions.push(`strategy_id = $${paramIdx++}`);
+      conditions.push(`crq.strategy_id = $${paramIdx++}`);
       params.push(filters.strategyId);
     }
 
     const orderBy = filters.orderBy === 'suggested_time'
-      ? 'suggested_time ASC NULLS LAST'
-      : 'created_at DESC';
+      ? 'crq.suggested_time ASC NULLS LAST'
+      : 'crq.created_at DESC';
 
     const limit = filters.limit || 50;
     params.push(limit);
 
     const { rows } = await pool.query(
-      `SELECT * FROM content_review_queue 
+      `SELECT crq.*,
+              sp.prompt_text AS source_prompt_text,
+              sp.category    AS source_prompt_category
+       FROM content_review_queue crq
+       LEFT JOIN strategy_prompts sp ON sp.id = crq.prompt_id
        WHERE ${conditions.join(' AND ')}
        ORDER BY ${orderBy}
        LIMIT $${paramIdx}`,

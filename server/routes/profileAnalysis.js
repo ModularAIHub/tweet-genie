@@ -156,8 +156,8 @@ router.post('/:analysisId/reference-accounts', async (req, res) => {
       return res.status(404).json({ error: 'Analysis not found' });
     }
 
-    // 2 credits per reference account
-    const creditCost = Math.min(handles.length, 2) * 2;
+    // 5 credits per reference account (max 2 accounts = 10 credits)
+    const creditCost = Math.min(handles.length, 2) * 5;
     const creditResult = await creditService.checkAndDeductCredits(req.user.id, 'reference_analysis', creditCost);
     if (!creditResult.success) {
       return res.status(402).json({

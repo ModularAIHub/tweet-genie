@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   Twitter, 
   Key, 
@@ -7,15 +8,25 @@ import {
   Check,
   X,
   Eye,
-  EyeOff
+  EyeOff,
+  Bot,
+  Clock,
+  RotateCcw,
+  Activity,
+  AlertTriangle,
+  CheckCircle,
+  XCircle,
+  Inbox,
+  Send,
 } from 'lucide-react';
-import { twitter, providers } from '../utils/api';
+import { twitter, providers, autopilot as autopilotAPI, strategy as strategyAPI } from '../utils/api';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
 import { useAccount } from '../contexts/AccountContext';
 
 const Settings = () => {
   const { isTeamMode } = useAccount();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('twitter');
   const [twitterAccounts, setTwitterAccounts] = useState([]);
   const [twitterTokenStatus, setTwitterTokenStatus] = useState(null);
@@ -27,6 +38,19 @@ const Settings = () => {
   // ── X Premium / posting preference state ─────────────────────────────────
   const [xLongPostEnabled, setXLongPostEnabled] = useState(false);
   const [isUpdatingPreference, setIsUpdatingPreference] = useState(false);
+
+  // ── Autopilot state ─────────────────────────────────────────────────────
+  const [strategies, setStrategies] = useState([]);
+  const [selectedStrategyId, setSelectedStrategyId] = useState(null);
+  const [autopilotConfig, setAutopilotConfig] = useState(null);
+  const [autopilotLoading, setAutopilotLoading] = useState(false);
+  const [autopilotUpdating, setAutopilotUpdating] = useState(false);
+  const [activityLog, setActivityLog] = useState([]);
+  const [activityLogLoading, setActivityLogLoading] = useState(false);
+  const [pendingUndos, setPendingUndos] = useState([]);
+  const [autopilotQueue, setAutopilotQueue] = useState([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueActionLoading, setQueueActionLoading] = useState({});
 
   const getAllowedPopupOrigins = () => {
     const allowed = new Set([window.location.origin]);
@@ -376,7 +400,160 @@ const Settings = () => {
     }
   };
 
-  const tabs = [{ id: 'twitter', name: 'Twitter Account', icon: Twitter }];
+  // ── Autopilot helpers ───────────────────────────────────────────────────
+  const fetchStrategies = async () => {
+    try {
+      const res = await strategyAPI.list();
+      const list = res.data?.data || res.data || [];
+      const active = list.filter((s) => s.status === 'active');
+      setStrategies(active);
+      if (active.length > 0 && !selectedStrategyId) {
+        setSelectedStrategyId(active[0].id);
+      }
+    } catch {
+      // non-critical
+    }
+  };
+
+  const fetchAutopilotConfig = async (strategyId) => {
+    if (!strategyId) return;
+    setAutopilotLoading(true);
+    try {
+      const res = await autopilotAPI.getConfig(strategyId);
+      setAutopilotConfig(res.data?.data || res.data || null);
+    } catch {
+      setAutopilotConfig(null);
+    } finally {
+      setAutopilotLoading(false);
+    }
+  };
+
+  const fetchActivityLog = async () => {
+    setActivityLogLoading(true);
+    try {
+      const res = await autopilotAPI.getActivityLog({ limit: 30 });
+      setActivityLog(res.data?.data || []);
+    } catch {
+      setActivityLog([]);
+    } finally {
+      setActivityLogLoading(false);
+    }
+  };
+
+  const fetchPendingUndos = async () => {
+    try {
+      const res = await autopilotAPI.getPendingUndo();
+      setPendingUndos(res.data?.data || []);
+    } catch {
+      setPendingUndos([]);
+    }
+  };
+
+  const handleToggleAutopilot = async () => {
+    if (!selectedStrategyId) return;
+    setAutopilotUpdating(true);
+    const next = !autopilotConfig?.is_enabled;
+    try {
+      const res = await autopilotAPI.updateConfig(selectedStrategyId, { is_enabled: next });
+      setAutopilotConfig(res.data?.data || res.data || null);
+      toast.success(next
+        ? 'Autopilot enabled — tweets will be auto-scheduled after generation.'
+        : 'Autopilot disabled — tweets will go to your review queue.');
+      if (next) fetchPendingUndos();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update autopilot');
+    } finally {
+      setAutopilotUpdating(false);
+    }
+  };
+
+  const handleToggleRequireApproval = async () => {
+    if (!selectedStrategyId) return;
+    setAutopilotUpdating(true);
+    const next = !autopilotConfig?.require_approval;
+    try {
+      const res = await autopilotAPI.updateConfig(selectedStrategyId, { require_approval: next });
+      setAutopilotConfig(res.data?.data || res.data || null);
+      toast.success(next
+        ? 'Approval required — new autopilot tweets will go to Content Queue for review.'
+        : 'Auto-approve enabled — new autopilot tweets will be scheduled automatically.');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to update setting');
+    } finally {
+      setAutopilotUpdating(false);
+    }
+  };
+
+  const handleUndoTweet = async (scheduledTweetId) => {
+    try {
+      await autopilotAPI.undoTweet(scheduledTweetId);
+      setPendingUndos((prev) => prev.filter((t) => t.id !== scheduledTweetId));
+      toast.success('Tweet undone — moved back to review queue');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to undo tweet');
+    }
+  };
+
+  const fetchAutopilotQueue = async (strategyId) => {
+    const sid = strategyId || selectedStrategyId;
+    if (!sid) return;
+    setQueueLoading(true);
+    try {
+      const res = await autopilotAPI.getQueue(sid, { status: 'pending,approved' });
+      setAutopilotQueue(res.data?.data || []);
+    } catch {
+      setAutopilotQueue([]);
+    } finally {
+      setQueueLoading(false);
+    }
+  };
+
+  const handleApproveQueueItem = async (queueId) => {
+    setQueueActionLoading((p) => ({ ...p, [queueId]: true }));
+    try {
+      await autopilotAPI.approveItem(queueId);
+      setAutopilotQueue((prev) => prev.map((i) => i.id === queueId ? { ...i, status: 'approved' } : i));
+      toast.success('Content approved — will be scheduled automatically');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to approve');
+    } finally {
+      setQueueActionLoading((p) => ({ ...p, [queueId]: false }));
+    }
+  };
+
+  const handleRejectQueueItem = async (queueId) => {
+    setQueueActionLoading((p) => ({ ...p, [queueId]: true }));
+    try {
+      await autopilotAPI.rejectItem(queueId, 'Rejected by user');
+      setAutopilotQueue((prev) => prev.filter((i) => i.id !== queueId));
+      toast.success('Content rejected');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Failed to reject');
+    } finally {
+      setQueueActionLoading((p) => ({ ...p, [queueId]: false }));
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'autopilot') {
+      fetchStrategies();
+      fetchActivityLog();
+      fetchPendingUndos();
+      fetchAutopilotQueue();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (selectedStrategyId && activeTab === 'autopilot') {
+      fetchAutopilotConfig(selectedStrategyId);
+      fetchAutopilotQueue(selectedStrategyId);
+    }
+  }, [selectedStrategyId]);
+
+  const tabs = [
+    { id: 'twitter', name: 'Twitter Account', icon: Twitter },
+    { id: 'autopilot', name: 'Autopilot', icon: Bot },
+  ];
 
   if (loading) {
     return (
@@ -662,6 +839,340 @@ const Settings = () => {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Autopilot Tab */}
+      {activeTab === 'autopilot' && (
+        <div className="space-y-6">
+          {/* Strategy selector */}
+          {strategies.length > 1 && (
+            <div className="card">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Strategy</label>
+              <select
+                value={selectedStrategyId || ''}
+                onChange={(e) => setSelectedStrategyId(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                {strategies.map((s) => (
+                  <option key={s.id} value={s.id}>{s.niche || 'Strategy'} — {s.status}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {strategies.length === 0 && (
+            <div className="card text-center py-8">
+              <Bot className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <h4 className="text-lg font-medium text-gray-900 mb-2">No Active Strategy</h4>
+              <p className="text-gray-600">Create a strategy first to use autopilot.</p>
+            </div>
+          )}
+
+          {strategies.length > 0 && (
+            <>
+              {/* Autopilot toggle */}
+              <div className="card">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-1 flex items-center gap-2">
+                      <Bot className="h-5 w-5" />
+                      Autopilot Mode
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-1">
+                      When enabled, weekly generated tweets are automatically scheduled — skipping the review queue.
+                    </p>
+                    {autopilotConfig?.is_enabled ? (
+                      <p className="text-xs text-green-700 flex items-center gap-1">
+                        <Check className="h-3 w-3" />
+                        Active — tweets auto-schedule with a 1-hour undo window
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-500">
+                        Disabled — tweets go to review queue for manual approval
+                      </p>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={!!autopilotConfig?.is_enabled}
+                    aria-label="Enable Autopilot"
+                    disabled={autopilotLoading || autopilotUpdating}
+                    onClick={handleToggleAutopilot}
+                    className="relative flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{
+                      width: '44px',
+                      height: '24px',
+                      borderRadius: '999px',
+                      background: autopilotConfig?.is_enabled ? '#059669' : '#d1d5db',
+                      border: 'none',
+                      padding: 0,
+                      cursor: autopilotLoading || autopilotUpdating ? 'not-allowed' : 'pointer',
+                      transition: 'background 0.2s ease',
+                    }}
+                  >
+                    {autopilotUpdating ? (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '4px',
+                          left: '13px',
+                          width: '16px',
+                          height: '16px',
+                          borderRadius: '50%',
+                          border: '2px solid rgba(255,255,255,0.4)',
+                          borderTopColor: 'white',
+                          animation: 'spin 0.6s linear infinite',
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '3px',
+                          left: autopilotConfig?.is_enabled ? '23px' : '3px',
+                          width: '18px',
+                          height: '18px',
+                          borderRadius: '50%',
+                          background: 'white',
+                          boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+                          transition: 'left 0.2s ease',
+                        }}
+                      />
+                    )}
+                  </button>
+                </div>
+
+                {autopilotConfig?.is_enabled && (
+                  <div className="mt-5 space-y-4">
+                    {/* Require Approval Toggle */}
+                    <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-gray-900">Require Approval</p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {autopilotConfig?.require_approval
+                            ? 'New tweets go to Content Queue as "Pending" — you approve before posting.'
+                            : 'New tweets are auto-approved and scheduled immediately — fully hands-free.'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleToggleRequireApproval}
+                        disabled={autopilotUpdating}
+                        role="switch"
+                        aria-checked={!!autopilotConfig?.require_approval}
+                        className="relative inline-flex flex-shrink-0 cursor-pointer rounded-full transition-colors duration-200 ease-in-out disabled:opacity-50"
+                        style={{
+                          width: '44px',
+                          height: '24px',
+                          background: autopilotConfig?.require_approval ? '#059669' : '#d1d5db',
+                          border: 'none',
+                          padding: 0,
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: 'block',
+                            width: '18px',
+                            height: '18px',
+                            borderRadius: '50%',
+                            backgroundColor: 'white',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                            transition: 'left 0.2s ease',
+                            position: 'absolute',
+                            top: '3px',
+                            left: autopilotConfig?.require_approval ? '23px' : '3px',
+                          }}
+                        />
+                      </button>
+                    </div>
+
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                      <p className="text-sm text-amber-800 flex items-center gap-1.5">
+                        <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                        Every autopilot-scheduled tweet has a 1-hour undo window. After that, it will be posted at its scheduled time.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Pending Undo Tweets */}
+              {pendingUndos.length > 0 && (
+                <div className="card">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <Clock className="h-5 w-5 text-amber-600" />
+                    Undo Window ({pendingUndos.length})
+                  </h3>
+                  <div className="space-y-3">
+                    {pendingUndos.map((tweet) => {
+                      const timeLeft = Math.max(0, Math.round((new Date(tweet.undo_deadline) - Date.now()) / 60000));
+                      return (
+                        <div key={tweet.id} className="flex items-start justify-between gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-gray-900 line-clamp-2">{tweet.content}</p>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Scheduled: {new Date(tweet.scheduled_for).toLocaleString()}
+                              {' '}&middot;{' '}
+                              <span className="text-amber-600 font-medium">{timeLeft}m left to undo</span>
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => handleUndoTweet(tweet.id)}
+                            className="btn btn-secondary btn-sm flex items-center gap-1 flex-shrink-0"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            Undo
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Autopilot Content Queue */}
+              <div className="card">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <Inbox className="h-5 w-5 text-indigo-600" />
+                    Content Queue
+                    {autopilotQueue.length > 0 && (
+                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                        {autopilotQueue.length}
+                      </span>
+                    )}
+                  </h3>
+                  <button
+                    onClick={() => navigate('/content-review')}
+                    className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 transition-colors"
+                  >
+                    View all in Content Queue &rarr;
+                  </button>
+                </div>
+                {queueLoading ? (
+                  <div className="flex justify-center py-6">
+                    <LoadingSpinner size="md" />
+                  </div>
+                ) : autopilotQueue.length === 0 ? (
+                  <p className="text-sm text-gray-500 text-center py-6">
+                    No queued content. Autopilot generates and queues tweets automatically when enabled.
+                  </p>
+                ) : (
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto">
+                    {autopilotQueue.map((item) => {
+                      const isPending = item.status === 'pending';
+                      const isApproved = item.status === 'approved';
+                      const isLoading = queueActionLoading[item.id];
+                      return (
+                        <div key={item.id} className={`p-4 rounded-lg border ${
+                          isApproved ? 'border-green-200 bg-green-50/50' : 'border-gray-200 bg-gray-50'
+                        }`}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                              isApproved ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'
+                            }`}>
+                              {isApproved ? 'Approved' : 'Pending review'}
+                            </span>
+                            {item.prompt_category && (
+                              <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 capitalize">
+                                {item.prompt_category}
+                              </span>
+                            )}
+                            {item.scheduled_for && (
+                              <span className="text-xs text-gray-400 ml-auto flex items-center gap-1">
+                                <Send className="h-3 w-3" />
+                                {new Date(item.scheduled_for).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed mb-3">
+                            {item.generated_content}
+                          </p>
+                          {item.prompt_text && (
+                            <p className="text-xs text-indigo-500 mb-3 truncate">
+                              Prompt: {item.prompt_text}
+                            </p>
+                          )}
+                          {isPending && (
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleApproveQueueItem(item.id)}
+                                disabled={isLoading}
+                                className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+                              >
+                                <CheckCircle className="h-3 w-3" /> Approve
+                              </button>
+                              <button
+                                onClick={() => handleRejectQueueItem(item.id)}
+                                disabled={isLoading}
+                                className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 disabled:opacity-50 transition-colors"
+                              >
+                                <XCircle className="h-3 w-3" /> Reject
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Activity Log */}
+              <div className="card">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                  <Activity className="h-5 w-5 text-blue-600" />
+                  Autopilot Activity Log
+                </h3>
+                {activityLogLoading ? (
+                  <div className="flex justify-center py-6">
+                    <LoadingSpinner size="md" />
+                  </div>
+                ) : activityLog.length === 0 ? (
+                  <p className="text-sm text-gray-500 text-center py-6">
+                    No autopilot activity yet. Enable autopilot to see scheduled actions here.
+                  </p>
+                ) : (
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {activityLog.map((entry) => {
+                      const actionColors = {
+                        auto_scheduled: 'text-green-700 bg-green-50',
+                        generated: 'text-blue-700 bg-blue-50',
+                        undo: 'text-amber-700 bg-amber-50',
+                        approved: 'text-green-700 bg-green-50',
+                        rejected: 'text-red-700 bg-red-50',
+                        posted: 'text-green-700 bg-green-50',
+                        failed: 'text-red-700 bg-red-50',
+                      };
+                      const color = actionColors[entry.action] || 'text-gray-700 bg-gray-50';
+                      return (
+                        <div key={entry.id} className="flex items-center gap-3 p-3 rounded-lg border border-gray-100">
+                          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${color}`}>
+                            {entry.action.replace('_', ' ')}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-gray-700 truncate">
+                              {entry.niche && <span className="font-medium">{entry.niche}</span>}
+                              {entry.tweets_count > 0 && ` — ${entry.tweets_count} tweet${entry.tweets_count > 1 ? 's' : ''}`}
+                              {entry.category && ` (${entry.category})`}
+                              {!entry.success && entry.error_message && (
+                                <span className="text-red-600"> — {entry.error_message}</span>
+                              )}
+                            </p>
+                          </div>
+                          <span className="text-xs text-gray-400 flex-shrink-0">
+                            {new Date(entry.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
 

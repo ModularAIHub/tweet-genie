@@ -161,6 +161,17 @@ const getStatusBadge = (status) => {
 
 const readJsonSafely = async (response) => { try { return await response.json(); } catch { return {}; } };
 
+// ─── Thread helpers ──────────────────────────────────────────────────────
+function getThreadParts(item) {
+  let parts = item?.thread_tweets;
+  if (typeof parts === 'string') { try { parts = JSON.parse(parts); } catch { parts = null; } }
+  if (!Array.isArray(parts) || parts.length === 0) return null;
+  return parts;
+}
+function isThreadItem(item) {
+  return !!getThreadParts(item);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CALENDAR SUB-COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -168,6 +179,7 @@ const readJsonSafely = async (response) => { try { return await response.json();
 function CalendarItem({ item, onDragStart, onClick, compact }) {
   const cfg = CAL_STATUS[item._calendarStatus] || CAL_STATUS.pending;
   const isReview = item._isReviewItem;
+  const isThread = isThreadItem(item);
   return (
     <div
       draggable={item._calendarStatus === 'pending' || isReview}
@@ -183,7 +195,11 @@ function CalendarItem({ item, onDragStart, onClick, compact }) {
         <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
         <div className="flex-1 min-w-0">
           {!compact && (
-            <span className="block text-[10px] opacity-70 mb-0.5">{shortTime(item.scheduled_for || item.suggested_time, item.timezone)}</span>
+            <div className="flex items-center gap-1 mb-0.5">
+              <span className="text-[10px] opacity-70">{shortTime(item.scheduled_for || item.suggested_time, item.timezone)}</span>
+              {isThread && <span className="text-[9px] font-semibold bg-purple-200 text-purple-800 px-1 rounded">Thread</span>}
+              {item.source === 'autopilot' && <span className="text-[9px] font-semibold bg-violet-200 text-violet-800 px-1 rounded">AP</span>}
+            </div>
           )}
           <span className="block leading-snug line-clamp-2">{truncate(item.content, compact ? 40 : 80)}</span>
         </div>
@@ -260,7 +276,30 @@ function DetailModal({ item, onClose, onReschedule, onCancel, onApprove, onRejec
         </div>
 
         <div className="p-5 space-y-4">
-          <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{item.content}</div>
+          {(() => {
+            const threadParts = getThreadParts(item);
+            if (threadParts && threadParts.length > 0) {
+              return (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Layers className="w-4 h-4 text-purple-600" />
+                    <span className="text-xs font-semibold text-purple-700">Thread · {threadParts.length + 1} tweets</span>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed border-l-4 border-blue-400">
+                    <span className="text-[10px] font-bold text-blue-600 block mb-1">1/{threadParts.length + 1}</span>
+                    {item.content}
+                  </div>
+                  {threadParts.map((part, i) => (
+                    <div key={i} className="bg-gray-50 rounded-lg p-4 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed border-l-4 border-purple-300">
+                      <span className="text-[10px] font-bold text-purple-600 block mb-1">{i + 2}/{threadParts.length + 1}</span>
+                      {typeof part === 'string' ? part : part?.content || ''}
+                    </div>
+                  ))}
+                </div>
+              );
+            }
+            return <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{item.content}</div>;
+          })()}
           {scheduledDate && (
             <div className="flex items-center gap-2 text-sm text-gray-600">
               <Clock className="w-4 h-4" />
@@ -765,13 +804,25 @@ const Scheduling = () => {
                         <tr key={tweet.id} className="hover:bg-gray-50 transition-colors">
                           <td className="px-6 py-4">
                             <div className="max-w-xl">
-                              <p className="text-sm text-gray-900 line-clamp-2" title={tweet.content}>{tweet.content}</p>
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm text-gray-900 line-clamp-2 flex-1" title={tweet.content}>{tweet.content}</p>
+                                {isThreadItem(tweet) && (
+                                  <span className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-purple-50 text-purple-700 border border-purple-200">
+                                    <Layers size={10} />Thread · {(getThreadParts(tweet)?.length || 0) + 1}
+                                  </span>
+                                )}
+                              </div>
                               <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-gray-500">
                                 {isExternal ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-violet-50 text-violet-700 border border-violet-200">
                                     External &middot; {extLabel} cross-post (read-only)
                                   </span>
                                 ) : <span>@{tweet.account_username || tweet.twitter_username || 'twitter'}</span>}
+                                {tweet.source === 'autopilot' && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700 border border-violet-200 uppercase tracking-wider">
+                                    Autopilot
+                                  </span>
+                                )}
                                 {tweet.scheduled_by_name && <span>By {tweet.scheduled_by_name}</span>}
                                 {mediaCount > 0 && <span>{mediaCount} media</span>}
                               </div>

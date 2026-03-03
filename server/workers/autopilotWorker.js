@@ -56,6 +56,16 @@ async function processAutopilotStrategies() {
         console.error(`❌ Error processing strategy ${config.strategy_id}:`, error.message);
       }
     }
+
+    // After filling queues, move approved items to scheduled_tweets for posting
+    try {
+      const posted = await autopilotService.processApprovedQueue();
+      if (posted.length > 0) {
+        autopilotLog(`📤 Scheduled ${posted.length} approved items for posting`);
+      }
+    } catch (error) {
+      console.error('❌ Error processing approved queue:', error.message);
+    }
     
     autopilotLog('🎉 Autopilot worker cycle complete');
   } catch (error) {

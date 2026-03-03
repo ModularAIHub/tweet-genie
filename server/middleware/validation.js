@@ -131,6 +131,15 @@ export const scheduleSchema = Joi.object({
   return value;
 }, 'Require content, media, or thread');
 
+// Reschedule validation — only scheduled_for and timezone are needed when updating the time
+export const rescheduleSchema = Joi.object({
+  scheduled_for: Joi.alternatives().try(
+    Joi.date().iso(),
+    Joi.string().isoDate()
+  ).required(),
+  timezone: Joi.string().optional()
+});
+
 // Analytics validation (simplified)
 export const analyticsQuerySchema = Joi.object({
   start_date: Joi.date().required(),

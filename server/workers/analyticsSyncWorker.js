@@ -989,6 +989,15 @@ const runAnalyticsAutoSyncTick = async () => {
 // without going through the setInterval timer (which doesn't survive Vercel serverless sleep).
 export async function triggerAnalyticsSyncTick() {
   await runAnalyticsAutoSyncTick();
+
+  // Phase 5: Process any deferred analytics syncs whose time has arrived
+  try {
+    const { feedbackLoopService } = await import('../services/feedbackLoopService.js');
+    await feedbackLoopService.processDeferredSyncs();
+  } catch (deferredErr) {
+    console.warn('[AnalyticsAutoSync] Deferred sync processing failed (non-fatal):', deferredErr?.message || deferredErr);
+  }
+
   return analyticsAutoSyncLastRun;
 }
 

@@ -507,6 +507,8 @@ export const strategy = {
   addOn: (strategyId, data) => api.post(`/api/strategy/${strategyId}/add-on`, data),
   generatePrompts: (strategyId) => api.post(`/api/strategy/${strategyId}/generate-prompts`),
   getPrompts: (strategyId, params) => api.get(`/api/strategy/${strategyId}/prompts`, { params }),
+  createPrompt: (strategyId, data) => api.post(`/api/strategy/${strategyId}/prompts`, data),
+  deletePrompt: (promptId) => api.delete(`/api/strategy/prompts/${promptId}`),
   toggleFavorite: (promptId) => api.post(`/api/strategy/prompts/${promptId}/favorite`),
   update: (strategyId, data) => api.patch(`/api/strategy/${strategyId}`, data),
   delete: (strategyId) => api.delete(`/api/strategy/${strategyId}`),
@@ -534,6 +536,22 @@ export const contentReview = {
   batchApprove: (itemIds) => api.post('/api/content-review/batch-approve', { item_ids: itemIds }),
   batchSchedule: (itemIds) => api.post('/api/content-review/batch-schedule', { item_ids: itemIds }),
   remove: (id) => api.delete(`/api/content-review/${id}`),
+};
+// Autopilot endpoints
+export const autopilot = {
+  getConfig: (strategyId) => api.get(`/api/autopilot/${strategyId}/config`),
+  updateConfig: (strategyId, data) => api.put(`/api/autopilot/${strategyId}/config`, data),
+  getQueue: (strategyId, params) => api.get(`/api/autopilot/${strategyId}/queue`, { params }),
+  approveItem: (queueId) => api.post(`/api/autopilot/queue/${queueId}/approve`),
+  rejectItem: (queueId, reason) => api.post(`/api/autopilot/queue/${queueId}/reject`, { reason }),
+  getActivityLog: (params) => api.get('/api/autopilot/activity-log', { params }),
+  getPendingUndo: () => api.get('/api/autopilot/pending-undo'),
+  undoTweet: (scheduledTweetId) => api.post(`/api/autopilot/undo/${scheduledTweetId}`),
+};
+
+// Repurpose endpoints
+export const repurpose = {
+  repurposeTweet: (tweetId, options = {}) => api.post(`/api/content-review/repurpose/${tweetId}`, options),
 };
 
 export default api;

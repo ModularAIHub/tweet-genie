@@ -418,7 +418,7 @@ const StrategyBuilder = () => {
   };
 
   const handleAnalysisComplete = async () => {
-    // Reload strategy to get updated data
+    // Reload strategy then go to prompts view with polling enabled
     try {
       setLoading(true);
       setShowAnalysisFlow(false);
@@ -426,12 +426,16 @@ const StrategyBuilder = () => {
       const updatedStrategy = response?.data?.strategy;
       if (updatedStrategy) {
         setStrategy(updatedStrategy);
-        setCurrentView('overview');
-        await fetchStrategyList(updatedStrategy.id);
       }
+      // Prompt generation is still running in background — switch to
+      // the Prompts tab so PromptLibrary can poll for them as they arrive.
+      setIsGeneratingPrompts(true);
+      setCurrentView('prompts');
+      await fetchStrategyList(updatedStrategy?.id || strategy?.id);
     } catch (refreshError) {
       console.error('Failed to refresh strategy after analysis:', refreshError);
-      setCurrentView('overview');
+      setIsGeneratingPrompts(true);
+      setCurrentView('prompts');
     } finally {
       setLoading(false);
     }
@@ -1018,7 +1022,18 @@ const StrategyBuilder = () => {
             strategyId={strategy.id}
             strategyExtraContext={strategy?.metadata?.extra_context || ''}
             fromAnalysis={isGeneratingPrompts}
-            onPromptsLoaded={() => setIsGeneratingPrompts(false)}
+            onPromptsLoaded={async () => {
+              setIsGeneratingPrompts(false);
+              // Refresh strategy to pick up status='active' set by the server
+              try {
+                const res = await strategyApi.getById(strategy.id);
+                const updated = res?.data?.strategy;
+                if (updated) {
+                  setStrategy(updated);
+                  fetchStrategyList(updated.id).catch(() => {});
+                }
+              } catch {}
+            }}
           />
         )}
       </div>

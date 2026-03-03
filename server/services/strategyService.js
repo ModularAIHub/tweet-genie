@@ -1499,30 +1499,34 @@ Format: Just list topics separated by commas, no bullets, no numbering, no extra
       const extraContext = this.getStrategyExtraContext(strategy);
       const systemPrompt = [
         'Return ONLY valid JSON. No markdown and no extra text.',
+        'You are a Twitter content strategist who creates SPECIFIC, ACTIONABLE content ideas — NOT generic templates.',
+        '',
         'Schema:',
         '{',
         '  "prompts": [',
         '    {',
         '      "category": "educational|engagement|storytelling|tips & tricks|promotional|inspirational",',
-        '      "prompt_text": "string",',
-        '      "instruction": "string",',
-        '      "recommended_format": "single_tweet|thread|question|poll",',
-        '      "goal": "string",',
-        '      "hashtags_hint": "string"',
+        '      "prompt_text": "string — a specific, detailed content idea (NOT a generic template)",',
+        '      "instruction": "string — formatting/structural guidance like use a list, end with question, include CTA",',
+        '      "recommended_format": "single_tweet|thread",',
+        '      "goal": "string — which creator goal this serves",',
+        '      "hashtags_hint": "string — optional relevant hashtags"',
         '    }',
         '  ]',
         '}',
         `Generate exactly ${desiredCount} prompts with balanced category distribution.`,
-        'Requirements:',
-        '- prompt_text should be specific and easy to execute.',
-        '- instruction should be concise and practical for beginners.',
-        '- avoid duplicates and generic wording.',
-        '- keep prompt_text focused on one angle.',
-        '- each category must contain multiple distinct frameworks, not the same sentence pattern.',
-        '- avoid repeating the same first 5-6 words across prompts in the same category.',
-        '- reduce generic openings like "Inspire", "Invite", "Show" unless the angle specifically requires it.',
-        '- vary hooks (question, contrarian, checklist, before/after, case-study, myth, warning, mini-framework).',
-        '- if placeholders are useful, use {placeholder_name} tokens.',
+        '',
+        'CRITICAL RULES:',
+        '- Each prompt_text must be a SPECIFIC content idea tailored to this creator\'s niche, audience, and topics.',
+        '- DO NOT use generic fill-in-the-blank {placeholders}. Reference the creator\'s actual niche and topics by name.',
+        '- Each prompt must be detailed enough that an AI can generate a complete tweet from it without extra context.',
+        '- BAD: "Share a behind-the-scenes look at {your_process}" — too generic.',
+        '- GOOD: "Break down the 3 metrics every SaaS founder should check weekly to catch churn before it spirals" — specific and actionable.',
+        '- instruction should contain structural guidance (e.g. "use a numbered list", "end with a question", "write as a thread").',
+        '- each category must contain multiple distinct angles, not the same sentence pattern.',
+        '- avoid repeating the same opening words across prompts in the same category.',
+        '- vary hooks: question, contrarian take, numbered list, before/after, case study, myth-busting, warning, mini-framework, storytelling opener.',
+        '',
         `Niche: ${strategy.niche || ''}`,
         `Target Audience: ${strategy.target_audience || ''}`,
         `Goals: ${(strategy.content_goals || []).join(', ')}`,
@@ -1656,19 +1660,27 @@ Format: Just list topics separated by commas, no bullets, no numbering, no extra
 
   // Get prompts for strategy
   async getPrompts(strategyId, filters = {}) {
-    let query = `SELECT * FROM strategy_prompts WHERE strategy_id = $1`;
+    let query = `SELECT sp.*,
+                        COALESCE(cq.content_count, 0) AS content_generated_count
+                 FROM strategy_prompts sp
+                 LEFT JOIN LATERAL (
+                   SELECT COUNT(*) AS content_count
+                   FROM content_review_queue crq
+                   WHERE crq.prompt_id = sp.id
+                 ) cq ON true
+                 WHERE sp.strategy_id = $1`;
     const params = [strategyId];
     
     if (filters.category) {
       params.push(filters.category);
-      query += ` AND category = $${params.length}`;
+      query += ` AND sp.category = $${params.length}`;
     }
     
     if (filters.isFavorite) {
-      query += ` AND is_favorite = true`;
+      query += ` AND sp.is_favorite = true`;
     }
     
-    query += ` ORDER BY created_at DESC`;
+    query += ` ORDER BY sp.created_at DESC`;
     
     if (filters.limit) {
       params.push(filters.limit);

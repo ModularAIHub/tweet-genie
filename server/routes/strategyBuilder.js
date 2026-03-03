@@ -1,4 +1,5 @@
 import express from 'express';
+import pool from '../config/database.js';
 import { strategyService } from '../services/strategyService.js';
 import { creditService } from '../services/creditService.js';
 import { aiService } from '../services/aiService.js';
@@ -366,6 +367,92 @@ router.post('/prompts/:promptId/favorite', async (req, res) => {
   }
 });
 
+// Create a custom prompt (user's own idea)
+router.post('/:id/prompts', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const { prompt_text, category } = req.body;
+
+    if (!prompt_text || typeof prompt_text !== 'string' || prompt_text.trim().length < 5) {
+      return res.status(400).json({ error: 'prompt_text is required (min 5 characters)' });
+    }
+
+    const strategy = await strategyService.getStrategy(id);
+    if (!strategy || strategy.user_id !== userId) {
+      return res.status(404).json({ error: 'Strategy not found' });
+    }
+
+    // Auto-assign category if not provided
+    const VALID_CATEGORIES = ['educational', 'engagement', 'storytelling', 'tips & tricks', 'promotional', 'inspirational'];
+    let assignedCategory = 'general';
+    if (category && VALID_CATEGORIES.includes(category.toLowerCase())) {
+      assignedCategory = category.toLowerCase();
+    } else {
+      const text = prompt_text.toLowerCase();
+      if (/teach|explain|break down|how to|guide|lesson|learn|tutorial/i.test(text)) {
+        assignedCategory = 'educational';
+      } else if (/poll|question|ask|reply|retweet|share your|what do you/i.test(text)) {
+        assignedCategory = 'engagement';
+      } else if (/story|journey|experience|behind.the.scene|day in|personal|struggled|failed/i.test(text)) {
+        assignedCategory = 'storytelling';
+      } else if (/tip|trick|hack|shortcut|mistake|avoid|checklist|framework/i.test(text)) {
+        assignedCategory = 'tips & tricks';
+      } else if (/launch|product|feature|update|announcement|offer|discount|sale/i.test(text)) {
+        assignedCategory = 'promotional';
+      } else if (/motivat|inspir|mindset|lesson|growth|believe|persever|success/i.test(text)) {
+        assignedCategory = 'inspirational';
+      } else {
+        assignedCategory = 'educational'; // sensible default
+      }
+    }
+
+    const { rows: [newPrompt] } = await pool.query(
+      `INSERT INTO strategy_prompts (strategy_id, category, prompt_text, variables)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [
+        id,
+        assignedCategory,
+        prompt_text.trim(),
+        JSON.stringify({ source: 'user_custom', instruction: '', recommended_format: 'single_tweet', goal: '', hashtags_hint: '' }),
+      ]
+    );
+
+    res.status(201).json(newPrompt);
+  } catch (error) {
+    console.error('Error creating custom prompt:', error);
+    res.status(500).json({ error: 'Failed to create prompt' });
+  }
+});
+
+// Delete a prompt
+router.delete('/prompts/:promptId', async (req, res) => {
+  try {
+    const { promptId } = req.params;
+    const userId = req.user.id;
+
+    // Verify ownership: prompt → strategy → user
+    const { rows: [prompt] } = await pool.query(
+      `SELECT sp.id, sp.strategy_id
+       FROM strategy_prompts sp
+       JOIN user_strategies us ON us.id = sp.strategy_id
+       WHERE sp.id = $1 AND us.user_id = $2`,
+      [promptId, userId]
+    );
+
+    if (!prompt) {
+      return res.status(404).json({ error: 'Prompt not found' });
+    }
+
+    await pool.query(`DELETE FROM strategy_prompts WHERE id = $1`, [promptId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting prompt:', error);
+    res.status(500).json({ error: 'Failed to delete prompt' });
+  }
+});
+
 // Update strategy
 router.patch('/:id', async (req, res) => {
   try {
@@ -515,8 +602,8 @@ router.post('/reference-analysis', async (req, res) => {
       return res.status(404).json({ error: 'Analysis not found' });
     }
 
-    // 2 credits per reference account
-    const creditCost = Math.min(handles.filter(Boolean).length, 2) * 2;
+    // 5 credits per reference account (max 2 accounts = 10 credits)
+    const creditCost = Math.min(handles.filter(Boolean).length, 2) * 5;
     const creditResult = await creditService.checkAndDeductCredits(userId, 'reference_analysis', creditCost);
     if (!creditResult.success) {
       return res.status(402).json({

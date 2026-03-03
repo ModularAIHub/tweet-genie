@@ -1433,15 +1433,15 @@ const handleGenerate = async () => {
                               ))}
                             </div>
                           ) : (
-                            <div className="flex flex-col items-start gap-2 p-2">
+                            <div className="flex flex-col gap-2 p-2 w-full">
                               <RichTextTextarea
-                                className="border rounded px-3 py-3 text-base max-w-full min-w-0 min-h-[90px] max-h-[300px] focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition overflow-auto"
-                                style={{ width: '100%', fontSize: '1.05rem' }}
+                                className="w-full border rounded px-3 py-3 text-base min-h-[90px] max-h-[300px] focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition overflow-auto resize-y"
+                                style={{ fontSize: '1.05rem' }}
                                 value={output.text}
                                 onChange={(nextValue) => updateText(Number(idx), nextValue)}
                                 rows={Math.max(4, output.text.split('\n').length)}
                               />
-                              <div className="flex flex-col space-y-2 mt-1">
+                              <div className="flex flex-col space-y-2 mt-1 w-full">
                                 <div className="flex items-center space-x-2">
                                   <input
                                     type="file"

@@ -67,15 +67,26 @@ async function refreshScheduledOAuth2TokenIfNeeded({ scheduledTweet, accountRow,
 
   if (refreshResult.error && isDateValue(scheduledTweet.token_expires_at)) {
     const isExpired = new Date(scheduledTweet.token_expires_at) <= new Date();
-    if (isExpired) {
+    // If OAuth2 token expired but OAuth1 credentials are available, don't throw —
+    // the posting client will fall back to OAuth1 which never expires.
+    const hasOAuth1Fallback = !!(scheduledTweet.oauth1_access_token && scheduledTweet.oauth1_access_token_secret
+      && TWITTER_OAUTH1_APP_KEY && TWITTER_OAUTH1_APP_SECRET);
+    if (isExpired && !hasOAuth1Fallback) {
       throw new Error(
         refreshResult.error.details || 'Twitter token expired and could not be refreshed. Please reconnect your Twitter account.'
       );
     }
-    console.warn(
-      '[Scheduled Tweet] OAuth2 refresh failed before expiry, continuing with current token:',
-      refreshResult.error.details || refreshResult.error.reason
-    );
+    if (isExpired && hasOAuth1Fallback) {
+      console.warn(
+        '[Scheduled Tweet] OAuth2 token expired and refresh failed, but OAuth1 credentials available — will use OAuth1 for posting.',
+        refreshResult.error.details || refreshResult.error.reason
+      );
+    } else {
+      console.warn(
+        '[Scheduled Tweet] OAuth2 refresh failed before expiry, continuing with current token:',
+        refreshResult.error.details || refreshResult.error.reason
+      );
+    }
   }
 }
 
@@ -613,6 +624,19 @@ function getRateLimitWaitMs(error, fallbackMs = SCHEDULED_RATE_LIMIT_WAIT_MS) {
 
   const safeFallback = Number.isFinite(fallbackMs) && fallbackMs > 0 ? fallbackMs : 90000;
   return Math.min(safeFallback, SCHEDULED_RATE_LIMIT_MAX_WAIT_MS);
+}
+
+function isScheduledUnauthorizedError(error) {
+  const message = `${error?.message || ''} ${error?.data?.detail || ''}`.toLowerCase();
+  return (
+    error?.code === 401 ||
+    error?.status === 401 ||
+    error?.data?.status === 401 ||
+    message.includes(' 401') ||
+    message.includes('unauthorized') ||
+    message.includes('invalid or expired token') ||
+    message.includes('invalid token')
+  );
 }
 
 async function withRateLimitRetry(operation, { label, retries = SCHEDULED_RATE_LIMIT_MAX_RETRIES, fallbackWaitMs = SCHEDULED_RATE_LIMIT_WAIT_MS } = {}) {
@@ -1156,8 +1180,17 @@ class ScheduledTweetService {
       );
 
 
-      // Create Twitter client - prefer the shared runtime policy first.
-      let twitterClient = createTwitterPostingClient(scheduledTweet, { preferOAuth1: true });
+      // Create Twitter client — match compose behavior:
+      // Only prefer OAuth 1.0a when media is present (required for media upload).
+      // Text-only posts use OAuth 2.0 (same as compose) to avoid 403 "not permitted"
+      // errors caused by OAuth 1.0a app permissions being set to Read-only.
+      const hasMedia = (Array.isArray(scheduledTweet.media_urls) && scheduledTweet.media_urls.length > 0) ||
+        (typeof scheduledTweet.media_urls === 'string' && scheduledTweet.media_urls.trim().length > 0);
+      const hasThreadMedia = Array.isArray(scheduledTweet.thread_media) && scheduledTweet.thread_media.length > 0;
+      const shouldPreferOAuth1 = hasMedia || hasThreadMedia;
+      let usedAuthMethod = shouldPreferOAuth1 ? 'oauth1' : 'oauth2';
+      console.log(`[Scheduled Tweet] Auth strategy: preferOAuth1=${shouldPreferOAuth1} (hasMedia=${hasMedia}, hasThreadMedia=${hasThreadMedia})`);
+      let twitterClient = createTwitterPostingClient(scheduledTweet, { preferOAuth1: shouldPreferOAuth1 });
       if (!twitterClient) {
         try {
         if (scheduledTweet.oauth1_access_token && scheduledTweet.oauth1_access_token_secret) {
@@ -1249,10 +1282,122 @@ class ScheduledTweetService {
       };
 
 
-      const tweetResponse = await withRateLimitRetry(
-        () => twitterClient.v2.tweet(tweetData),
-        { label: 'scheduled-main-post' }
-      );
+      let tweetResponse;
+      try {
+        tweetResponse = await withRateLimitRetry(
+          () => twitterClient.v2.tweet(tweetData),
+          { label: 'scheduled-main-post' }
+        );
+      } catch (postError) {
+        const is401 = isScheduledUnauthorizedError(postError);
+        const is403 = postError.code === 403 || postError?.data?.status === 403 || postError?.status === 403;
+
+        if (is401 || is403) {
+          const errorType = is401 ? '401' : '403';
+          console.warn(`[Scheduled Tweet] ${errorType} on main post (auth method: ${usedAuthMethod}) — attempting recovery`);
+
+          // ── Strategy 1: On 403 with OAuth1, try OAuth2 immediately (no refresh needed) ──
+          if (is403 && usedAuthMethod === 'oauth1' && scheduledTweet.access_token) {
+            console.log('[Scheduled Tweet] 403 with OAuth1 → switching to OAuth2 for retry');
+            const oauth2Client = new TwitterApi(scheduledTweet.access_token);
+            try {
+              tweetResponse = await withRateLimitRetry(
+                () => oauth2Client.v2.tweet(tweetData),
+                { label: 'scheduled-main-post-403-oauth2-retry' }
+              );
+              twitterClient = oauth2Client;
+              usedAuthMethod = 'oauth2';
+              console.log('[Scheduled Tweet] ✓ OAuth2 fallback succeeded after OAuth1 403');
+            } catch (oauth2Error) {
+              console.error('[Scheduled Tweet] OAuth2 fallback also failed:', oauth2Error?.message);
+              // Continue to token refresh logic below
+              throw postError; // rethrow original 403
+            }
+          }
+          // ── Strategy 2: On 403 with OAuth2, try OAuth1 (permissions mismatch the other way) ──
+          else if (is403 && usedAuthMethod === 'oauth2' && scheduledTweet.oauth1_access_token) {
+            console.log('[Scheduled Tweet] 403 with OAuth2 → switching to OAuth1 for retry');
+            const oauth1Client = createTwitterPostingClient(scheduledTweet, { preferOAuth1: true });
+            if (oauth1Client) {
+              try {
+                tweetResponse = await withRateLimitRetry(
+                  () => oauth1Client.v2.tweet(tweetData),
+                  { label: 'scheduled-main-post-403-oauth1-retry' }
+                );
+                twitterClient = oauth1Client;
+                usedAuthMethod = 'oauth1';
+                console.log('[Scheduled Tweet] ✓ OAuth1 fallback succeeded after OAuth2 403');
+              } catch (oauth1Error) {
+                console.error('[Scheduled Tweet] OAuth1 fallback also failed:', oauth1Error?.message);
+                throw postError;
+              }
+            } else {
+              throw postError;
+            }
+          }
+          // ── Strategy 3: On 401, re-fetch credentials from DB + force-refresh + retry ──
+          else if (is401) {
+            let retryClient = null;
+            try {
+              const acctType = scheduledTweet.isTeamAccount ? 'team' : 'personal';
+              let freshAccount = null;
+
+              if (scheduledTweet.isTeamAccount && scheduledTweet.account_id) {
+                const { rows } = await pool.query(
+                  `SELECT * FROM team_accounts WHERE id::text = $1::text AND active = true LIMIT 1`,
+                  [scheduledTweet.account_id]
+                );
+                freshAccount = rows[0] || null;
+              } else {
+                freshAccount = await fetchLatestPersonalTwitterAuth(pool, scheduledTweet.user_id);
+              }
+
+              if (freshAccount) {
+                try {
+                  const forceRefreshResult = await refreshTwitterOauth2IfNeeded({
+                    dbPool: pool,
+                    account: freshAccount,
+                    accountType: acctType,
+                    reason: 'scheduled-post-401-retry',
+                    force: true,
+                    onLog: (...args) => console.log(...args),
+                  });
+                  if (forceRefreshResult.account) {
+                    freshAccount = forceRefreshResult.account;
+                  }
+                } catch (refreshErr) {
+                  console.warn('[Scheduled Tweet] Force refresh on 401 retry failed:', refreshErr?.message);
+                }
+
+                scheduledTweet.access_token = freshAccount.access_token || scheduledTweet.access_token;
+                scheduledTweet.refresh_token = freshAccount.refresh_token || scheduledTweet.refresh_token;
+                scheduledTweet.token_expires_at = freshAccount.token_expires_at || scheduledTweet.token_expires_at;
+                scheduledTweet.oauth1_access_token = freshAccount.oauth1_access_token || scheduledTweet.oauth1_access_token;
+                scheduledTweet.oauth1_access_token_secret = freshAccount.oauth1_access_token_secret || scheduledTweet.oauth1_access_token_secret;
+
+                retryClient = createTwitterPostingClient(scheduledTweet, { preferOAuth1: shouldPreferOAuth1 });
+              }
+            } catch (reloadErr) {
+              console.warn('[Scheduled Tweet] Failed to reload account for 401 retry:', reloadErr?.message);
+            }
+
+            if (retryClient) {
+              console.log('[Scheduled Tweet] Retrying main post with refreshed credentials');
+              twitterClient = retryClient;
+              tweetResponse = await withRateLimitRetry(
+                () => twitterClient.v2.tweet(tweetData),
+                { label: 'scheduled-main-post-retry' }
+              );
+            } else {
+              throw postError;
+            }
+          } else {
+            throw postError;
+          }
+        } else {
+          throw postError;
+        }
+      }
       console.log(`✅ Main tweet posted successfully: ${tweetResponse.data.id}`);
 
 
@@ -1375,6 +1520,21 @@ class ScheduledTweetService {
         }
       } catch (metricErr) {
         console.warn('[Scheduled Tweet] Inline metrics fetch failed (non-fatal):', metricErr?.message || metricErr);
+      }
+
+      // ─── Phase 5: Schedule deferred analytics sync (24h after posting) ───
+      try {
+        const { feedbackLoopService } = await import('./feedbackLoopService.js');
+        const allPostedIdsForSync = [tweetResponse.data.id, ...threadTweetIds.map(t => t.tweetId)].filter(Boolean);
+        for (const postedId of allPostedIdsForSync) {
+          await feedbackLoopService.scheduleDeferredSync(
+            scheduledTweet.user_id,
+            postedId,
+            scheduledTweet.account_id || null
+          );
+        }
+      } catch (deferErr) {
+        console.warn('[Scheduled Tweet] Deferred sync scheduling failed (non-fatal):', deferErr?.message || deferErr);
       }
 
       let crossPostResult = null;
@@ -1610,8 +1770,35 @@ class ScheduledTweetService {
         console.error('❌ Twitter 401 Error - Authentication failed');
         errorMessage = 'Twitter authentication failed (401). Please reconnect your Twitter account.';
       } else if (error.code === 403) {
-        console.error('❌ Twitter 403 Error');
-        errorMessage = `Twitter error (403): ${error.data?.detail || error.message || 'Forbidden - likely duplicate or rate limit'}`;
+        const detail = error.data?.detail || error.message || 'Forbidden';
+        const isDuplicate = /duplicate/i.test(detail);
+        const isNotPermitted = /not permitted/i.test(detail);
+
+        // Diagnose the 403 reason
+        let diagnosis = 'unknown';
+        if (isDuplicate) {
+          diagnosis = 'duplicate_content';
+        } else if (isNotPermitted) {
+          diagnosis = 'not_permitted';
+        }
+
+        console.error(`❌ Twitter 403 Error (diagnosis: ${diagnosis})`);
+
+        if (isNotPermitted) {
+          console.error(
+            '🔍 403 "not permitted" after trying both OAuth1 + OAuth2 — common causes:\n' +
+            '   1. Monthly tweet cap reached (Free=1500/mo, Basic=3000/mo)\n' +
+            '   2. Account restricted or suspended by Twitter\n' +
+            '   3. App permissions revoked in Twitter Developer Portal\n' +
+            '   Check your usage at https://developer.x.com/en/portal/dashboard'
+          );
+          errorMessage = `Twitter 403: Not permitted to post (both OAuth methods failed). Likely monthly tweet limit reached or account restricted. Check developer portal.`;
+        } else if (isDuplicate) {
+          errorMessage = 'Twitter 403: Duplicate content — Twitter rejected this tweet because identical content was recently posted.';
+        } else {
+          errorMessage = `Twitter 403: ${detail}`;
+        }
+
         await pool.query(
           `UPDATE scheduled_tweets
            SET status = $1,
@@ -1621,8 +1808,8 @@ class ScheduledTweetService {
            WHERE id = $3`,
           ['failed', errorMessage, scheduledTweet.id]
         );
-        console.log('🛑 Not retrying 403 error (likely duplicate content)');
-        return { outcome: 'failed', reason: 'twitter_403', scheduledTweetId: scheduledTweet.id };
+        console.log(`🛑 Not retrying 403 error (${diagnosis})`);
+        return { outcome: 'failed', reason: `twitter_403_${diagnosis}`, scheduledTweetId: scheduledTweet.id };
       } else if (isRateLimitedError(error)) {
         const retryDelayMs = getRateLimitWaitMs(error);
         const retryAt = new Date(Date.now() + retryDelayMs);

@@ -129,16 +129,25 @@ export async function getNextOptimalPostingTime(strategyId, config) {
             slotTime.setHours(slot.hour, 0, 0, 0);
             
             if (slotTime > now) {
-              // Check if slot is available (not already scheduled)
+              // Check if slot is available (not already scheduled in content_review_queue)
               const existingResult = await pool.query(
-                `SELECT id FROM strategy_queue 
+                `SELECT id FROM content_review_queue 
                  WHERE strategy_id = $1 
-                   AND scheduled_for BETWEEN $2 AND $3
-                   AND status IN ('pending', 'approved')`,
+                   AND suggested_time BETWEEN $2 AND $3
+                   AND status IN ('pending', 'approved', 'scheduled')`,
                 [strategyId, new Date(slotTime.getTime() - 30*60000), new Date(slotTime.getTime() + 30*60000)]
               );
-              
-              if (existingResult.rows.length === 0) {
+
+              // Also check scheduled_tweets to avoid double-booking
+              const scheduledResult = await pool.query(
+                `SELECT id FROM scheduled_tweets 
+                 WHERE user_id = (SELECT user_id FROM user_strategies WHERE id = $1)
+                   AND scheduled_for BETWEEN $2 AND $3
+                   AND status = 'pending'`,
+                [strategyId, new Date(slotTime.getTime() - 30*60000), new Date(slotTime.getTime() + 30*60000)]
+              );
+
+              if (existingResult.rows.length === 0 && scheduledResult.rows.length === 0) {
                 return slotTime;
               }
             }
@@ -148,28 +157,53 @@ export async function getNextOptimalPostingTime(strategyId, config) {
     }
     
     // Fallback: use custom hours or default to spreading throughout the day
+    // Spread across multiple days with conflict checking
     const customHours = config.custom_posting_hours && config.custom_posting_hours.length > 0
       ? config.custom_posting_hours
       : [9, 12, 17]; // Default hours: 9 AM, 12 PM, 5 PM
     
     const now = new Date();
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
     
-    for (const hour of customHours) {
-      const slotTime = new Date(today);
-      slotTime.setHours(hour, 0, 0, 0);
+    // Check up to 14 days ahead to find an open slot
+    for (let daysAhead = 0; daysAhead < 14; daysAhead++) {
+      const checkDate = new Date(now);
+      checkDate.setDate(checkDate.getDate() + daysAhead);
+      checkDate.setHours(0, 0, 0, 0);
       
-      if (slotTime > now) {
-        return slotTime;
+      for (const hour of customHours) {
+        const slotTime = new Date(checkDate);
+        slotTime.setHours(hour, 0, 0, 0);
+        
+        if (slotTime <= now) continue; // Skip past times
+        
+        // Check if this slot is already taken (within ±30 min window)
+        const existingResult = await pool.query(
+          `SELECT id FROM content_review_queue 
+           WHERE strategy_id = $1 
+             AND suggested_time BETWEEN $2 AND $3
+             AND status IN ('pending', 'approved', 'scheduled')`,
+          [strategyId, new Date(slotTime.getTime() - 30*60000), new Date(slotTime.getTime() + 30*60000)]
+        );
+        
+        // Also check scheduled_tweets to avoid double-booking
+        const scheduledResult = await pool.query(
+          `SELECT id FROM scheduled_tweets 
+           WHERE user_id = (SELECT user_id FROM user_strategies WHERE id = $1)
+             AND scheduled_for BETWEEN $2 AND $3
+             AND status = 'pending'`,
+          [strategyId, new Date(slotTime.getTime() - 30*60000), new Date(slotTime.getTime() + 30*60000)]
+        );
+        
+        if (existingResult.rows.length === 0 && scheduledResult.rows.length === 0) {
+          return slotTime;
+        }
       }
     }
     
-    // If all slots today are past, schedule for tomorrow
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(customHours[0], 0, 0, 0);
-    return tomorrow;
+    // If somehow all slots for 14 days are taken, schedule for next hour
+    const nextHour = new Date();
+    nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
+    return nextHour;
   } catch (error) {
     console.error('Error getting next optimal posting time:', error);
     // Fallback: next hour
@@ -187,22 +221,53 @@ export async function getNextOptimalPostingTime(strategyId, config) {
  */
 export async function selectNextPrompt(strategyId) {
   try {
-    // Get prompts with usage stats
-    const result = await pool.query(
-      `SELECT sp.*, 
-         COALESCE(sp.usage_count, 0) as usage_count,
-         COALESCE(sp.last_used_at, '1970-01-01') as last_used_at,
-         EXTRACT(EPOCH FROM (NOW() - COALESCE(sp.last_used_at, '1970-01-01'))) as seconds_since_last_use
-       FROM strategy_prompts sp
-       WHERE sp.strategy_id = $1
-       ORDER BY 
-         sp.is_favorite DESC,
-         usage_count ASC,
-         seconds_since_last_use DESC
-       LIMIT 1`,
+    // Get the prompt IDs already used in current pending/approved queue to avoid repeats
+    const usedResult = await pool.query(
+      `SELECT DISTINCT prompt_id FROM content_review_queue
+       WHERE strategy_id = $1 AND source = 'autopilot'
+         AND status IN ('pending', 'approved')
+         AND prompt_id IS NOT NULL`,
       [strategyId]
     );
-    
+    const usedPromptIds = usedResult.rows.map(r => r.prompt_id);
+
+    // Build query — exclude prompts already in queue if possible
+    let query = `
+      SELECT sp.*,
+         COALESCE(sp.usage_count, 0) as eff_usage_count,
+         COALESCE(sp.last_used_at, '1970-01-01') as eff_last_used_at,
+         EXTRACT(EPOCH FROM (NOW() - COALESCE(sp.last_used_at, '1970-01-01'))) as seconds_since_last_use
+       FROM strategy_prompts sp
+       WHERE sp.strategy_id = $1`;
+    const params = [strategyId];
+
+    if (usedPromptIds.length > 0) {
+      query += ` AND sp.id != ALL($2)`;
+      params.push(usedPromptIds);
+    }
+
+    query += `
+       ORDER BY 
+         eff_usage_count ASC,
+         seconds_since_last_use DESC,
+         sp.is_favorite DESC
+       LIMIT 1`;
+
+    let result = await pool.query(query, params);
+
+    // If all prompts are already in queue, fall back to least-used overall
+    if (result.rows.length === 0) {
+      result = await pool.query(
+        `SELECT sp.*,
+           COALESCE(sp.usage_count, 0) as eff_usage_count
+         FROM strategy_prompts sp
+         WHERE sp.strategy_id = $1
+         ORDER BY eff_usage_count ASC, RANDOM()
+         LIMIT 1`,
+        [strategyId]
+      );
+    }
+
     if (result.rows.length === 0) {
       throw new Error('No prompts available for this strategy');
     }
@@ -252,27 +317,60 @@ export async function generateAndQueueContent(strategyId, options = {}) {
       ? new Date(options.scheduledFor)
       : await getNextOptimalPostingTime(strategyId, config);
     
-    // Queue content
+    // Determine initial status
+    const initialStatus = config.require_approval ? 'pending' : 'approved';
+
+    // Insert into unified content_review_queue
     const queueResult = await pool.query(
-      `INSERT INTO strategy_queue 
-         (strategy_id, prompt_id, generated_content, scheduled_for, status,
-          generation_mode, category, ideal_posting_time, approval_required, priority)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO content_review_queue 
+         (user_id, strategy_id, content, suggested_time, timezone, reason, source, category, prompt_id, status)
+       VALUES ($1, $2, $3, $4, 'UTC', $5, 'autopilot', $6, $7, $8)
        RETURNING *`,
       [
+        strategy.user_id,
         strategyId,
-        prompt.id,
         generatedContent,
         scheduledFor,
-        config.require_approval ? 'pending' : 'approved',
-        options.generationMode || 'auto',
+        `Auto-generated by autopilot (${options.generationMode || 'auto'} mode)`,
         prompt.category,
-        scheduledFor,
-        config.require_approval,
-        options.priority || 5
+        prompt.id,
+        initialStatus
       ]
     );
+
+    const queuedItem = queueResult.rows[0];
     
+    // If approval not required, auto-schedule into scheduled_tweets immediately
+    if (!config.require_approval) {
+      // Ensure scheduled time is in the future
+      const schedTime = new Date(scheduledFor) <= new Date()
+        ? new Date(Date.now() + 60_000)
+        : new Date(scheduledFor);
+
+      // Detect threads: split on --- separator
+      const tParts = generatedContent.split(/---+/).map(p => p.trim()).filter(Boolean);
+      const isThread = tParts.length > 1;
+      const mainContent = isThread ? tParts[0] : generatedContent;
+      const threadTweets = isThread ? JSON.stringify(tParts.slice(1).map(p => ({ content: p }))) : null;
+
+      const { rows: [tweet] } = await pool.query(
+        `INSERT INTO scheduled_tweets (user_id, content, thread_tweets, scheduled_for, timezone, status, approval_status, source, autopilot_strategy_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'UTC', 'pending', 'approved', 'autopilot', $5, NOW(), NOW())
+         RETURNING id`,
+        [strategy.user_id, mainContent, threadTweets, schedTime.toISOString(), strategyId]
+      );
+
+      // Mark CRQ item as scheduled
+      await pool.query(
+        `UPDATE content_review_queue SET status = 'scheduled', scheduled_tweet_id = $1, updated_at = NOW()
+         WHERE id = $2`,
+        [tweet.id, queuedItem.id]
+      );
+
+      queuedItem.status = 'scheduled';
+      queuedItem.scheduled_tweet_id = tweet.id;
+    }
+
     // Update prompt usage
     await pool.query(
       `UPDATE strategy_prompts 
@@ -281,17 +379,17 @@ export async function generateAndQueueContent(strategyId, options = {}) {
       [prompt.id]
     );
     
-    // Log history
+    // Log history (queue_id left NULL to avoid FK issues with strategy_queue)
     await pool.query(
       `INSERT INTO autopilot_history 
-         (strategy_id, queue_id, action, actor, prompt_used, category, success)
-       VALUES ($1, $2, 'generated', 'system', $3, $4, true)`,
-      [strategyId, queueResult.rows[0].id, prompt.id, prompt.category]
+         (strategy_id, action, actor, prompt_used, category, success, metadata)
+       VALUES ($1, 'generated', 'system', $2, $3, true, $4)`,
+      [strategyId, prompt.id, prompt.category, JSON.stringify({ content_queue_id: queuedItem.id, auto_scheduled: !config.require_approval })]
     );
     
     console.log(`✅ Auto-generated content for strategy ${strategyId}, scheduled for:`, scheduledFor);
     
-    return queueResult.rows[0];
+    return queuedItem;
   } catch (error) {
     console.error('Error generating and queuing content:', error);
     
@@ -319,12 +417,24 @@ export async function fillQueue(strategyId) {
     if (!config.is_enabled) {
       return [];
     }
+
+    // Expire stale approved autopilot items that are more than 2 hours past their suggested time
+    await pool.query(
+      `UPDATE content_review_queue
+       SET status = 'expired'
+       WHERE strategy_id = $1
+         AND source = 'autopilot'
+         AND status = 'approved'
+         AND suggested_time < NOW() - INTERVAL '2 hours'`,
+      [strategyId]
+    );
     
-    // Count current queue items
+    // Count current active autopilot queue items
     const countResult = await pool.query(
       `SELECT COUNT(*) as count 
-       FROM strategy_queue 
+       FROM content_review_queue 
        WHERE strategy_id = $1 
+         AND source = 'autopilot'
          AND status IN ('pending', 'approved')`,
       [strategyId]
     );
@@ -365,22 +475,27 @@ export async function fillQueue(strategyId) {
 export async function getQueue(strategyId, filters = {}) {
   try {
     let query = `
-      SELECT sq.*, sp.category as prompt_category, sp.prompt_text
-      FROM strategy_queue sq
-      LEFT JOIN strategy_prompts sp ON sq.prompt_id = sp.id
-      WHERE sq.strategy_id = $1
+      SELECT crq.*, sp.category as prompt_category, sp.prompt_text,
+             crq.content as generated_content,
+             crq.suggested_time as scheduled_for
+      FROM content_review_queue crq
+      LEFT JOIN strategy_prompts sp ON crq.prompt_id = sp.id
+      WHERE crq.strategy_id = $1
+        AND crq.source = 'autopilot'
     `;
     
     const params = [strategyId];
     let paramCount = 2;
     
     if (filters.status) {
-      query += ` AND sq.status = $${paramCount}`;
-      params.push(filters.status);
+      // Support comma-separated statuses
+      const statuses = filters.status.split(',').map(s => s.trim());
+      query += ` AND crq.status = ANY($${paramCount})`;
+      params.push(statuses);
       paramCount++;
     }
     
-    query += ` ORDER BY sq.priority DESC, sq.scheduled_for ASC`;
+    query += ` ORDER BY crq.suggested_time ASC`;
     
     if (filters.limit) {
       query += ` LIMIT $${paramCount}`;
@@ -404,21 +519,19 @@ export async function getQueue(strategyId, filters = {}) {
 export async function approveQueuedContent(queueId, userId) {
   try {
     const result = await pool.query(
-      `UPDATE strategy_queue 
-       SET status = 'approved', 
-           approved_by = $1, 
-           approved_at = NOW()
-       WHERE id = $2
+      `UPDATE content_review_queue 
+       SET status = 'approved', updated_at = NOW()
+       WHERE id = $1 AND status = 'pending'
        RETURNING *`,
-      [userId, queueId]
+      [queueId]
     );
     
     if (result.rows.length > 0) {
       await pool.query(
         `INSERT INTO autopilot_history 
-           (strategy_id, queue_id, action, actor, success)
-         VALUES ($1, $2, 'approved', $3, true)`,
-        [result.rows[0].strategy_id, queueId, userId]
+           (strategy_id, action, actor, success, metadata)
+         VALUES ($1, 'approved', $2, true, $3)`,
+        [result.rows[0].strategy_id, userId, JSON.stringify({ content_queue_id: queueId })]
       );
     }
     
@@ -439,21 +552,19 @@ export async function approveQueuedContent(queueId, userId) {
 export async function rejectQueuedContent(queueId, userId, reason) {
   try {
     const result = await pool.query(
-      `UPDATE strategy_queue 
-       SET status = 'rejected', 
-           rejected_at = NOW(),
-           rejection_reason = $1
-       WHERE id = $2
+      `UPDATE content_review_queue 
+       SET status = 'rejected', updated_at = NOW()
+       WHERE id = $1
        RETURNING *`,
-      [reason, queueId]
+      [queueId]
     );
     
     if (result.rows.length > 0) {
       await pool.query(
         `INSERT INTO autopilot_history 
-           (strategy_id, queue_id, action, actor, success, error_message)
-         VALUES ($1, $2, 'rejected', $3, true, $4)`,
-        [result.rows[0].strategy_id, queueId, userId, reason]
+           (strategy_id, action, actor, success, error_message, metadata)
+         VALUES ($1, 'rejected', $2, true, $3, $4)`,
+        [result.rows[0].strategy_id, userId, reason, JSON.stringify({ content_queue_id: queueId })]
       );
     }
     
@@ -473,8 +584,8 @@ export async function rejectQueuedContent(queueId, userId, reason) {
 export async function editQueuedContent(queueId, newContent) {
   try {
     const result = await pool.query(
-      `UPDATE strategy_queue 
-       SET generated_content = $1
+      `UPDATE content_review_queue 
+       SET content = $1, updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
       [newContent, queueId]
@@ -487,6 +598,81 @@ export async function editQueuedContent(queueId, newContent) {
   }
 }
 
+/**
+ * Process approved autopilot items — move them into scheduled_tweets for posting.
+ * Called by the autopilot cron tick after fillQueue.
+ * Handles the case where require_approval=true and user approved in ContentReview.
+ */
+export async function processApprovedQueue() {
+  try {
+    // Find all approved autopilot items whose suggested_time is within the next 30 min
+    // or already past (should post ASAP)
+    const { rows: readyItems } = await pool.query(
+      `SELECT crq.*, us.user_id
+       FROM content_review_queue crq
+       JOIN user_strategies us ON crq.strategy_id = us.id
+       JOIN autopilot_config ac ON ac.strategy_id = crq.strategy_id
+       WHERE crq.source = 'autopilot'
+         AND crq.status = 'approved'
+         AND crq.suggested_time <= NOW() + INTERVAL '30 minutes'
+         AND ac.is_enabled = true
+       ORDER BY crq.suggested_time ASC
+       LIMIT 20`
+    );
+
+    if (readyItems.length === 0) return [];
+
+    const posted = [];
+    for (const item of readyItems) {
+      try {
+        // Ensure scheduled time is in the future (at least 1 min from now)
+        const scheduledFor = new Date(item.suggested_time) <= new Date()
+          ? new Date(Date.now() + 60_000)
+          : new Date(item.suggested_time);
+
+        // Detect threads: split on --- separator
+        const tParts = (item.content || '').split(/---+/).map(p => p.trim()).filter(Boolean);
+        const isThread = tParts.length > 1;
+        const mainContent = isThread ? tParts[0] : item.content;
+        const threadTweets = isThread ? JSON.stringify(tParts.slice(1).map(p => ({ content: p }))) : null;
+
+        // Insert into scheduled_tweets
+        const { rows: [tweet] } = await pool.query(
+          `INSERT INTO scheduled_tweets (user_id, content, thread_tweets, scheduled_for, timezone, status, approval_status, source, autopilot_strategy_id, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'UTC', 'pending', 'approved', 'autopilot', $5, NOW(), NOW())
+           RETURNING id`,
+          [item.user_id, mainContent, threadTweets, scheduledFor.toISOString(), item.strategy_id]
+        );
+
+        // Mark CRQ item as scheduled
+        await pool.query(
+          `UPDATE content_review_queue SET status = 'scheduled', scheduled_tweet_id = $1, updated_at = NOW()
+           WHERE id = $2`,
+          [tweet.id, item.id]
+        );
+
+        // Log history
+        await pool.query(
+          `INSERT INTO autopilot_history
+             (strategy_id, action, actor, success, metadata)
+           VALUES ($1, 'scheduled', 'system', true, $2)`,
+          [item.strategy_id, JSON.stringify({ content_queue_id: item.id, scheduled_tweet_id: tweet.id })]
+        );
+
+        posted.push({ queueId: item.id, scheduledTweetId: tweet.id });
+        console.log(`🤖 Autopilot: Scheduled CRQ item ${item.id} → tweet ${tweet.id}`);
+      } catch (err) {
+        console.error(`❌ Autopilot: Failed to schedule CRQ item ${item.id}:`, err.message);
+      }
+    }
+
+    return posted;
+  } catch (error) {
+    console.error('Error processing approved queue:', error);
+    return [];
+  }
+}
+
 export default {
   getAutopilotConfig,
   updateAutopilotConfig,
@@ -496,6 +682,7 @@ export default {
   generateAndQueueContent,
   fillQueue,
   getQueue,
+  processApprovedQueue,
   approveQueuedContent,
   rejectQueuedContent,
   editQueuedContent

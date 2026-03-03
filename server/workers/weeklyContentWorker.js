@@ -1,4 +1,5 @@
 import { weeklyContentService } from '../services/weeklyContentService.js';
+import { feedbackLoopService } from '../services/feedbackLoopService.js';
 import pool from '../config/database.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────
@@ -86,7 +87,19 @@ export async function handleWeeklyContentCron() {
   lastRunDate = new Date().toISOString().slice(0, 10);
 
   try {
-    const result = await weeklyContentService.runWeeklyGeneration();
+    // Phase 5: Run feedback loop cycle BEFORE generation
+    // This scores unscored tweets, generates weekly summaries,
+    // auto-updates strategies, and builds performance context.
+    let performanceContextMap = new Map();
+    try {
+      const feedbackResult = await feedbackLoopService.runWeeklyCycle();
+      performanceContextMap = feedbackResult.contextMap || new Map();
+      console.log(`[WeeklyContentWorker] Feedback loop completed: ${feedbackResult.results.summaries} summaries, ${feedbackResult.results.updates} strategy updates`);
+    } catch (feedbackErr) {
+      console.warn('[WeeklyContentWorker] Feedback loop failed (non-fatal), proceeding with generation:', feedbackErr.message);
+    }
+
+    const result = await weeklyContentService.runWeeklyGeneration(performanceContextMap);
     stats.totalSucceeded += result.succeeded;
     stats.totalFailed += result.failed;
     stats.lastRunResult = result;

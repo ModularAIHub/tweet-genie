@@ -11,6 +11,11 @@ import {
   CheckSquare,
   Send,
   Loader2,
+  Plus,
+  Trash2,
+  X,
+  Zap,
+  FileText,
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -128,6 +133,10 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
   const [copiedId, setCopiedId] = useState(null);
   const [selectedPromptIds, setSelectedPromptIds] = useState([]);
   const [generatedPromptIds, setGeneratedPromptIds] = useState([]);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [customIdeaText, setCustomIdeaText] = useState('');
+  const [isAddingIdea, setIsAddingIdea] = useState(false);
+  const [deletingPromptId, setDeletingPromptId] = useState(null);
   
   // Detect if we're in generating mode
   const [isGenerating, setIsGenerating] = useState(fromAnalysis && prompts.length === 0);
@@ -232,6 +241,42 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
     }
   };
 
+  const handleAddCustomIdea = async () => {
+    if (!customIdeaText.trim() || customIdeaText.trim().length < 5) {
+      toast.error('Please enter at least 5 characters for your idea.');
+      return;
+    }
+    setIsAddingIdea(true);
+    try {
+      const response = await strategyApi.createPrompt(strategyId, { prompt_text: customIdeaText.trim() });
+      if (response?.data) {
+        setPrompts((prev) => [response.data, ...prev]);
+        toast.success('Your idea has been added to the library!');
+        setCustomIdeaText('');
+        setShowAddForm(false);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Failed to add your idea');
+    } finally {
+      setIsAddingIdea(false);
+    }
+  };
+
+  const handleDeletePrompt = async (promptId) => {
+    if (!window.confirm('Delete this prompt from your library?')) return;
+    setDeletingPromptId(promptId);
+    try {
+      await strategyApi.deletePrompt(promptId);
+      setPrompts((prev) => prev.filter((p) => p.id !== promptId));
+      setSelectedPromptIds((prev) => prev.filter((id) => id !== promptId));
+      toast.success('Prompt deleted.');
+    } catch (error) {
+      toast.error('Failed to delete prompt');
+    } finally {
+      setDeletingPromptId(null);
+    }
+  };
+
   const toggleFavorite = async (promptId) => {
     try {
       await strategyApi.toggleFavorite(promptId);
@@ -274,11 +319,13 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
     const usedCount = prompts.filter((prompt) => Number(prompt.usage_count) > 0).length;
     const favoriteCount = prompts.filter((prompt) => Boolean(prompt.is_favorite)).length;
     const generatedCount = prompts.filter((prompt) => generatedPromptIds.includes(prompt.id)).length;
+    const contentCount = prompts.reduce((sum, p) => sum + Number(p.content_generated_count || 0), 0);
     return {
       total: prompts.length,
       used: usedCount,
       favorites: favoriteCount,
       generated: generatedCount,
+      contentItems: contentCount,
     };
   }, [prompts, generatedPromptIds]);
 
@@ -521,12 +568,71 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
             <div className="px-3 py-1.5 bg-white rounded-lg border border-gray-200 text-sm text-gray-700">
               <span className="font-semibold text-emerald-700">{promptStats.generated}</span> generated
             </div>
+            <div className="px-3 py-1.5 bg-white rounded-lg border border-gray-200 text-sm text-gray-700">
+              <span className="font-semibold text-violet-700">{promptStats.contentItems}</span> content items
+            </div>
           </div>
         </div>
       </div>
 
+      {/* Add your own ideas banner */}
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+        {!showAddForm ? (
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-emerald-900">
+              <span className="font-semibold">Have your own content ideas?</span>{' '}
+              Add them to your library and use them alongside AI-generated prompts.
+            </p>
+            <button
+              onClick={() => setShowAddForm(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors flex-shrink-0 ml-3"
+            >
+              <Plus className="w-4 h-4" />
+              Add Idea
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-emerald-900">Add your own content idea</p>
+              <button onClick={() => { setShowAddForm(false); setCustomIdeaText(''); }} className="text-emerald-600 hover:text-emerald-700">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <textarea
+              value={customIdeaText}
+              onChange={(e) => setCustomIdeaText(e.target.value.slice(0, 500))}
+              placeholder={`Type your content idea... e.g., "Talk about why most founders ignore churn until it's too late and what to do instead"`}
+              rows={3}
+              className="w-full px-4 py-3 border border-emerald-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none bg-white"
+              autoFocus
+            />
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-emerald-600">{customIdeaText.length}/500 — Category will be auto-assigned</p>
+              <button
+                onClick={handleAddCustomIdea}
+                disabled={isAddingIdea || customIdeaText.trim().length < 5}
+                className="inline-flex items-center gap-2 px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
+              >
+                {isAddingIdea ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                {isAddingIdea ? 'Adding...' : 'Save Idea'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
         Beginner flow: 1) Select Starter Set 2) Send To Bulk 3) Generate all drafts 4) Schedule in one batch.
+      </div>
+
+      <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 flex items-start gap-3">
+        <Zap className="w-5 h-5 text-violet-600 flex-shrink-0 mt-0.5" />
+        <div className="text-sm text-violet-900">
+          <span className="font-semibold">Autopilot &amp; Content Queue use these prompts.</span>{' '}
+          When autopilot generates tweets or you use "Generate Week's Content", prompts from this library
+          are automatically selected (least-used first). The more prompts you have, the more varied your content.
+        </div>
       </div>
 
       <div className="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-gray-200 bg-white px-4 py-3">
@@ -656,11 +762,18 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
                 />
               </button>
 
-              <div
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold mb-3 mt-6 ${categoryClass}`}
-              >
-                <span>{CATEGORY_ICON[prompt.category] || 'Prompt'}</span>
-                <span className="capitalize">{prompt.category || 'general'}</span>
+              <div className="flex items-center gap-2 mb-3 mt-6">
+                <div
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold ${categoryClass}`}
+                >
+                  <span>{CATEGORY_ICON[prompt.category] || 'Prompt'}</span>
+                  <span className="capitalize">{prompt.category || 'general'}</span>
+                </div>
+                {variables.source === 'user_custom' && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-100 text-emerald-700 border border-emerald-200">
+                    My Idea
+                  </span>
+                )}
               </div>
 
               <p className="text-gray-800 leading-relaxed mb-4 min-h-[96px] line-clamp-4">{cleanedPrompt}</p>
@@ -672,12 +785,20 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
                 </div>
               )}
 
-              {prompt.usage_count > 0 && (
+              {(prompt.usage_count > 0 || Number(prompt.content_generated_count) > 0) && (
                 <div className="flex items-center gap-2 mb-4 flex-wrap">
-                  <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 px-2 py-1 rounded-lg font-medium">
-                    <CheckCircle2 className="w-4 h-4" />
-                    Used {prompt.usage_count} {prompt.usage_count === 1 ? 'time' : 'times'}
-                  </div>
+                  {prompt.usage_count > 0 && (
+                    <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 px-2 py-1 rounded-lg font-medium">
+                      <CheckCircle2 className="w-4 h-4" />
+                      Used {prompt.usage_count} {prompt.usage_count === 1 ? 'time' : 'times'}
+                    </div>
+                  )}
+                  {Number(prompt.content_generated_count) > 0 && (
+                    <div className="flex items-center gap-1.5 text-xs text-violet-600 bg-violet-50 px-2 py-1 rounded-lg font-medium">
+                      <FileText className="w-3.5 h-3.5" />
+                      {prompt.content_generated_count} {Number(prompt.content_generated_count) === 1 ? 'tweet' : 'tweets'} generated
+                    </div>
+                  )}
                   {prompt.performance_score > 0 && (
                     <span className="text-xs text-green-600 font-medium bg-green-50 px-2 py-1 rounded-lg">
                       {prompt.performance_score}% performance
@@ -709,6 +830,18 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
                 >
                   <ExternalLink className="w-4 h-4" />
                   <span>Generate</span>
+                </button>
+                <button
+                  onClick={() => handleDeletePrompt(prompt.id)}
+                  disabled={deletingPromptId === prompt.id}
+                  className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                  title="Delete prompt"
+                >
+                  {deletingPromptId === prompt.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
                 </button>
               </div>
             </div>

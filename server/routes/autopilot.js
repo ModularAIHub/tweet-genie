@@ -1,8 +1,140 @@
 // Auto-Pilot Routes for Strategy Builder
 import express from 'express';
+import pool from '../config/database.js';
 import * as autopilotService from '../services/autopilotService.js';
 
 const router = express.Router();
+
+// ─── Undo window constant (must match weeklyContentService) ──────────────
+const UNDO_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * GET /api/strategy/autopilot/activity-log
+ * Get autopilot activity log for the authenticated user (across all strategies)
+ */
+router.get('/activity-log', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+
+    const { rows } = await pool.query(
+      `SELECT ah.*, us.niche, us.target_audience
+       FROM autopilot_history ah
+       JOIN user_strategies us ON ah.strategy_id = us.id
+       WHERE us.user_id = $1
+       ORDER BY ah.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+
+    const { rows: [{ count }] } = await pool.query(
+      `SELECT COUNT(*) FROM autopilot_history ah
+       JOIN user_strategies us ON ah.strategy_id = us.id
+       WHERE us.user_id = $1`,
+      [userId]
+    );
+
+    res.json({
+      success: true,
+      data: rows,
+      total: parseInt(count),
+      limit,
+      offset,
+    });
+  } catch (error) {
+    console.error('Error fetching activity log:', error);
+    res.status(500).json({ error: 'Failed to fetch activity log' });
+  }
+});
+
+/**
+ * POST /api/strategy/autopilot/undo/:scheduledTweetId
+ * Undo an autopilot-scheduled tweet (within the 1-hour window)
+ */
+router.post('/undo/:scheduledTweetId', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { scheduledTweetId } = req.params;
+
+    // Find the scheduled tweet and verify it belongs to the user + is within undo window
+    const { rows: [tweet] } = await pool.query(
+      `SELECT * FROM scheduled_tweets 
+       WHERE id = $1 AND user_id = $2 AND source = 'autopilot' AND status = 'pending'`,
+      [scheduledTweetId, userId]
+    );
+
+    if (!tweet) {
+      return res.status(404).json({ error: 'Autopilot tweet not found or already processed' });
+    }
+
+    if (tweet.undo_deadline && new Date(tweet.undo_deadline) < new Date()) {
+      return res.status(400).json({ error: 'Undo window has expired (1 hour limit)' });
+    }
+
+    // Delete the scheduled tweet
+    await pool.query('DELETE FROM scheduled_tweets WHERE id = $1', [scheduledTweetId]);
+
+    // Update content_review_queue item back to pending if it exists
+    await pool.query(
+      `UPDATE content_review_queue 
+       SET status = 'pending', scheduled_tweet_id = NULL, updated_at = NOW()
+       WHERE scheduled_tweet_id = $1 AND user_id = $2`,
+      [scheduledTweetId, userId]
+    );
+
+    // Log the undo action
+    if (tweet.autopilot_strategy_id) {
+      await pool.query(
+        `INSERT INTO autopilot_history 
+           (strategy_id, action, actor, success, details)
+         VALUES ($1, 'undo', $2, true, $3)`,
+        [tweet.autopilot_strategy_id, userId, JSON.stringify({
+          scheduled_tweet_id: scheduledTweetId,
+          content_preview: (tweet.content || '').slice(0, 100),
+          originally_scheduled_for: tweet.scheduled_for,
+        })]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Autopilot tweet undone — moved back to review queue',
+    });
+  } catch (error) {
+    console.error('Error undoing autopilot tweet:', error);
+    res.status(500).json({ error: 'Failed to undo tweet' });
+  }
+});
+
+/**
+ * GET /api/strategy/autopilot/pending-undo
+ * Get all autopilot-scheduled tweets still within their undo window
+ */
+router.get('/pending-undo', async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const { rows } = await pool.query(
+      `SELECT id, content, scheduled_for, timezone, undo_deadline, autopilot_strategy_id, created_at
+       FROM scheduled_tweets
+       WHERE user_id = $1 
+         AND source = 'autopilot' 
+         AND status = 'pending'
+         AND undo_deadline > NOW()
+       ORDER BY scheduled_for ASC`,
+      [userId]
+    );
+
+    res.json({
+      success: true,
+      data: rows,
+    });
+  } catch (error) {
+    console.error('Error fetching pending undo tweets:', error);
+    res.status(500).json({ error: 'Failed to fetch pending tweets' });
+  }
+});
 
 /**
  * GET /api/strategy/autopilot/:strategyId/config
@@ -13,12 +145,12 @@ router.get('/:strategyId/config', async (req, res) => {
     const { strategyId } = req.params;
     
     // Verify strategy belongs to user
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       'SELECT user_id FROM user_strategies WHERE id = $1',
       [strategyId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Strategy not found' });
     }
     
@@ -44,12 +176,12 @@ router.put('/:strategyId/config', async (req, res) => {
     const updates = req.body;
     
     // Verify strategy belongs to user
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       'SELECT user_id FROM user_strategies WHERE id = $1',
       [strategyId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Strategy not found' });
     }
     
@@ -83,12 +215,12 @@ router.get('/:strategyId/queue', async (req, res) => {
     const { status, limit } = req.query;
     
     // Verify strategy belongs to user
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       'SELECT user_id FROM user_strategies WHERE id = $1',
       [strategyId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Strategy not found' });
     }
     
@@ -118,12 +250,12 @@ router.post('/:strategyId/generate', async (req, res) => {
     const { promptId, scheduledFor, count } = req.body;
     
     // Verify strategy belongs to user
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       'SELECT user_id FROM user_strategies WHERE id = $1',
       [strategyId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Strategy not found' });
     }
     
@@ -163,12 +295,12 @@ router.post('/:strategyId/fill-queue', async (req, res) => {
     const { strategyId } = req.params;
     
     // Verify strategy belongs to user
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       'SELECT user_id FROM user_strategies WHERE id = $1',
       [strategyId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Strategy not found' });
     }
     
@@ -194,19 +326,19 @@ router.post('/queue/:queueId/approve', async (req, res) => {
     const { queueId } = req.params;
     
     // Verify queue item belongs to user's strategy
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       `SELECT us.user_id 
-       FROM strategy_queue sq
-       JOIN user_strategies us ON sq.strategy_id = us.id
-       WHERE sq.id = $1`,
+       FROM content_review_queue crq
+       JOIN user_strategies us ON crq.strategy_id = us.id
+       WHERE crq.id = $1 AND crq.source = 'autopilot'`,
       [queueId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Queue item not found' });
     }
     
-    const updated = await autopilotService.approveQueuedContent(queueId, req.user.userId);
+    const updated = await autopilotService.approveQueuedContent(queueId, req.user.id);
     
     res.json({
       success: true,
@@ -229,19 +361,19 @@ router.post('/queue/:queueId/reject', async (req, res) => {
     const { reason } = req.body;
     
     // Verify queue item belongs to user's strategy
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       `SELECT us.user_id 
-       FROM strategy_queue sq
-       JOIN user_strategies us ON sq.strategy_id = us.id
-       WHERE sq.id = $1`,
+       FROM content_review_queue crq
+       JOIN user_strategies us ON crq.strategy_id = us.id
+       WHERE crq.id = $1 AND crq.source = 'autopilot'`,
       [queueId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Queue item not found' });
     }
     
-    const updated = await autopilotService.rejectQueuedContent(queueId, req.user.userId, reason);
+    const updated = await autopilotService.rejectQueuedContent(queueId, req.user.id, reason);
     
     res.json({
       success: true,
@@ -268,15 +400,15 @@ router.put('/queue/:queueId', async (req, res) => {
     }
     
     // Verify queue item belongs to user's strategy
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       `SELECT us.user_id 
-       FROM strategy_queue sq
-       JOIN user_strategies us ON sq.strategy_id = us.id
-       WHERE sq.id = $1`,
+       FROM content_review_queue crq
+       JOIN user_strategies us ON crq.strategy_id = us.id
+       WHERE crq.id = $1 AND crq.source = 'autopilot'`,
       [queueId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Queue item not found' });
     }
     
@@ -302,20 +434,20 @@ router.delete('/queue/:queueId', async (req, res) => {
     const { queueId } = req.params;
     
     // Verify queue item belongs to user's strategy
-    const { rows } = await req.app.locals.pool.query(
+    const { rows } = await pool.query(
       `SELECT us.user_id 
-       FROM strategy_queue sq
-       JOIN user_strategies us ON sq.strategy_id = us.id
-       WHERE sq.id = $1`,
+       FROM content_review_queue crq
+       JOIN user_strategies us ON crq.strategy_id = us.id
+       WHERE crq.id = $1 AND crq.source = 'autopilot'`,
       [queueId]
     );
     
-    if (rows.length === 0 || rows[0].user_id !== req.user.userId) {
+    if (rows.length === 0 || rows[0].user_id !== req.user.id) {
       return res.status(404).json({ error: 'Queue item not found' });
     }
     
-    await req.app.locals.pool.query(
-      'DELETE FROM strategy_queue WHERE id = $1',
+    await pool.query(
+      'DELETE FROM content_review_queue WHERE id = $1',
       [queueId]
     );
     

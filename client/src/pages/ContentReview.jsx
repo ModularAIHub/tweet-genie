@@ -17,7 +17,19 @@ import {
   CheckSquare,
   Zap,
   Eye,
+  BookOpen,
+  Layers,
 } from 'lucide-react';
+
+// ─── Thread helpers ────────────────────────────────────────────────────
+function getThreadParts(content) {
+  if (!content) return null;
+  const parts = content.split(/---+/).map(p => p.trim()).filter(Boolean);
+  return parts.length > 1 ? parts : null;
+}
+function isThread(content) {
+  return !!getThreadParts(content);
+}
 import api from '../utils/api';
 
 const STATUS_CONFIG = {
@@ -128,7 +140,11 @@ export default function ContentReview() {
       const list = res.data.strategies || res.data || [];
       const normalized = Array.isArray(list) ? list : [];
       setStrategies(normalized);
-      // Don't auto-select — start with "All strategies" so queue matches stats
+      // Auto-select first active strategy so Generate button works immediately
+      if (normalized.length > 0 && !selectedStrategyRef.current) {
+        const active = normalized.find((s) => s.status === 'active') || normalized[0];
+        setSelectedStrategy(active.id);
+      }
       return normalized;
     } catch (err) {
       console.error('Failed to fetch strategies:', err);
@@ -563,6 +579,19 @@ export default function ContentReview() {
                       {statusCfg.label}
                     </span>
 
+                    {item.source === 'autopilot' && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 border border-violet-200 uppercase tracking-wider">
+                        Autopilot
+                      </span>
+                    )}
+
+                    {isThread(item.content) && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-200">
+                        <Layers className="w-3 h-3" />
+                        Thread · {getThreadParts(item.content).length} parts
+                      </span>
+                    )}
+
                     {item.category && (
                       <span className={`text-xs font-medium px-2.5 py-1 rounded-lg border ${CATEGORY_COLORS[item.category] || 'bg-gray-50 text-gray-600 border-gray-200'}`}>
                         {item.category}
@@ -582,14 +611,19 @@ export default function ContentReview() {
                         value={editContent}
                         onChange={(e) => setEditContent(e.target.value)}
                         className="w-full border border-gray-300 rounded-lg p-3 text-sm resize-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 transition-colors bg-white"
-                        rows={4}
-                        maxLength={280}
+                        rows={isThread(editContent) ? 8 : 4}
                         autoFocus
                       />
                       <div className="flex items-center justify-between">
-                        <span className={`text-xs font-medium ${charCount(editContent) > 280 ? 'text-red-500' : charCount(editContent) > 250 ? 'text-amber-500' : 'text-gray-400'}`}>
-                          {charCount(editContent)}/280
-                        </span>
+                        {isThread(editContent) ? (
+                          <span className="text-xs font-medium text-purple-600">
+                            Thread · {getThreadParts(editContent).length} parts (separate with ---)
+                          </span>
+                        ) : (
+                          <span className={`text-xs font-medium ${charCount(editContent) > 280 ? 'text-red-500' : charCount(editContent) > 250 ? 'text-amber-500' : 'text-gray-400'}`}>
+                            {charCount(editContent)}/280
+                          </span>
+                        )}
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => { setEditingId(null); setEditContent(''); }}
@@ -599,7 +633,7 @@ export default function ContentReview() {
                           </button>
                           <button
                             onClick={() => handleSaveEdit(item.id)}
-                            disabled={isLoading || charCount(editContent) === 0 || charCount(editContent) > 280}
+                            disabled={isLoading || charCount(editContent) === 0 || (!isThread(editContent) && charCount(editContent) > 280)}
                             className="text-xs font-medium px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
                           >
                             {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Save changes'}
@@ -608,9 +642,46 @@ export default function ContentReview() {
                       </div>
                     </div>
                   ) : (
-                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed pl-0.5">
-                      {item.content}
-                    </p>
+                    (() => {
+                      const threadParts = getThreadParts(item.content);
+                      if (threadParts) {
+                        return (
+                          <div className="space-y-2">
+                            {threadParts.map((part, i) => (
+                              <div key={i} className={`text-sm text-gray-800 leading-relaxed pl-3 border-l-2 ${
+                                i === 0 ? 'border-blue-400' : 'border-purple-300'
+                              } py-1`}>
+                                <span className={`text-[10px] font-bold ${i === 0 ? 'text-blue-600' : 'text-purple-600'} block mb-0.5`}>
+                                  {i + 1}/{threadParts.length}
+                                </span>
+                                <p className="whitespace-pre-wrap">{part}</p>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }
+                      return (
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed pl-0.5">
+                          {item.content}
+                        </p>
+                      );
+                    })()
+                  )}
+
+                  {/* Source prompt attribution */}
+                  {item.source_prompt_text && (
+                    <div className="mt-3 flex items-start gap-2 p-2.5 bg-indigo-50 border border-indigo-100 rounded-lg">
+                      <BookOpen className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <span className="text-[10px] uppercase tracking-wider font-semibold text-indigo-400 block mb-0.5">From prompt</span>
+                        <p className="text-xs text-indigo-700 line-clamp-2 leading-relaxed">{item.source_prompt_text}</p>
+                        {item.source_prompt_category && (
+                          <span className="inline-block mt-1 text-[10px] font-medium px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-600 capitalize">
+                            {item.source_prompt_category}
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   )}
 
                   {/* Reason (collapsible) */}

@@ -1,6 +1,6 @@
 import express from 'express';
 import pool from '../config/database.js';
-import { validateRequest, scheduleSchema } from '../middleware/validation.js';
+import { validateRequest, scheduleSchema, rescheduleSchema } from '../middleware/validation.js';
 import { validateTwitterConnection } from '../middleware/auth.js';
 import { resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import { getDbScheduledTweetWorkerStatus } from '../workers/dbScheduledTweetWorker.js';
@@ -2115,7 +2115,7 @@ router.delete('/:scheduleId', async (req, res) => {
 });
 
 // Update scheduled time
-router.put('/:scheduleId', validateRequest(scheduleSchema), async (req, res) => {
+router.put('/:scheduleId', validateRequest(rescheduleSchema), async (req, res) => {
   try {
     const { scheduleId } = req.params;
     const { scheduled_for, timezone = 'UTC' } = req.body;

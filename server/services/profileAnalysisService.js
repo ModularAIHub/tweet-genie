@@ -6,7 +6,7 @@ const GEMINI_MODEL = 'gemini-3-flash-preview';
 const ANALYSIS_TEMPERATURE = 0.4; // Low temp for structured analysis
 const ANALYSIS_MAX_TOKENS = 4096;
 const TRENDING_MAX_TOKENS = 2048;
-const PROMPT_LIBRARY_MAX_TOKENS = 8192;
+const PROMPT_LIBRARY_MAX_TOKENS = 16384;
 const REFERENCE_MAX_TOKENS = 4096;
 
 class ProfileAnalysisService {
@@ -301,6 +301,7 @@ Return format:
             temperature: 0.5,
             maxOutputTokens: TRENDING_MAX_TOKENS,
           },
+          tools: [{ googleSearch: {} }],
         },
         {
           headers: { 'Content-Type': 'application/json' },
@@ -314,8 +315,13 @@ Return format:
         return [];
       }
 
+      const grounding = response.data.candidates?.[0]?.groundingMetadata;
+      if (grounding) {
+        console.log(`[ProfileAnalysis][Job4] Grounded with ${grounding.groundingChunks?.length || 0} search sources`);
+      }
+
       const topics = this.parseGeminiJSONArray(content);
-      console.log(`[ProfileAnalysis][Job4] ✓ Got ${topics.length} trending topics`);
+      console.log(`[ProfileAnalysis][Job4] ✓ Got ${topics.length} trending topics (search-grounded)`);
       return topics;
     } catch (error) {
       console.error(`[ProfileAnalysis][Job4] ✗ Trending fetch failed: ${error.message}`);
@@ -463,7 +469,7 @@ Return ONLY valid JSON:
 
     const extraContext = strategy?.metadata?.extra_context || '';
 
-    const prompt = `You are a Twitter content strategist. Generate 30+ tweet prompts for this creator.
+    const prompt = `You are a Twitter content strategist who creates SPECIFIC, ACTIONABLE content ideas — NOT generic templates.
 
 CREATOR PROFILE:
 Niche: ${analysisData.niche || 'General'}
@@ -492,26 +498,45 @@ ${(analysisData.content_mistakes || []).map((m) => `- ${m}`).join('\n') || '- No
 
 Generate EXACTLY 36 tweet prompts spread across 6 categories (6 per category):
 - educational
-- engagement  
+- engagement
 - storytelling
 - tips & tricks
 - promotional
 - inspirational
 
+IMPORTANT: Be concise. Keep each prompt_text under 250 characters. Keep each reason under 100 characters. Do NOT pad with filler text.
+
+CRITICAL RULES — follow exactly:
+1. Each prompt_text must be a SPECIFIC, detailed content idea tailored to THIS creator's niche, audience, and topics.
+2. DO NOT use generic fill-in-the-blank {placeholders}. Instead, reference the creator's ACTUAL niche, products, audience, and topics by name.
+3. Each prompt must be detailed enough that an AI can generate a complete, ready-to-post tweet from it without needing any additional context.
+4. BAD example: "Share a behind-the-scenes look at {your_process}" — this is too generic.
+5. GOOD example: "Walk your audience through how you debug a SaaS onboarding drop-off — what you check first, what you find 90% of the time, and the fix most founders miss" — this is specific and actionable.
+6. Vary the hooks: use questions, contrarian takes, numbered lists, before/after, mini case studies, myth-busting, warnings, frameworks, storytelling openers.
+7. Each prompt should feel like a clear content brief that a writer or AI could execute immediately.
+8. The "instruction" field should contain formatting or structural guidance (e.g. "use a numbered list", "end with a question", "include a CTA", "write as a thread with 3-4 tweets").
+
 Each prompt must include:
-1. A fill-in-the-blank tweet template with {placeholders}
-2. A "reason" explaining WHY this prompt works for this creator
-3. A "source" tag: one of "niche_fit", "trending", "competitor_gap", "content_gap", "top_performer", "audience_need"
+1. "prompt_text" — a specific, niche-tailored content idea (NOT a generic template)
+2. "category" — one of the 6 categories
+3. "reason" — why this specific idea works for this creator's audience and goals
+4. "source" — one of "niche_fit", "trending", "competitor_gap", "content_gap", "top_performer", "audience_need"
+5. "variables" — object with: "instruction" (formatting/structure guidance), "recommended_format" ("single_tweet" or "thread"), "goal" (which goal this serves), "hashtags_hint" (optional relevant hashtags)
 
 Return ONLY valid JSON:
 {
   "prompts": [
     {
-      "prompt_text": "string — the tweet template with {placeholders}",
+      "prompt_text": "string — specific content idea referencing the creator's actual niche and topics",
       "category": "string — one of the 6 categories",
       "reason": "string — why this works for this specific creator",
       "source": "string — niche_fit | trending | competitor_gap | content_gap | top_performer | audience_need",
-      "variables": { "key": "description of what to fill in" }
+      "variables": {
+        "instruction": "string — formatting/structural guidance for generating the tweet",
+        "recommended_format": "single_tweet | thread",
+        "goal": "string — which creator goal this serves",
+        "hashtags_hint": "string — optional relevant hashtags"
+      }
     }
   ]
 }`;
@@ -953,6 +978,14 @@ Return ONLY valid JSON:
       [strategyId]
     );
 
+    // Mark strategy as active + basic_profile_completed BEFORE prompt generation.
+    // This way, even if prompt generation fails, the user won't be stuck on the
+    // setup screen — they can retry prompts from the Strategy Builder tabs.
+    await pool.query(
+      `UPDATE user_strategies SET status = 'active', metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify({ basic_profile_completed: true, basic_profile_completed_at: new Date().toISOString() }), strategyId]
+    );
+
     const analysisData = typeof analysis.analysis_data === 'string'
       ? JSON.parse(analysis.analysis_data)
       : analysis.analysis_data || {};
@@ -1003,12 +1036,11 @@ Return ONLY valid JSON:
       );
     }
 
-    // Mark strategy as active
+    // Update prompt generation metadata (strategy already marked active above)
     await pool.query(
-      `UPDATE user_strategies SET status = 'active', metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2`,
+      `UPDATE user_strategies SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2`,
       [
         JSON.stringify({
-          basic_profile_completed: true,
           analysis_prompts_generated: true,
           analysis_prompts_generated_at: new Date().toISOString(),
           prompt_count: prompts.length,
@@ -1189,12 +1221,17 @@ Return ONLY valid JSON:
       },
       {
         headers: { 'Content-Type': 'application/json' },
-        timeout: 60000,
+        timeout: 90000,
       }
     );
 
-    const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    console.log(`[ProfileAnalysis][Gemini] Response received in ${Date.now() - start}ms, content length: ${content?.length || 0}`);
+    const candidate = response.data.candidates?.[0];
+    const content = candidate?.content?.parts?.[0]?.text?.trim();
+    const finishReason = candidate?.finishReason;
+    console.log(`[ProfileAnalysis][Gemini] Response received in ${Date.now() - start}ms, content length: ${content?.length || 0}, finishReason: ${finishReason}`);
+    if (finishReason === 'MAX_TOKENS') {
+      console.warn(`[ProfileAnalysis][Gemini] ⚠️ Response was truncated (hit maxOutputTokens=${maxTokens}) — parser will attempt to salvage`);
+    }
     if (!content) {
       console.error(`[ProfileAnalysis][Gemini] Empty response! Full response:`, JSON.stringify(response.data).substring(0, 500));
       throw new Error('Empty response from Gemini');
@@ -1236,6 +1273,12 @@ Return ONLY valid JSON:
           try {
             return JSON.parse(repaired);
           } catch (thirdError) {
+            // Truncated JSON — try to salvage complete array entries
+            const salvaged = this.salvageTruncatedPrompts(cleaned);
+            if (salvaged) {
+              console.log(`[ProfileAnalysis][Parse] Salvaged ${salvaged.prompts?.length || 0} prompts from truncated response`);
+              return salvaged;
+            }
             console.error(`[ProfileAnalysis][Parse] All repair attempts failed. Original error:`, firstError.message);
             console.error(`[ProfileAnalysis][Parse] Text preview:`, cleaned.substring(0, 500));
             throw new Error('Failed to parse Gemini JSON response after repair attempts');
@@ -1243,6 +1286,55 @@ Return ONLY valid JSON:
         }
       }
       throw new Error('Failed to parse Gemini JSON response');
+    }
+  }
+
+  /**
+   * When Gemini truncates a JSON response mid-stream (e.g. hit maxOutputTokens),
+   * salvage as many complete prompt entries as possible from the partial JSON.
+   */
+  salvageTruncatedPrompts(text) {
+    try {
+      // Find all complete prompt objects using a regex that matches balanced braces
+      // Each prompt object pattern: { "prompt_text": ..., "variables": { ... } }
+      const prompts = [];
+      // Match individual prompt objects by finding segments between array commas
+      const promptsArrayMatch = text.match(/"prompts"\s*:\s*\[([\s\S]*)/i);
+      if (!promptsArrayMatch) return null;
+
+      const arrayContent = promptsArrayMatch[1];
+      // Split on top-level }\s*, pattern (end of one object, comma, start of next)
+      let depth = 0;
+      let currentStart = -1;
+
+      for (let i = 0; i < arrayContent.length; i++) {
+        const ch = arrayContent[i];
+        if (ch === '{') {
+          if (depth === 0) currentStart = i;
+          depth++;
+        } else if (ch === '}') {
+          depth--;
+          if (depth === 0 && currentStart !== -1) {
+            const candidate = arrayContent.substring(currentStart, i + 1);
+            try {
+              const parsed = JSON.parse(candidate);
+              if (parsed.prompt_text && parsed.category) {
+                prompts.push(parsed);
+              }
+            } catch {
+              // Skip malformed entry
+            }
+            currentStart = -1;
+          }
+        }
+      }
+
+      if (prompts.length > 0) {
+        return { prompts };
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 

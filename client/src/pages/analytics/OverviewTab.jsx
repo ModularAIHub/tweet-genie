@@ -1,5 +1,5 @@
 import React from 'react';
-import { BarChart3, ExternalLink, Eye, Heart, Lock, MessageCircle, Repeat2 } from 'lucide-react';
+import { BarChart3, ExternalLink, Eye, Heart, Lock, MessageCircle, Repeat2, Sparkles } from 'lucide-react';
 import { getSuiteGenieProUpgradeUrl } from '../../utils/upgradeUrl';
 import {
   Area,
@@ -57,6 +57,8 @@ const OverviewTab = ({
   skippedTweetIds,
   refreshingTweetIds = new Set(),
   onForceCheckTweet = null,
+  onRepurposeTweet = null,
+  repurposingTweetIds = new Set(),
 }) => {
   const upgradeUrl = getSuiteGenieProUpgradeUrl();
   return (
@@ -256,6 +258,21 @@ const OverviewTab = ({
                             View on X
                             <ExternalLink className="h-3 w-3" />
                           </a>
+                        )}
+                        {isProPlan && onRepurposeTweet && index < 5 && (
+                          <button
+                            type="button"
+                            onClick={() => onRepurposeTweet(tweet.id)}
+                            disabled={repurposingTweetIds.has(tweet.id)}
+                            className={`inline-flex items-center gap-1 px-2 py-1 rounded border ${
+                              repurposingTweetIds.has(tweet.id)
+                                ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                                : 'border-purple-200 text-purple-600 hover:bg-purple-50'
+                            }`}
+                          >
+                            <Sparkles className="h-3 w-3" />
+                            {repurposingTweetIds.has(tweet.id) ? 'Repurposing...' : 'Repurpose'}
+                          </button>
                         )}
                       </div>
                     </div>

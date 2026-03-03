@@ -1,6 +1,7 @@
 import http from 'http';
 import dotenv from 'dotenv';
 import { startDbScheduledTweetWorker, stopDbScheduledTweetWorker } from './workers/dbScheduledTweetWorker.js';
+import { startAutopilotWorker, stopAutopilotWorker } from './workers/autopilotWorker.js';
 
 dotenv.config();
 
@@ -15,6 +16,7 @@ http.createServer((req, res) => {
 const shutdown = (signal) => {
   console.log(`[Tweet Worker] Shutdown signal received: ${signal}`);
   stopDbScheduledTweetWorker();
+  stopAutopilotWorker();
   process.exit(0);
 };
 
@@ -26,6 +28,16 @@ startDbScheduledTweetWorker()
     console.log('[Tweet Worker] Scheduled tweet worker started');
   })
   .catch((error) => {
-    console.error('[Tweet Worker] Failed to start:', error);
+    console.error('[Tweet Worker] Failed to start scheduled tweet worker:', error);
     process.exit(1);
   });
+
+// Autopilot worker runs independently — fills content queues for enabled strategies.
+// Uses DB pool directly, no HTTP auth required, so it works even when users are logged out.
+try {
+  startAutopilotWorker();
+  console.log('[Tweet Worker] Autopilot worker started');
+} catch (error) {
+  console.error('[Tweet Worker] Failed to start autopilot worker:', error);
+  // Non-fatal — scheduled tweet processing can still continue
+}

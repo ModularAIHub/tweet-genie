@@ -24,6 +24,7 @@ import api, { analytics as analyticsAPI } from '../utils/api';
 import { hasProPlanAccess } from '../utils/planAccess';
 import { getSuiteGenieProUpgradeUrl } from '../utils/upgradeUrl';
 import toast from 'react-hot-toast';
+import { repurpose as repurposeAPI } from '../utils/api';
 import {
   buildAiInsights,
   buildAudienceSummary,
@@ -139,6 +140,7 @@ const Analytics = () => {
   const [syncSummary, setSyncSummary] = useState(null);
   const [isDisconnected, setIsDisconnected] = useState(false);
   const [refreshingTweetIds, setRefreshingTweetIds] = useState(new Set());
+  const [repurposingTweetIds, setRepurposingTweetIds] = useState(new Set());
   const syncInFlightRef = useRef(false);
   const hasServerProPlan = analyticsData?.plan?.pro === true;
   const isServerPlanResolved = analyticsData?.plan?.pro === true || analyticsData?.plan?.pro === false;
@@ -516,6 +518,30 @@ const Analytics = () => {
       setRefreshingTweetIds((prev) => {
         const next = new Set(prev);
         next.delete(tweetDbId);
+        return next;
+      });
+    }
+  };
+
+  const handleRepurposeTweet = async (tweetId) => {
+    if (!tweetId || repurposingTweetIds.has(tweetId)) return;
+    if (!isProPlan) {
+      toast.error('Repurposing is available on Pro and above.');
+      return;
+    }
+
+    setRepurposingTweetIds((prev) => new Set([...prev, tweetId]));
+    try {
+      const response = await repurposeAPI.repurposeTweet(tweetId);
+      const count = response?.data?.items?.length || 0;
+      toast.success(`Created ${count} repurposed item${count !== 1 ? 's' : ''} in your review queue!`);
+    } catch (err) {
+      const msg = err?.response?.data?.error || 'Failed to repurpose tweet.';
+      toast.error(msg);
+    } finally {
+      setRepurposingTweetIds((prev) => {
+        const next = new Set(prev);
+        next.delete(tweetId);
         return next;
       });
     }
@@ -1043,6 +1069,8 @@ const Analytics = () => {
             skippedTweetIds={skippedTweetIds}
             refreshingTweetIds={refreshingTweetIds}
             onForceCheckTweet={forceRefreshTweetMetrics}
+            onRepurposeTweet={handleRepurposeTweet}
+            repurposingTweetIds={repurposingTweetIds}
           />
         )}
 

@@ -457,7 +457,9 @@ app.use(
   validateTwitterConnection,
   strategyAnalyticsRoutes
 );
-app.use('/api/autopilot', authenticateToken, validateTwitterConnection, autopilotRoutes);
+// Autopilot config routes don't need Twitter connection validation — only the
+// background worker (which reads tokens from DB) needs valid Twitter credentials.
+app.use('/api/autopilot', authenticateToken, autopilotRoutes);
 app.use('/api/content-review', contentReviewRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
@@ -496,6 +498,25 @@ app.post('/api/cron/scheduler', async (req, res) => {
     return res.json({ ok: true });
   } catch (error) {
     console.error('[SchedulerCron] Tick failed:', error?.message || error);
+    return res.status(500).json({ ok: false, error: error?.message || 'unknown_error' });
+  }
+});
+
+// Vercel/QStash Cron trigger for autopilot queue filling.
+// Should be called every hour. Auth via CRON_SECRET.
+app.post('/api/cron/autopilot', async (req, res) => {
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  const authHeader = req.headers['authorization'] || '';
+  const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (authHeader || req.query.secret || '');
+  if (!cronSecret || providedToken !== cronSecret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const { processAutopilotStrategies } = await import('./workers/autopilotWorker.js');
+    await processAutopilotStrategies();
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('[AutopilotCron] Tick failed:', error?.message || error);
     return res.status(500).json({ ok: false, error: error?.message || 'unknown_error' });
   }
 });

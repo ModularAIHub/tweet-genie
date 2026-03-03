@@ -3,6 +3,7 @@ import pool from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { requireProPlan } from '../middleware/planAccess.js';
 import { weeklyContentService } from '../services/weeklyContentService.js';
+import { creditService } from '../services/creditService.js';
 
 const router = express.Router();
 
@@ -42,12 +43,23 @@ async function scheduleContentItem(userId, item, overrideTime, overrideTz) {
     return { ok: false, error: `Maximum ${MAX_SCHEDULED_PER_USER} scheduled tweets allowed` };
   }
 
+  // Detect threads: split on --- separator
+  const rawContent = item.content || '';
+  const threadParts = rawContent.split(/---+/).map(p => p.trim()).filter(Boolean);
+  const isThread = threadParts.length > 1;
+  const mainContent = isThread ? threadParts[0] : rawContent;
+  const threadTweets = isThread ? threadParts.slice(1).map(p => ({ content: p })) : null;
+
+  // Determine source from the queue item (preserves 'autopilot' origin)
+  const source = item.source || 'manual';
+  const strategyId = item.strategy_id || null;
+
   // Insert into scheduled_tweets with proper columns
   const { rows: [scheduledTweet] } = await pool.query(
-    `INSERT INTO scheduled_tweets (user_id, content, scheduled_for, timezone, status, approval_status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'pending', 'approved', NOW(), NOW())
+    `INSERT INTO scheduled_tweets (user_id, content, thread_tweets, scheduled_for, timezone, status, approval_status, source, autopilot_strategy_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, 'pending', 'approved', $6, $7, NOW(), NOW())
      RETURNING id`,
-    [userId, item.content, scheduledDate.toISOString(), tz]
+    [userId, mainContent, isThread ? JSON.stringify(threadTweets) : null, scheduledDate.toISOString(), tz, source, source === 'autopilot' ? strategyId : null]
   );
 
   // Mark queue item as scheduled
@@ -112,22 +124,39 @@ router.post('/generate', async (req, res) => {
       return res.status(404).json({ error: 'Active strategy not found' });
     }
 
-    // Check throttle — max 2 generations per strategy per day
+    // Check throttle — max 14 non-rejected items per strategy per day
     const { rows: [recentCount] } = await pool.query(
       `SELECT COUNT(*) AS cnt FROM content_review_queue
        WHERE user_id = $1 AND strategy_id = $2
-         AND source IN ('manual_generation', 'strategy_completion')
+         AND status != 'rejected'
          AND created_at > NOW() - INTERVAL '24 hours'`,
       [userId, strategy_id]
     );
 
     if (parseInt(recentCount.cnt) >= 14) {
       return res.status(429).json({
-        error: 'You already generated content for this strategy recently. Try again later.',
+        error: 'You already have enough content for today. Try again later.',
       });
     }
 
-    const result = await weeklyContentService.generateForUser(userId, strategy_id);
+    // 5 credits for weekly content generation (7 AI tweets at a discount)
+    const creditResult = await creditService.checkAndDeductCredits(userId, 'weekly_content_generation', 5);
+    if (!creditResult.success) {
+      return res.status(402).json({
+        error: 'Insufficient credits. 5 credits required for weekly content generation.',
+        available: creditResult.available,
+        required: 5,
+      });
+    }
+
+    let result;
+    try {
+      result = await weeklyContentService.generateForUser(userId, strategy_id);
+    } catch (genError) {
+      // Refund credits on failure
+      try { await creditService.refundCredits(userId, 'weekly_content_generation_failed', 5); } catch {}
+      throw genError;
+    }
     res.json({
       message: `Generated ${result.count} content items`,
       count: result.count,
@@ -346,6 +375,49 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('[ContentReview] DELETE /:id error:', error.message);
     res.status(500).json({ error: 'Failed to delete item' });
+  }
+});
+
+// ─── Phase 6: Repurpose a tweet ──────────────────────────────────────────
+router.post('/repurpose/:tweetId', authenticateToken, requireProPlan, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { tweetId } = req.params;
+    const { formats } = req.body; // optional: ['linkedin', 'thread', 'alternatives']
+
+    // Credit check: 3 credits for repurposing
+    const REPURPOSE_CREDITS = 3;
+    const canAfford = await creditService.canAfford(userId, REPURPOSE_CREDITS);
+    if (!canAfford) {
+      return res.status(402).json({ error: 'Insufficient credits', credits_required: REPURPOSE_CREDITS });
+    }
+
+    // Deduct credits
+    await creditService.deductCredits(userId, REPURPOSE_CREDITS, 'repurpose_tweet', {
+      tweet_id: tweetId,
+      formats: formats || ['linkedin', 'thread', 'alternatives'],
+    });
+
+    try {
+      const { repurposeService } = await import('../services/repurposeService.js');
+      const result = await repurposeService.repurposeTweet(userId, tweetId, { formats });
+
+      res.json({
+        success: true,
+        message: `Generated ${result.count} repurposed item(s) — they're in your review queue`,
+        data: result,
+      });
+    } catch (repurposeError) {
+      // Refund credits on failure
+      await creditService.addCredits(userId, REPURPOSE_CREDITS, 'repurpose_refund', {
+        tweet_id: tweetId,
+        error: repurposeError.message,
+      });
+      throw repurposeError;
+    }
+  } catch (error) {
+    console.error('[ContentReview] POST /repurpose/:tweetId error:', error.message);
+    res.status(500).json({ error: error.message || 'Failed to repurpose tweet' });
   }
 });
 
