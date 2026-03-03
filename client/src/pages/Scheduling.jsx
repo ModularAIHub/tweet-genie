@@ -257,6 +257,76 @@ function DayCell({ date, items, onDrop, onDragOver, onItemClick, onDragStart, is
   );
 }
 
+// ─── Mobile agenda day card ─────────────────────────────────────────────
+function MobileAgendaDay({ date, items, onItemClick, isCurrentMonth }) {
+  const today = isToday(date);
+  const past = isPast(date);
+  const hasGap = items.length === 0 && !past;
+  const dayName = DAY_NAMES[date.getDay()];
+
+  return (
+    <div className={`rounded-xl border transition-colors overflow-hidden
+      ${today ? 'ring-2 ring-blue-300 border-blue-200' : 'border-gray-200'}
+      ${!isCurrentMonth ? 'opacity-50' : ''}
+      ${hasGap ? 'border-amber-200 bg-amber-50/30' : 'bg-white'}`}
+    >
+      {/* Day header */}
+      <div className={`flex items-center justify-between px-3 py-2 border-b
+        ${today ? 'bg-blue-50' : 'bg-gray-50'}`}
+      >
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-semibold uppercase tracking-wide
+            ${today ? 'text-blue-600' : past ? 'text-gray-400' : 'text-gray-500'}`}>
+            {dayName}
+          </span>
+          <span className={`text-sm font-bold
+            ${today ? 'bg-blue-600 text-white w-6 h-6 rounded-full flex items-center justify-center' : ''}
+            ${!isCurrentMonth ? 'text-gray-400' : 'text-gray-800'}
+            ${past && !today ? 'text-gray-400' : ''}`}>
+            {date.getDate()}
+          </span>
+          {today && <span className="text-[10px] font-medium text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">Today</span>}
+        </div>
+        {hasGap && <span className="text-[10px] text-amber-600 font-medium bg-amber-100 px-1.5 py-0.5 rounded">No content</span>}
+        {items.length > 0 && <span className="text-[10px] text-gray-500">{items.length} item{items.length !== 1 ? 's' : ''}</span>}
+      </div>
+      {/* Items */}
+      {items.length > 0 && (
+        <div className="divide-y divide-gray-100">
+          {items.map((item) => {
+            const cfg = CAL_STATUS[item._calendarStatus] || CAL_STATUS.pending;
+            const isReview = item._isReviewItem;
+            const isThread = isThreadItem(item);
+            const CfgIcon = cfg.icon;
+            return (
+              <div
+                key={item._calendarId}
+                onClick={() => onItemClick(item)}
+                className="flex items-start gap-3 px-3 py-2.5 cursor-pointer active:bg-gray-50 transition-colors"
+              >
+                <span className={`mt-1 w-2 h-2 rounded-full flex-shrink-0 ${cfg.dot}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                    <span className="text-[11px] text-gray-500">{shortTime(item.scheduled_for || item.suggested_time, item.timezone)}</span>
+                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${cfg.text}`}>
+                      <CfgIcon className="w-3 h-3" />{cfg.label}
+                    </span>
+                    {isThread && <span className="text-[10px] font-semibold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">Thread</span>}
+                    {isReview && <span className="text-[10px] font-semibold bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">Review</span>}
+                    {item.source === 'autopilot' && <span className="text-[10px] font-semibold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">AP</span>}
+                  </div>
+                  <p className="text-sm text-gray-800 leading-snug line-clamp-2">{item.content}</p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-gray-300 flex-shrink-0 mt-1" />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DetailModal({ item, onClose, onReschedule, onCancel, onApprove, onReject, onRetry }) {
   const [newDate, setNewDate] = useState('');
   const [newTime, setNewTime] = useState('');
@@ -274,8 +344,8 @@ function DetailModal({ item, onClose, onReschedule, onCancel, onApprove, onRejec
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[80vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-t-xl sm:rounded-xl shadow-2xl max-w-lg w-full sm:mx-4 max-h-[85vh] sm:max-h-[80vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className={`px-5 py-3 rounded-t-xl ${cfg.bg} ${cfg.border} border-b flex items-center justify-between`}>
           <div className="flex items-center gap-2">
             <CfgIcon className={`w-4 h-4 ${cfg.text}`} />
@@ -761,11 +831,12 @@ const Scheduling = () => {
               <button
                 key={value}
                 onClick={() => setViewMode(value)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5
+                className={`px-2 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5
                   ${viewMode === value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                title={label}
               >
                 <VIcon className="w-3.5 h-3.5" />
-                {label}
+                <span className="hidden sm:inline">{label}</span>
               </button>
             ))}
           </div>
@@ -934,20 +1005,20 @@ const Scheduling = () => {
           </div>
 
           {/* Calendar toolbar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-xl border shadow-sm">
-            <div className="flex items-center gap-2">
-              <button onClick={() => navigateCal(-1)} className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                <ChevronLeft className="w-4 h-4" />
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center justify-between gap-2 sm:gap-3 bg-white p-3 rounded-xl border shadow-sm">
+            <div className="flex items-center justify-between sm:justify-start gap-1 sm:gap-2">
+              <button onClick={() => navigateCal(-1)} className="p-2 sm:p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
+                <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4" />
               </button>
               <button onClick={() => setCurrentDate(new Date())} className="px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
                 Today
               </button>
-              <span className="text-sm font-semibold text-gray-800 min-w-[180px] text-center">{calHeaderText}</span>
-              <button onClick={() => navigateCal(1)} className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                <ChevronRight className="w-4 h-4" />
+              <span className="text-sm font-semibold text-gray-800 text-center flex-1 sm:flex-none sm:min-w-[180px]">{calHeaderText}</span>
+              <button onClick={() => navigateCal(1)} className="p-2 sm:p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
+                <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4" />
               </button>
             </div>
-            <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+            <label className="flex items-center justify-center sm:justify-start gap-2 text-xs text-gray-600 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={showReviewItems}
@@ -959,8 +1030,8 @@ const Scheduling = () => {
             </label>
           </div>
 
-          {/* Calendar grid */}
-          <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+          {/* Desktop calendar grid (hidden on mobile) */}
+          <div className="hidden sm:block bg-white rounded-xl border shadow-sm overflow-hidden">
             <div className="grid grid-cols-7 bg-gray-50 border-b">
               {DAY_NAMES.map((n) => (
                 <div key={n} className="text-center text-xs font-semibold text-gray-500 py-2 border-r last:border-r-0">{n}</div>
@@ -982,8 +1053,25 @@ const Scheduling = () => {
             </div>
           </div>
 
+          {/* Mobile agenda view (visible only on mobile) */}
+          <div className="sm:hidden space-y-2">
+            {calDays.map((date) => {
+              const key = formatDateKey(date);
+              const items = itemsByDate[key] || [];
+              const isCurrentMonth = viewMode === 'week' || date.getMonth() === currentDate.getMonth();
+              // In month view on mobile, skip empty days from other months to reduce clutter
+              if (viewMode === 'month' && !isCurrentMonth && items.length === 0) return null;
+              return (
+                <MobileAgendaDay
+                  key={key} date={date} items={items}
+                  onItemClick={setSelectedItem} isCurrentMonth={isCurrentMonth}
+                />
+              );
+            })}
+          </div>
+
           {/* Legend */}
-          <div className="flex flex-wrap items-center gap-4 text-[11px] text-gray-500">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4 text-[11px] text-gray-500">
             <span className="font-medium text-gray-600">Legend:</span>
             {Object.entries(CAL_STATUS).map(([key, cfg]) => (
               <span key={key} className="flex items-center gap-1">
