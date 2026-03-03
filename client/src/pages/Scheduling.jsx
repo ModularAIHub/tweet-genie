@@ -415,6 +415,36 @@ const Scheduling = () => {
   accountAPIRef.current = accountAPI;
   const fetchErrorCountRef = useRef(0);
 
+  // ─── Rate-limit / cooldown for reschedule actions (drag-drop + modal) ──
+  const RESCHEDULE_COOLDOWN_MS = 2000; // 2 seconds between reschedule actions
+  const lastRescheduleRef = useRef(0);
+  const rescheduleCountRef = useRef(0);
+  const rescheduleWindowRef = useRef(Date.now());
+  const RESCHEDULE_MAX_BURST = 6; // max 6 reschedules per 30 s window
+  const RESCHEDULE_WINDOW_MS = 30_000;
+
+  const checkRescheduleThrottle = () => {
+    const now = Date.now();
+    // Reset window if expired
+    if (now - rescheduleWindowRef.current > RESCHEDULE_WINDOW_MS) {
+      rescheduleCountRef.current = 0;
+      rescheduleWindowRef.current = now;
+    }
+    // Check burst limit
+    if (rescheduleCountRef.current >= RESCHEDULE_MAX_BURST) {
+      toast.error('Too many reschedule actions — please slow down');
+      return false;
+    }
+    // Check cooldown
+    if (now - lastRescheduleRef.current < RESCHEDULE_COOLDOWN_MS) {
+      toast.error('Please wait a moment before rescheduling again');
+      return false;
+    }
+    lastRescheduleRef.current = now;
+    rescheduleCountRef.current += 1;
+    return true;
+  };
+
   // Persist view mode + filter
   useEffect(() => { localStorage.setItem('schedulingViewMode', viewMode); }, [viewMode]);
   useEffect(() => {
@@ -579,6 +609,7 @@ const Scheduling = () => {
     const item = dragItemRef.current;
     dragItemRef.current = null;
     if (!item) return;
+    if (!checkRescheduleThrottle()) return;
     const orig = new Date(item.scheduled_for || item.suggested_time);
     const newDT = new Date(targetDate);
     newDT.setHours(orig.getHours(), orig.getMinutes(), 0, 0);
@@ -622,6 +653,7 @@ const Scheduling = () => {
   };
 
   const handleReschedule = async (item, dateTime) => {
+    if (!checkRescheduleThrottle()) return;
     // Validate the new time is in the future
     const newDT = new Date(dateTime);
     if (isNaN(newDT.getTime())) { toast.error('Invalid date/time'); return; }

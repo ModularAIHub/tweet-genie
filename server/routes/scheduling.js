@@ -4,6 +4,7 @@ import { validateRequest, scheduleSchema, rescheduleSchema } from '../middleware
 import { validateTwitterConnection } from '../middleware/auth.js';
 import { resolveTwitterScope } from '../utils/twitterScopeResolver.js';
 import { getDbScheduledTweetWorkerStatus } from '../workers/dbScheduledTweetWorker.js';
+import { schedulingRateLimit } from '../middleware/rateLimit.js';
 import moment from 'moment-timezone';
 
 const router = express.Router();
@@ -1244,7 +1245,7 @@ async function handleScheduledTweetsList(req, res) {
 router.get('/scheduled', handleScheduledTweetsList);
 
 // Bulk schedule drafts
-router.post('/bulk', validateTwitterConnection, async (req, res) => {
+router.post('/bulk', schedulingRateLimit, validateTwitterConnection, async (req, res) => {
   try {
     const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone = 'UTC' } = req.body;
     const userId = req.user.id;
@@ -1475,7 +1476,7 @@ router.post('/bulk', validateTwitterConnection, async (req, res) => {
 });
 
 // Schedule a tweet
-router.post('/', validateRequest(scheduleSchema), validateTwitterConnection, async (req, res) => {
+router.post('/', schedulingRateLimit, validateRequest(scheduleSchema), validateTwitterConnection, async (req, res) => {
   try {
     const {
       content,
@@ -1925,7 +1926,7 @@ router.get('/status', async (req, res) => {
 router.get('/', handleScheduledTweetsList);
 
 // Retry a failed scheduled tweet immediately (LinkedIn parity endpoint)
-router.post('/retry', async (req, res) => {
+router.post('/retry', schedulingRateLimit, async (req, res) => {
   try {
     const userId = req.user.id;
     const teamId = req.headers['x-team-id'] || null;
@@ -2055,7 +2056,7 @@ router.post('/retry', async (req, res) => {
 });
 
 // Cancel scheduled tweet
-router.delete('/:scheduleId', async (req, res) => {
+router.delete('/:scheduleId', schedulingRateLimit, async (req, res) => {
   try {
     const { scheduleId } = req.params;
     const userId = req.user.id;
@@ -2115,7 +2116,7 @@ router.delete('/:scheduleId', async (req, res) => {
 });
 
 // Update scheduled time
-router.put('/:scheduleId', validateRequest(rescheduleSchema), async (req, res) => {
+router.put('/:scheduleId', schedulingRateLimit, validateRequest(rescheduleSchema), async (req, res) => {
   try {
     const { scheduleId } = req.params;
     const { scheduled_for, timezone = 'UTC' } = req.body;

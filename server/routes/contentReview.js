@@ -2,6 +2,7 @@ import express from 'express';
 import pool from '../config/database.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { requireProPlan } from '../middleware/planAccess.js';
+import { contentReviewRateLimit } from '../middleware/rateLimit.js';
 import { weeklyContentService } from '../services/weeklyContentService.js';
 import { creditService } from '../services/creditService.js';
 
@@ -169,7 +170,7 @@ router.post('/generate', async (req, res) => {
 });
 
 // ─── PATCH /api/content-review/:id — Update (edit content) ──────────────
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', contentReviewRateLimit, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -196,7 +197,7 @@ router.patch('/:id', async (req, res) => {
 });
 
 // ─── POST /api/content-review/:id/approve — Approve + auto-schedule ────
-router.post('/:id/approve', async (req, res) => {
+router.post('/:id/approve', contentReviewRateLimit, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -226,7 +227,7 @@ router.post('/:id/approve', async (req, res) => {
 });
 
 // ─── POST /api/content-review/:id/reject — Reject single item ──────────
-router.post('/:id/reject', async (req, res) => {
+router.post('/:id/reject', contentReviewRateLimit, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -244,7 +245,7 @@ router.post('/:id/reject', async (req, res) => {
 });
 
 // ─── POST /api/content-review/:id/schedule — Approve + schedule ────────
-router.post('/:id/schedule', async (req, res) => {
+router.post('/:id/schedule', contentReviewRateLimit, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -277,7 +278,7 @@ router.post('/:id/schedule', async (req, res) => {
 });
 
 // ─── POST /api/content-review/batch-approve — Batch approve + auto-schedule ──
-router.post('/batch-approve', async (req, res) => {
+router.post('/batch-approve', contentReviewRateLimit, async (req, res) => {
   try {
     const userId = req.user.id;
     const { item_ids } = req.body;
@@ -314,7 +315,7 @@ router.post('/batch-approve', async (req, res) => {
 });
 
 // ─── POST /api/content-review/batch-schedule — Batch schedule items ────
-router.post('/batch-schedule', async (req, res) => {
+router.post('/batch-schedule', contentReviewRateLimit, async (req, res) => {
   try {
     const userId = req.user.id;
     const { item_ids } = req.body;
@@ -357,7 +358,7 @@ router.post('/batch-schedule', async (req, res) => {
 });
 
 // ─── DELETE /api/content-review/:id — Remove item from queue ────────────
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', contentReviewRateLimit, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
