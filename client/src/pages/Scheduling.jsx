@@ -162,11 +162,21 @@ const getStatusBadge = (status) => {
 const readJsonSafely = async (response) => { try { return await response.json(); } catch { return {}; } };
 
 // ─── Thread helpers ──────────────────────────────────────────────────────
+// Returns { mainContent, replies[] } or null
 function getThreadParts(item) {
+  // 1) Check thread_tweets JSON (scheduled_tweets table)
   let parts = item?.thread_tweets;
   if (typeof parts === 'string') { try { parts = JSON.parse(parts); } catch { parts = null; } }
-  if (!Array.isArray(parts) || parts.length === 0) return null;
-  return parts;
+  if (Array.isArray(parts) && parts.length > 0) {
+    return { mainContent: item.content, replies: parts };
+  }
+  // 2) Fallback: detect --- separators in raw content (CRQ / review-queue items)
+  const raw = item?.content || '';
+  const rawParts = raw.split(/\n*---+\n*/).map(p => p.trim()).filter(Boolean);
+  if (rawParts.length > 1) {
+    return { mainContent: rawParts[0], replies: rawParts.slice(1).map(p => ({ content: p })) };
+  }
+  return null;
 }
 function isThreadItem(item) {
   return !!getThreadParts(item);
@@ -277,21 +287,22 @@ function DetailModal({ item, onClose, onReschedule, onCancel, onApprove, onRejec
 
         <div className="p-5 space-y-4">
           {(() => {
-            const threadParts = getThreadParts(item);
-            if (threadParts && threadParts.length > 0) {
+            const threadData = getThreadParts(item);
+            if (threadData && threadData.replies.length > 0) {
+              const total = threadData.replies.length + 1;
               return (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 mb-1">
                     <Layers className="w-4 h-4 text-purple-600" />
-                    <span className="text-xs font-semibold text-purple-700">Thread · {threadParts.length + 1} tweets</span>
+                    <span className="text-xs font-semibold text-purple-700">Thread · {total} tweets</span>
                   </div>
                   <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed border-l-4 border-blue-400">
-                    <span className="text-[10px] font-bold text-blue-600 block mb-1">1/{threadParts.length + 1}</span>
-                    {item.content}
+                    <span className="text-[10px] font-bold text-blue-600 block mb-1">1/{total}</span>
+                    {threadData.mainContent}
                   </div>
-                  {threadParts.map((part, i) => (
+                  {threadData.replies.map((part, i) => (
                     <div key={i} className="bg-gray-50 rounded-lg p-4 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed border-l-4 border-purple-300">
-                      <span className="text-[10px] font-bold text-purple-600 block mb-1">{i + 2}/{threadParts.length + 1}</span>
+                      <span className="text-[10px] font-bold text-purple-600 block mb-1">{i + 2}/{total}</span>
                       {typeof part === 'string' ? part : part?.content || ''}
                     </div>
                   ))}
@@ -808,7 +819,7 @@ const Scheduling = () => {
                                 <p className="text-sm text-gray-900 line-clamp-2 flex-1" title={tweet.content}>{tweet.content}</p>
                                 {isThreadItem(tweet) && (
                                   <span className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-purple-50 text-purple-700 border border-purple-200">
-                                    <Layers size={10} />Thread · {(getThreadParts(tweet)?.length || 0) + 1}
+                                    <Layers size={10} />Thread · {(getThreadParts(tweet)?.replies?.length || 0) + 1}
                                   </span>
                                 )}
                               </div>
