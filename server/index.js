@@ -512,8 +512,8 @@ app.post('/api/cron/autopilot', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
-    const { processAutopilotStrategies } = await import('./workers/autopilotWorker.js');
-    await processAutopilotStrategies();
+    const autopilotWorker = await import('./workers/autopilotWorker.js');
+    await autopilotWorker.default.processAutopilotStrategies();
     return res.json({ ok: true });
   } catch (error) {
     console.error('[AutopilotCron] Tick failed:', error?.message || error);
