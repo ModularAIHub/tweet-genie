@@ -177,7 +177,7 @@ class AIService {
     const trimmed = prompt.trim();
     
     if (trimmed.length < 5) throw new Error('Prompt too short');
-    if (trimmed.length > 2000) throw new Error('Prompt too long (max 2000 characters)');
+    if (trimmed.length > 10000) throw new Error('Prompt too long (max 10000 characters)');
     
     const dangerousPatterns = [
       /ignore\s+(all\s+)?previous\s+instructions/gi,
@@ -508,11 +508,13 @@ User request: ${prompt}`;
     } else {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-If user asks for "threads" without a number, generate 3-5 tweets separated by "---"
-Keep under 280 characters per tweet
-Include 1-3 relevant hashtags
-Use plain text only
-Write every piece of content completely — do not cut off mid-sentence.
+Generate engaging tweet content based on the request.
+- If the content naturally fits in a single tweet (under 260 characters), write ONE complete tweet
+- If the content requires more depth or multiple points, create a thread with 3-5 tweets separated by "---"
+- Keep each tweet under 280 characters
+- Include 1-3 relevant hashtags
+- Use plain text only
+- Write every piece of content completely — do not cut off mid-sentence
 
 User request: ${prompt}`;
     }
@@ -583,11 +585,12 @@ User request: ${prompt}`;
     } else {
       systemPrompt = `You are a Twitter content creator. Be ${stylePrompts[style] || 'casual and conversational'}.
 
-Generate tweet content based on the request
-If "threads" requested, generate 3-5 tweets separated by "---"
-Keep under 280 characters per tweet
-Include 1-3 relevant hashtags
-Write every piece of content completely — no unfinished sentences.
+Generate engaging tweet content based on the request.
+- If the content naturally fits in a single tweet (under 260 characters), write ONE complete tweet
+- If the content requires more depth or multiple points, create a thread with 3-5 tweets separated by "---"
+- Keep under 280 characters per tweet
+- Include 1-3 relevant hashtags
+- Write every piece of content completely — no unfinished sentences
 
 User request: ${prompt}`;
     }
@@ -689,11 +692,12 @@ User request: ${prompt}`;
     } else {
       systemPrompt = `You are a Twitter content creator. ${stylePrompts[style] || stylePrompts.casual}
 
-Generate tweet content based on request
-If "threads" requested, generate 3-5 tweets separated by "---"
-Keep under 280 characters per tweet
-Include 1-3 relevant hashtags
-Write every piece of content completely — no unfinished sentences.
+Generate engaging tweet content based on request.
+- If the content naturally fits in a single tweet (under 260 characters), write ONE complete tweet
+- If the content requires more depth or multiple points, create a thread with 3-5 tweets separated by "---"
+- Keep under 280 characters per tweet
+- Include 1-3 relevant hashtags
+- Write every piece of content completely — no unfinished sentences
 
 User request: ${prompt}`;
     }

@@ -11,7 +11,7 @@
     "db:setup": "node scripts/setup-db.js",
     "db:migrate": "node scripts/migrate.js",
     "db:seed": "node scripts/seed.js",
-    "test": "jest"
+    "test": "cross-env NODE_OPTIONS=--experimental-vm-modules npx jest"
   },
   "dependencies": {
     "@google/genai": "^1.16.0",
@@ -41,7 +41,9 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "jest": "^29.7.0",
+    "cross-env": "^10.1.0",
+    "fast-check": "^4.5.3",
+    "jest": "^30.2.0",
     "nodemon": "^3.0.1"
   }
 }

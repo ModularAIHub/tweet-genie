@@ -42,7 +42,7 @@ class CreditService {
         await client.query('BEGIN');
 
         const balanceResult = await client.query(
-          'SELECT credits_remaining FROM users WHERE id = $1 FOR UPDATE',
+          'SELECT credits_remaining FROM users WHERE id = $1::uuid FOR UPDATE',
           [userId]
         );
 
@@ -68,13 +68,13 @@ class CreditService {
 
         const newBalance = currentBalance - amount;
         await client.query(
-          'UPDATE users SET credits_remaining = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          'UPDATE users SET credits_remaining = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2::uuid',
           [newBalance, userId]
         );
 
         const transactionResult = await client.query(
           `INSERT INTO credit_transactions (id, user_id, type, credits_amount, description, created_at, service_name)
-           VALUES (gen_random_uuid(), $1, 'usage', $2, $3, CURRENT_TIMESTAMP, 'tweet-genie')
+           VALUES (gen_random_uuid(), $1::uuid, 'usage', $2, $3, CURRENT_TIMESTAMP, 'tweet-genie')
            RETURNING id`,
           [userId, -amount, `${operation} - ${amount} credits deducted`]
         );
@@ -113,7 +113,7 @@ class CreditService {
         await client.query('BEGIN');
 
         const balanceResult = await client.query(
-          'SELECT credits_remaining FROM users WHERE id = $1 FOR UPDATE',
+          'SELECT credits_remaining FROM users WHERE id = $1::uuid FOR UPDATE',
           [userId]
         );
 
@@ -125,13 +125,13 @@ class CreditService {
         const newBalance = currentBalance + amount;
 
         await client.query(
-          'UPDATE users SET credits_remaining = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          'UPDATE users SET credits_remaining = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2::uuid',
           [newBalance, userId]
         );
 
         const transactionResult = await client.query(
           `INSERT INTO credit_transactions (id, user_id, type, credits_amount, description, created_at, service_name)
-           VALUES (gen_random_uuid(), $1, 'purchase', $2, $3, CURRENT_TIMESTAMP, 'tweet-genie')
+           VALUES (gen_random_uuid(), $1::uuid, 'purchase', $2, $3, CURRENT_TIMESTAMP, 'tweet-genie')
            RETURNING id`,
           [userId, amount, `${operation} - ${amount} credits refunded`]
         );

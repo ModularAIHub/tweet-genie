@@ -119,7 +119,9 @@ export async function getNextOptimalPostingTime(strategyId, config) {
      * correctly converted to UTC (which is what the DB stores).
      */
     function createSlotDate(baseMoment, hour) {
-      return baseMoment.clone().startOf('day').hour(hour).toDate();
+      // Clone the moment, set to start of day, then set the hour and minute to 0
+      // This ensures we're at exactly the specified hour in the user's timezone
+      return baseMoment.clone().startOf('day').hour(hour).minute(0).second(0).millisecond(0).toDate();
     }
 
     if (config.use_optimal_times) {
@@ -160,7 +162,7 @@ export async function getNextOptimalPostingTime(strategyId, config) {
               // Also check scheduled_tweets to avoid double-booking
               const scheduledResult = await pool.query(
                 `SELECT id FROM scheduled_tweets 
-                 WHERE user_id = (SELECT user_id FROM user_strategies WHERE id = $1)
+                 WHERE user_id = (SELECT user_id FROM user_strategies WHERE id = $1::uuid)
                    AND scheduled_for BETWEEN $2 AND $3
                    AND status = 'pending'`,
                 [strategyId, new Date(slotTime.getTime() - 30*60000), new Date(slotTime.getTime() + 30*60000)]
@@ -196,7 +198,9 @@ export async function getNextOptimalPostingTime(strategyId, config) {
     const nowMoment = moment.tz(userTz);
     const now = nowMoment.toDate();
     
-    console.log(`[Autopilot] Custom hours path: hours=${JSON.stringify(customHours)}, tz=${userTz}, use_optimal=${config.use_optimal_times}`);
+    console.log(`[Autopilot] Custom hours path: hours=${JSON.stringify(customHours)}, tz=${userTz}, use_optimal=${config.use_optimal_times}, postsPerDay=${postsPerDay}`);
+    console.log(`[Autopilot] Current time in ${userTz}: ${nowMoment.format('YYYY-MM-DD HH:mm:ss Z')}`);
+    
     
     // Check up to 14 days ahead to find an open slot
     for (let daysAhead = 0; daysAhead < 14; daysAhead++) {
@@ -205,7 +209,15 @@ export async function getNextOptimalPostingTime(strategyId, config) {
       for (const hour of customHours) {
         const slotTime = createSlotDate(checkMoment, hour);
         
-        if (slotTime <= now) continue; // Skip past times
+        // Debug logging
+        const slotMomentInUserTz = moment(slotTime).tz(userTz);
+        const slotMomentInUTC = moment(slotTime).utc();
+        console.log(`[Autopilot] Checking slot: day+${daysAhead}, hour=${hour}, ${slotMomentInUserTz.format('YYYY-MM-DD HH:mm:ss Z')} (${slotMomentInUTC.format('HH:mm')} UTC), ISO=${slotTime.toISOString()}`);
+        
+        if (slotTime <= now) {
+          console.log(`[Autopilot]   ❌ Skipped - in the past`);
+          continue; // Skip past times
+        }
         
         // Check if this slot is already taken (within ±30 min window)
         const existingResult = await pool.query(
@@ -219,14 +231,17 @@ export async function getNextOptimalPostingTime(strategyId, config) {
         // Also check scheduled_tweets to avoid double-booking
         const scheduledResult = await pool.query(
           `SELECT id FROM scheduled_tweets 
-           WHERE user_id = (SELECT user_id FROM user_strategies WHERE id = $1)
+           WHERE user_id = (SELECT user_id FROM user_strategies WHERE id = $1::uuid)
              AND scheduled_for BETWEEN $2 AND $3
              AND status = 'pending'`,
           [strategyId, new Date(slotTime.getTime() - 30*60000), new Date(slotTime.getTime() + 30*60000)]
         );
         
         if (existingResult.rows.length === 0 && scheduledResult.rows.length === 0) {
+          console.log(`[Autopilot]   ✅ SELECTED - slot available`);
           return slotTime;
+        } else {
+          console.log(`[Autopilot]   ⚠️  Slot taken - ${existingResult.rows.length} in queue, ${scheduledResult.rows.length} scheduled`);
         }
       }
     }
