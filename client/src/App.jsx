@@ -4,7 +4,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { AccountProvider } from './contexts/AccountContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import Layout from './components/Layout';
-import LoadingSpinner from './components/LoadingSpinner';
+import { PageLoader } from './components/Skeletons';
 
 // Lazy load pages for better performance
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -20,16 +20,6 @@ const Features = lazy(() => import('./pages/Features'));
 const Pricing = lazy(() => import('./pages/Pricing'));
 const Docs = lazy(() => import('./pages/Docs'));
 const ContentReview = lazy(() => import('./pages/ContentReview'));
-
-// Loading fallback component
-const PageLoader = () => (
-  <div className="flex items-center justify-center min-h-96">
-    <div className="text-center">
-      <LoadingSpinner size="lg" />
-      <p className="mt-4 text-gray-600">Loading...</p>
-    </div>
-  </div>
-);
 
 function App() {
   return (

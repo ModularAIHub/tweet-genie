@@ -95,6 +95,11 @@ export const getOrFetchCached = async ({
   return requestPromise;
 };
 
+export const clearAllCaches = () => {
+  responseCache.clear();
+  inflightCache.clear();
+};
+
 export const hasRecentErrorForKey = (key) => {
   const marker = getCachedValue(buildErrorKey(key));
   return !!marker?.error;

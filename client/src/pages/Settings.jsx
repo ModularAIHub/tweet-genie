@@ -21,7 +21,8 @@ import {
   Info,
   Mail,
 } from 'lucide-react';
-import { twitter, providers, autopilot as autopilotAPI, strategy as strategyAPI } from '../utils/api';
+import { twitter, providers, autopilot as autopilotAPI, strategy as strategyAPI, scheduling } from '../utils/api';
+import { SettingsSkeleton } from '../components/Skeletons';
 import LoadingSpinner from '../components/LoadingSpinner';
 import toast from 'react-hot-toast';
 import { useAccount } from '../contexts/AccountContext';
@@ -55,6 +56,7 @@ const Settings = () => {
   const [queueActionLoading, setQueueActionLoading] = useState({});
   const [emailNotifPrefs, setEmailNotifPrefs] = useState(null);
   const [emailNotifUpdating, setEmailNotifUpdating] = useState(false);
+  const [reconnectWarning, setReconnectWarning] = useState({ show: false, pendingCount: 0 });
 
   const getAllowedPopupOrigins = () => {
     const allowed = new Set([window.location.origin]);
@@ -329,6 +331,26 @@ const Settings = () => {
       toast.error(teamModeLockMessage);
       return;
     }
+
+    // If user already has a connected Twitter account, check for pending scheduled tweets
+    if (twitterTokenStatus?.connected) {
+      try {
+        const res = await scheduling.list({ status: 'scheduled', limit: 1 });
+        const pendingCount = res.data?.pagination?.total || res.data?.tweets?.length || 0;
+        if (pendingCount > 0) {
+          setReconnectWarning({ show: true, pendingCount });
+          return; // Wait for user confirmation via modal
+        }
+      } catch {
+        // If we can't check, proceed anyway — better UX than blocking
+      }
+    }
+
+    proceedWithTwitterConnect();
+  };
+
+  const proceedWithTwitterConnect = async () => {
+    setReconnectWarning({ show: false, pendingCount: 0 });
 
     try {
       oauthMessageReceivedRef.current = false;
@@ -637,14 +659,7 @@ const Settings = () => {
   ];
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <LoadingSpinner size="lg" />
-          <p className="mt-4 text-gray-600">Loading settings...</p>
-        </div>
-      </div>
-    );
+    return <SettingsSkeleton />;
   }
 
   const oauth2StatusUI = getOAuth2StatusUI();
@@ -1496,6 +1511,53 @@ const Settings = () => {
           to { transform: rotate(360deg); }
         }
       `}</style>
+
+      {/* Reconnect Warning Modal */}
+      {reconnectWarning.show && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 animate-in fade-in">
+            <div className="flex items-start space-x-3">
+              <div className="flex-shrink-0 p-2 bg-amber-100 rounded-full">
+                <AlertTriangle className="h-6 w-6 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Reconnecting Twitter Account</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  You have <span className="font-bold text-amber-700">{reconnectWarning.pendingCount}</span> scheduled {reconnectWarning.pendingCount === 1 ? 'tweet' : 'tweets'} pending.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+              <p className="text-sm text-amber-900 font-medium">What will happen:</p>
+              <ul className="text-sm text-amber-800 space-y-1 ml-4 list-disc">
+                <li>Your pending tweets may be <strong>posted from the new account</strong> instead of the current one</li>
+                <li>If the new account lacks permissions, those tweets <strong>may not be posted at all</strong></li>
+                <li>Already-posted tweets are unaffected</li>
+              </ul>
+            </div>
+
+            <p className="text-xs text-gray-500">
+              Tip: Cancel or reschedule your pending tweets before reconnecting if needed.
+            </p>
+
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                onClick={() => setReconnectWarning({ show: false, pendingCount: 0 })}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={proceedWithTwitterConnect}
+                className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
+              >
+                Reconnect Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

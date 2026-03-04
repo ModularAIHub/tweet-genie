@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useRef, useState, useEffect } from 'react';
+import React, { createContext, useContext, useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import { auth } from '../utils/api';
 import toast from 'react-hot-toast';
-import { isPageVisible } from '../utils/requestCache';
+import { isPageVisible, clearAllCaches } from '../utils/requestCache';
 
 const AuthContext = createContext();
 let hasLoggedMissingAuthProvider = false;
@@ -152,6 +152,38 @@ export const AuthProvider = ({ children }) => {
     window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
   };
 
+  const clearAllUserData = () => {
+    // Fixed keys
+    const fixedKeys = [
+      'accessToken',
+      'selectedTwitterAccount',
+      'activeTeamContext',
+      'twitter_connect_user',
+      'composerPrompt',
+      'composerPromptPayload',
+      'bulkGenerationSeed',
+      'bulkGenerationDraft',
+      'tweetComposerDraft',
+      'schedulingViewMode',
+      'suitegenie_oauth_result',
+    ];
+    fixedKeys.forEach((k) => localStorage.removeItem(k));
+
+    // Prefixed keys (historyFilters:*, schedulingFilter:*, strategyGeneratedPrompts:*)
+    const prefixes = ['historyFilters:', 'schedulingFilter:', 'strategyGeneratedPrompts:'];
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && prefixes.some((p) => key.startsWith(p))) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+
+    // Flush in-memory request cache
+    clearAllCaches();
+  };
+
   const logout = async () => {
     try {
       // Call Tweet Genie backend logout to clear local cookies
@@ -172,6 +204,9 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Logout error:', error);
     }
+
+    // Purge all user-specific data from localStorage & in-memory caches
+    clearAllUserData();
     
     setUser(null);
     setIsAuthenticated(false);
@@ -183,14 +218,14 @@ export const AuthProvider = ({ children }) => {
     window.location.href = `${platformUrl}/login?redirect=${currentUrl}`;
   };
 
-  const value = {
+  const value = useMemo(() => ({
     user,
     isLoading,
     isAuthenticated,
     logout,
     checkAuthStatus,
     redirectToLogin,
-  };
+  }), [user, isLoading, isAuthenticated]);
 
   return (
     <AuthContext.Provider value={value}>

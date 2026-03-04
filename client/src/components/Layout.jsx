@@ -6,6 +6,7 @@ import { credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
 import { hasProPlanAccess } from '../utils/planAccess';
 import AccountSwitcher from './AccountSwitcher';
 import TwitterTokenStatus from './TwitterTokenStatusV2';
+import AnimatedPage from './AnimatedPage';
 import { isPageVisible } from '../utils/requestCache';
 import {
   LayoutDashboard,
@@ -280,9 +281,9 @@ const Layout = ({ children }) => {
 
         {/* Page content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-auto">
-          <div className="page-transition h-full">
+          <AnimatedPage>
             {children}
-          </div>
+          </AnimatedPage>
         </main>
       </div>
     </div>

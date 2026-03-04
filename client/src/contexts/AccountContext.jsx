@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 
 // AccountContext.jsx
@@ -21,14 +21,15 @@ const resolvePrimaryTeamId = (user) => {
   return null;
 };
 
-const normalizeAccountForStorage = (account = {}, fallbackTeamId = null) => ({
+const normalizeAccountForStorage = (account = {}, fallbackTeamId = null, ownerUserId = null) => ({
   id: account?.id || account?.account_id || null,
   username: account?.account_username || account?.username || null,
   display_name: account?.account_display_name || account?.display_name || null,
   team_id: account?.team_id || account?.teamId || fallbackTeamId || null,
+  _owner_user_id: ownerUserId || null,
 });
 
-const getStoredSelectedAccount = () => {
+const getStoredSelectedAccount = (currentUserId = null) => {
   if (typeof window === 'undefined' || !window.localStorage) return null;
 
   const raw = localStorage.getItem('selectedTwitterAccount');
@@ -36,14 +37,32 @@ const getStoredSelectedAccount = () => {
 
   try {
     const parsed = JSON.parse(raw);
-    return parsed?.id ? parsed : null;
+    if (!parsed?.id) return null;
+
+    // CRITICAL: If we know who the current user is, validate ownership
+    if (currentUserId) {
+      if (!parsed._owner_user_id) {
+        // Legacy cache entry without ownership stamp — untrusted, clear it
+        localStorage.removeItem('selectedTwitterAccount');
+        localStorage.removeItem(TEAM_CONTEXT_STORAGE_KEY);
+        return null;
+      }
+      if (parsed._owner_user_id !== currentUserId) {
+        // Cache belongs to a different user — cross-user leak prevention
+        localStorage.removeItem('selectedTwitterAccount');
+        localStorage.removeItem(TEAM_CONTEXT_STORAGE_KEY);
+        return null;
+      }
+    }
+
+    return parsed;
   } catch {
     return null;
   }
 };
 
-const buildCachedAccountFallback = ({ fallbackTeamId = null, requireTeamAccount = false } = {}) => {
-  const cached = getStoredSelectedAccount();
+const buildCachedAccountFallback = ({ fallbackTeamId = null, requireTeamAccount = false, currentUserId = null } = {}) => {
+  const cached = getStoredSelectedAccount(currentUserId);
   if (!cached?.id) return [];
 
   const teamId = cached?.team_id || cached?.teamId || fallbackTeamId || null;
@@ -99,8 +118,14 @@ export const AccountProvider = ({ children }) => {
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
   // Load persisted account selection on app start
+  // NOTE: We do NOT set selectedAccount here without knowing who the user is.
+  // The fetch effect (Step 2) will handle restoring from cache with user validation.
   useEffect(() => {
-    const parsed = getStoredSelectedAccount();
+    // If no user yet (auth still loading), skip.
+    // Once user is known, Step 2 will load the correct account.
+    if (!user?.id) return;
+
+    const parsed = getStoredSelectedAccount(user.id);
     if (!parsed?.id) {
       return;
     }
@@ -123,13 +148,13 @@ export const AccountProvider = ({ children }) => {
     }
 
     setSelectedAccount(parsed);
-  }, []);
+  }, [user?.id]);
 
   const updateSelectedAccount = async (account) => {
     setSelectedAccount(account);
     if (account) {
       const selectedTeamId = account.team_id || account.teamId || null;
-      localStorage.setItem('selectedTwitterAccount', JSON.stringify(normalizeAccountForStorage(account, selectedTeamId)));
+      localStorage.setItem('selectedTwitterAccount', JSON.stringify(normalizeAccountForStorage(account, selectedTeamId, user?.id)));
 
       if (selectedTeamId) {
         localStorage.setItem(
@@ -169,6 +194,14 @@ export const AccountProvider = ({ children }) => {
       localStorage.removeItem('selectedTwitterAccount');
       localStorage.removeItem(TEAM_CONTEXT_STORAGE_KEY);
       return;
+    }
+
+    // CRITICAL: When a new user logs in, clear any cached account that belongs to a different user.
+    // This prevents cross-user data leaks via shared localStorage.
+    const cached = getStoredSelectedAccount(user.id);
+    if (!cached) {
+      // Either no cache or cache belonged to a different user (already cleared by getStoredSelectedAccount)
+      setSelectedAccount(null);
     }
 
     const primaryTeamId = resolvePrimaryTeamId(user);
@@ -232,6 +265,7 @@ export const AccountProvider = ({ children }) => {
           buildCachedAccountFallback({
             fallbackTeamId: requireTeamAccount ? activeTeamId : null,
             requireTeamAccount,
+            currentUserId: user?.id,
           });
         const fallbackToPersonalScope = async () => {
           const fallbackResponse = await fetch(`${apiBaseUrl}/api/twitter/status`, {
@@ -309,6 +343,8 @@ export const AccountProvider = ({ children }) => {
             }
           }
         } else {
+          // Personal (non-team) account fetch
+          let apiSucceeded = false;
           try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 4000);
@@ -319,28 +355,35 @@ export const AccountProvider = ({ children }) => {
             clearTimeout(timeoutId);
 
             if (personalResponse.ok) {
+              apiSucceeded = true;
               const personalData = await personalResponse.json();
               const rawAccounts = Array.isArray(personalData?.accounts) ? personalData.accounts : [];
               accountsData = rawAccounts.map((account) => ({
                 ...account,
                 team_id: null,
               }));
+              // API succeeded — even if empty, this is the truth. Do NOT fall back to cache.
             } else {
               accountsData = fallbackToCachedScope(false);
             }
           } catch {
+            // Network error — cache fallback is acceptable here
+            accountsData = fallbackToCachedScope(false);
+          }
+
+          // CRITICAL: Only use cache fallback for network/server errors, NOT when API returned empty
+          if (accountsData.length === 0 && !apiSucceeded) {
             accountsData = fallbackToCachedScope(false);
           }
         }
 
-        if (accountsData.length === 0) {
-          accountsData = fallbackToCachedScope(Boolean(userTeamStatus));
-        }
+        // Cache fallback removed — we trust the API response.
+        // Stale localStorage data from other users must never be used as account source.
 
         setAccounts(accountsData);
 
         if (accountsData.length > 0) {
-          const savedAccount = getStoredSelectedAccount();
+          const savedAccount = getStoredSelectedAccount(user?.id);
           let accountToSelect = accountsData[0]; // Default to first
           if (savedAccount) {
             const matchingAccount = accountsData.find((acc) => acc.id === savedAccount.id);
@@ -353,7 +396,7 @@ export const AccountProvider = ({ children }) => {
           const selectedTeamId = accountToSelect.team_id || accountToSelect.teamId || activeTeamId || null;
           localStorage.setItem(
             'selectedTwitterAccount',
-            JSON.stringify(normalizeAccountForStorage(accountToSelect, selectedTeamId))
+            JSON.stringify(normalizeAccountForStorage(accountToSelect, selectedTeamId, user?.id))
           );
           if (selectedTeamId) {
             localStorage.setItem(
@@ -377,6 +420,7 @@ export const AccountProvider = ({ children }) => {
         const cachedFallback = buildCachedAccountFallback({
           fallbackTeamId: activeTeamId,
           requireTeamAccount: Boolean(userTeamStatus),
+          currentUserId: user?.id,
         });
         setAccounts(cachedFallback);
         setSelectedAccount(cachedFallback[0] || null);
@@ -399,20 +443,20 @@ export const AccountProvider = ({ children }) => {
     setRefreshNonce((value) => value + 1);
   };
 
+  const contextValue = useMemo(() => ({
+    selectedAccount,
+    setSelectedAccount: updateSelectedAccount,
+    accounts,
+    loading,
+    getCurrentAccountId: () => getCurrentAccountId(selectedAccount),
+    isTeamMode: Boolean(userTeamStatus),
+    activeTeamId,
+    refreshTeamStatus,
+    refreshAccounts,
+  }), [selectedAccount, accounts, loading, userTeamStatus, activeTeamId]);
+
   return (
-    <AccountContext.Provider
-      value={{
-        selectedAccount,
-        setSelectedAccount: updateSelectedAccount,
-        accounts,
-        loading,
-        getCurrentAccountId: () => getCurrentAccountId(selectedAccount),
-        isTeamMode: Boolean(userTeamStatus),
-        activeTeamId,
-        refreshTeamStatus, // Export this to clear cache when needed
-        refreshAccounts,
-      }}
-    >
+    <AccountContext.Provider value={contextValue}>
       {children}
     </AccountContext.Provider>
   );

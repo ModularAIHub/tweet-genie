@@ -39,15 +39,11 @@ const TwitterConnect = () => {
         return;
       }
 
-      console.log('📨 Received popup message:', event.data);
-
       if (event.data.type === 'twitter_auth_success' || event.data.type === 'TWITTER_AUTH_SUCCESS') {
-        console.log('✅ Popup auth success:', event.data.username);
         toast.success(`🎉 Twitter account @${event.data.username} connected successfully!`);
         checkTwitterStatus();
         setConnecting(false);
       } else if (event.data.type === 'twitter_auth_error' || event.data.type === 'TWITTER_AUTH_ERROR') {
-        console.log('❌ Popup auth error:', event.data.error);
         toast.error('❌ Twitter authentication failed. Please try again.');
         setConnecting(false);
       }
@@ -61,47 +57,37 @@ const TwitterConnect = () => {
   }, []);
 
   const checkTwitterStatus = async () => {
-    console.log('🔍 Checking Twitter connection status...');
-    console.log('User ID:', user?.id);
-    
     try {
-      console.log('🌐 Making status request to server...');
       const response = await twitter.getStatus();
       
-      console.log('✅ Status response received:');
-      console.log('Response status:', response.status);
-      console.log('Response data:', response.data);
-      
       setConnected(response.data.connected);
-      console.log('Connected status:', response.data.connected);
       
       if (response.data.connected && response.data.account) {
-        console.log('Twitter account info:', response.data.account);
         setTwitterAccount(response.data.account);
       } else {
-        console.log('No Twitter account connected or no account data');
         setTwitterAccount(null);
       }
     } catch (error) {
-      console.error('❌ Failed to check Twitter status:', error);
-      console.error('Error details:', {
-        message: error.message,
-        status: error.response?.status,
-        data: error.response?.data
-      });
+      if (import.meta.env.DEV) {
+        console.error('❌ Failed to check Twitter status:', error);
+        console.error('Error details:', {
+          message: error.message,
+          status: error.response?.status,
+          data: error.response?.data
+        });
+      }
       
       if (error.response?.status === 401) {
-        console.error('Authentication error during status check');
+        if (import.meta.env.DEV) console.error('Authentication error during status check');
         toast.error('Authentication required to check Twitter status');
       } else {
-        console.error('General error during status check');
+        if (import.meta.env.DEV) console.error('General error during status check');
         toast.error('Failed to check Twitter connection status');
       }
       setConnected(false);
       setTwitterAccount(null);
     } finally {
       setLoading(false);
-      console.log('🔄 Twitter status check completed');
     }
   };
 
@@ -111,33 +97,19 @@ const TwitterConnect = () => {
       return;
     }
 
-    console.log('🔗 Twitter Connect - Starting client-side OAuth flow');
-    console.log('User authenticated:', isAuthenticated);
-    console.log('User data:', user);
-    
     if (!isAuthenticated || !user) {
-      console.error('❌ Authentication required');
       toast.error('You must be logged in to connect Twitter');
       return;
     }
 
     try {
       setConnecting(true);
-      console.log('🌐 Making connect request to server...');
       
       const response = await twitter.connect();
       
-      console.log('✅ Server response received:');
-      console.log('Response status:', response.status);
-      console.log('Response data:', response.data);
-      
       if (response.data.url) {
-        console.log('🔗 OAuth URL received:', response.data.url);
-        console.log('State:', response.data.state);
-        
         // Add popup parameter to the OAuth URL
         const oauthUrl = response.data.url + '&popup=true';
-        console.log('🪟 Modified OAuth URL for popup:', oauthUrl);
         
         // Store user context for the popup
         const userContext = {
@@ -146,12 +118,9 @@ const TwitterConnect = () => {
           timestamp: Date.now()
         };
         localStorage.setItem('twitter_connect_user', JSON.stringify(userContext));
-        console.log('💾 User context stored:', userContext);
         
         // Show connecting toast
         toast.loading('Opening Twitter authorization window...', { duration: 3000 });
-        
-        console.log('🪟 Opening OAuth popup window...');
         
         // Open popup window
         const popup = window.open(
@@ -161,33 +130,19 @@ const TwitterConnect = () => {
         );
 
         if (!popup) {
-          console.error('❌ Popup blocked');
           toast.error('Popup was blocked. Please allow popups and try again.');
           return;
         }
-
-        console.log('🪟 Popup opened successfully:', popup);
-
-        // Add additional popup debugging
-        popup.addEventListener('beforeunload', () => {
-          console.log('🪟 Popup beforeunload event fired');
-        });
-
-        popup.addEventListener('unload', () => {
-          console.log('🪟 Popup unload event fired');
-        });
 
         // Monitor popup for completion
         const checkPopup = setInterval(() => {
           try {
             // Check if popup is closed
             if (popup.closed) {
-              console.log('🪟 Popup window closed');
               clearInterval(checkPopup);
               
               // Check for success/error in localStorage or URL
               setTimeout(async () => {
-                console.log('🔄 Refreshing Twitter status after popup close...');
                 await checkTwitterStatus();
                 setConnecting(false);
               }, 1000);
@@ -197,17 +152,15 @@ const TwitterConnect = () => {
 
             // Try to access popup URL (will throw error if still on Twitter domain)
             const popupUrl = popup.location.href;
-            console.log('🔍 Popup URL:', popupUrl);
             
             // Check if we're back on our domain (successful auth)
             if (popupUrl.includes(window.location.origin)) {
-              console.log('✅ OAuth completed - popup returned to our domain');
               popup.close();
               clearInterval(checkPopup);
               
               // Wait a moment then refresh status
               setTimeout(async () => {
-                console.log('� Refreshing Twitter status after successful auth...');
+
                 await checkTwitterStatus();
                 setConnecting(false);
                 toast.success('Twitter account connected successfully!');
@@ -222,7 +175,6 @@ const TwitterConnect = () => {
         // Timeout after 5 minutes
         setTimeout(() => {
           if (!popup.closed) {
-            console.log('⏰ OAuth timeout - closing popup');
             popup.close();
             clearInterval(checkPopup);
             setConnecting(false);
@@ -235,14 +187,7 @@ const TwitterConnect = () => {
           try {
             // Check if popup is still open but might have errors
             if (!popup.closed && popup.location.href.includes('twitter.com')) {
-              console.log('🔍 Checking for Twitter onboarding errors...');
-              
-              // Add console message about the common error
-              console.warn(`
-                ⚠️  If you see "POST https://api.twitter.com/1.1/onboarding/referrer.json 400" errors,
-                this is a known Twitter issue with Web App OAuth. The authentication should still work.
-                Just complete the authorization process normally.
-              `);
+              // Known Twitter onboarding error is expected and doesn't affect functionality
             }
           } catch (e) {
             // Expected error due to CORS while on Twitter domain
@@ -250,41 +195,39 @@ const TwitterConnect = () => {
         }, 3000);
 
       } else {
-        console.error('❌ No OAuth URL in response');
-        console.error('Response data:', response.data);
         toast.error('Could not get Twitter OAuth URL');
       }
     } catch (error) {
-      console.error('❌ Twitter connect error:', error);
-      console.error('Error details:', {
-        message: error.message,
-        status: error.response?.status,
-        data: error.response?.data,
-        config: {
-          url: error.config?.url,
-          method: error.config?.method,
-          headers: error.config?.headers
-        }
-      });
+      if (import.meta.env.DEV) {
+        console.error('❌ Twitter connect error:', error);
+        console.error('Error details:', {
+          message: error.message,
+          status: error.response?.status,
+          data: error.response?.data,
+          config: {
+            url: error.config?.url,
+            method: error.config?.method,
+            headers: error.config?.headers
+          }
+        });
+      }
       
       if (error.response?.status === 401) {
-        console.error('Authentication error - user may need to re-login');
+        if (import.meta.env.DEV) console.error('Authentication error - user may need to re-login');
         toast.error('Authentication required to connect Twitter');
       } else if (error.response?.status === 400 && error.response?.data?.connected) {
-        console.log('Twitter already connected');
         toast.error('Twitter account is already connected');
         // Refresh status to update UI
         await checkTwitterStatus();
       } else if (!navigator.onLine) {
-        console.error('Network connectivity issue');
+        if (import.meta.env.DEV) console.error('Network connectivity issue');
         toast.error('No internet connection. Please check your network.');
       } else {
-        console.error('General connection error');
+        if (import.meta.env.DEV) console.error('General connection error');
         toast.error('Failed to initiate Twitter connection. Please try again.');
       }
     } finally {
       setConnecting(false);
-      console.log('🔄 Twitter Connect - Process completed');
     }
   };
 
@@ -305,7 +248,7 @@ const TwitterConnect = () => {
       setTwitterAccount(null);
       toast.success('Twitter account disconnected successfully');
     } catch (error) {
-      console.error('Twitter disconnect error:', error);
+      if (import.meta.env.DEV) console.error('Twitter disconnect error:', error);
       if (error.response?.status === 401) {
         toast.error('Authentication required to disconnect Twitter');
       } else {
@@ -436,11 +379,10 @@ const TwitterConnect = () => {
                 try {
                   const response = await twitter.connect();
                   if (response.data.url) {
-                    console.log('🔍 Testing direct OAuth redirect...');
                     window.location.href = response.data.url;
                   }
                 } catch (error) {
-                  console.error('Direct OAuth test failed:', error);
+                  if (import.meta.env.DEV) console.error('Direct OAuth test failed:', error);
                 }
               }}
               className="btn btn-outline btn-sm text-blue-600 border-blue-600 hover:bg-blue-50"

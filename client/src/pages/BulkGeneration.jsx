@@ -12,6 +12,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { hasProPlanAccess } from '../utils/planAccess';
 import { getSuiteGenieProUpgradeUrl } from '../utils/upgradeUrl';
+import QuickBulkGenerate from '../components/QuickBulkGenerate';
 
 const BULK_GENERATION_SEED_KEY = 'bulkGenerationSeed';
 const BULK_GENERATION_DRAFT_KEY = 'bulkGenerationDraft';
@@ -1080,9 +1081,12 @@ const handleGenerate = async () => {
 
 
   return (
-    <div className="max-w-7xl mx-auto py-8 px-4 min-h-[80vh]">
-      {/* Gradient header */}
-      <div className="rounded-xl bg-gradient-to-r from-blue-700 via-blue-500 to-blue-300 p-1 mb-8 shadow-lg">
+    <div className="max-w-7xl mx-auto py-8 px-4 min-h-[80vh] space-y-8">
+      {/* Quick Generate — up to 6 posts */}
+      <QuickBulkGenerate disabled={loading} />
+
+      {/* Gradient header for Advanced Bulk Generation */}
+      <div className="rounded-xl bg-gradient-to-r from-blue-700 via-blue-500 to-blue-300 p-1 shadow-lg">
         <div className="bg-white rounded-xl p-6 flex flex-col md:flex-row md:items-center md:justify-between">
           <h1 className="text-3xl font-extrabold text-gray-900 mb-2 md:mb-0 flex items-center gap-3">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8h2a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2v-8a2 2 0 012-2h2M12 12v6m0 0l-3-3m3 3l3-3m-6-6V6a2 2 0 012-2h2a2 2 0 012 2v2" /></svg>

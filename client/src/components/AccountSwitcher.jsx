@@ -3,7 +3,7 @@ import { ChevronDown, User, Check, Twitter } from 'lucide-react';
 import { useAccount } from '../contexts/AccountContext';
 
 const AccountSwitcher = () => {
-  const { accounts, selectedAccount, setSelectedAccount: updateSelectedAccount, loading } = useAccount();
+  const { accounts, selectedAccount, setSelectedAccount: updateSelectedAccount, loading, isTeamMode } = useAccount();
   const [isOpen, setIsOpen] = useState(false);
 
   const handleAccountSelect = (account) => {
@@ -117,7 +117,7 @@ const AccountSwitcher = () => {
           
           <div className="border-t border-gray-100 px-3 py-2">
             <p className="text-xs text-gray-500">
-              {accounts.length} of 8 team accounts connected
+              {isTeamMode ? `${accounts.length} of 8 team accounts connected` : `${accounts.length} account${accounts.length !== 1 ? 's' : ''} connected`}
             </p>
           </div>
         </div>

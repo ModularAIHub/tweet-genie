@@ -3,7 +3,7 @@ import { History as HistoryIcon, MessageCircle, Heart, Repeat2, ExternalLink, Ca
 import { useAccount } from '../contexts/AccountContext';
 import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
 import { tweets as tweetsAPI } from '../utils/api';
-import LoadingSpinner from '../components/LoadingSpinner';
+import { HistorySkeleton } from '../components/Skeletons';
 import toast from 'react-hot-toast';
 import Delete from './Delete';
 
@@ -293,14 +293,7 @@ const History = () => {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <LoadingSpinner size="lg" />
-          <p className="mt-4 text-gray-600">Loading tweet history...</p>
-        </div>
-      </div>
-    );
+    return <HistorySkeleton />;
   }
 
   if (isDisconnected) {

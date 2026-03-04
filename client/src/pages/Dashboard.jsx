@@ -12,7 +12,6 @@ import {
   Heart,
   Repeat2,
   Twitter,
-  UserX,
   Zap,
   Target,
   Layers,
@@ -22,7 +21,7 @@ import { useAccount } from '../contexts/AccountContext';
 import { useAuth } from '../contexts/AuthContext';
 import { hasProPlanAccess } from '../utils/planAccess';
 import useAccountAwareAPI from '../hooks/useAccountAwareAPI';
-import LoadingSpinner from '../components/LoadingSpinner';
+import { DashboardSkeleton } from '../components/Skeletons';
 import TeamRedirectHandler from '../components/TeamRedirectHandler';
 import { isPageVisible } from '../utils/requestCache';
 
@@ -34,9 +33,9 @@ const DASHBOARD_BOOTSTRAP_TIMEOUT_MS = Number.parseInt(
 const Dashboard = () => {
   // No auto-redirect. User must click Twitter button to start connection.
   const { user } = useAuth();
-  const { selectedAccount, accounts, loading: accountsLoading } = useAccount();
+  const { selectedAccount, accounts, loading: accountsLoading, isTeamMode } = useAccount();
   const totalConnectedAccounts = accounts.length;
-  const maxAccounts = 8;
+  const maxAccounts = isTeamMode ? 8 : 1;
   const hasProAccess = hasProPlanAccess(user);
 
   const [loading, setLoading] = useState(true);
@@ -171,71 +170,32 @@ const Dashboard = () => {
   }, []);
 
   if (accountsLoading || loading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <LoadingSpinner size="lg" />
-          <p className="mt-4 text-gray-600">Loading...</p>
-        </div>
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
 
-  // For individual users (no team accounts), check if they have any data
-  // If they have data, show it. If not, they need to connect Twitter.
-  if (accounts.length === 0 && hasAttemptedFetch && !analyticsData && recentTweets.length === 0) {
-    // Individual user with no Twitter connection (only show after fetch attempt)
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center max-w-md">
-          <UserX className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">No Twitter Account Connected</h3>
-          <p className="text-gray-600 mb-6">
-            Connect your social media accounts to get started.
-          </p>
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <a
-              href={`${import.meta.env.VITE_PLATFORM_URL || 'https://suitegenie.in'}/team`}
-              className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Twitter className="h-4 w-4 mr-2" />
-              Twitter
-            </a>
-            <a
-              href="#"
-              className="inline-flex items-center px-4 py-2 bg-gray-200 text-gray-600 rounded-lg cursor-not-allowed"
-              tabIndex={-1}
-              aria-disabled="true"
-            >
-              <svg className="h-4 w-4 mr-2" />
-              LinkedIn
-            </a>
-            <a
-              href="#"
-              className="inline-flex items-center px-4 py-2 bg-gray-200 text-gray-600 rounded-lg cursor-not-allowed"
-              tabIndex={-1}
-              aria-disabled="true"
-            >
-              <svg className="h-4 w-4 mr-2" />
-              Facebook
-            </a>
-            <a
-              href="#"
-              className="inline-flex items-center px-4 py-2 bg-gray-200 text-gray-600 rounded-lg cursor-not-allowed"
-              tabIndex={-1}
-              aria-disabled="true"
-            >
-              <svg className="h-4 w-4 mr-2" />
-              Instagram
-            </a>
+  // Build connect banner for users without Twitter connected (shown inline, not as replacement)
+  let connectBanner = null;
+  const needsTwitterConnect = accounts.length === 0 && hasAttemptedFetch;
+  if (needsTwitterConnect) {
+    connectBanner = (
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 mb-6">
+        <div className="flex flex-col sm:flex-row items-center gap-4">
+          <div className="flex-shrink-0 p-3 bg-blue-100 rounded-full">
+            <Twitter className="h-8 w-8 text-blue-600" />
           </div>
-          <div className="mt-4">
-            <div className="text-sm text-gray-500 mb-2">
-              <span className="font-semibold">Team Limit:</span> 8 accounts total<br />
-              <span className="font-semibold">Connection Access:</span> Only Owner & Admin can connect/disconnect<br />
-              All team members can use connected accounts for content creation
-            </div>
+          <div className="flex-1 text-center sm:text-left">
+            <h3 className="text-lg font-semibold text-gray-900">Connect your Twitter account</h3>
+            <p className="text-sm text-gray-600 mt-1">
+              Link your Twitter to start composing, scheduling, and automating tweets.
+            </p>
           </div>
+          <a
+            href="/settings"
+            className="inline-flex items-center px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm whitespace-nowrap"
+          >
+            <Twitter className="h-4 w-4 mr-2" />
+            Connect Twitter
+          </a>
         </div>
       </div>
     );
@@ -248,7 +208,9 @@ const Dashboard = () => {
       <div className="card p-6 mb-8">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Social Accounts</h3>
-          <span className="text-sm text-gray-600">{totalConnectedAccounts} / {maxAccounts} connected</span>
+          <span className="text-sm text-gray-600">
+            {isTeamMode ? `${totalConnectedAccounts} / ${maxAccounts} connected` : `${totalConnectedAccounts} connected`}
+          </span>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {accounts.map((account, idx) => {
@@ -361,7 +323,10 @@ const Dashboard = () => {
     <>
       <TeamRedirectHandler />
       <div className="space-y-8">
-        {/* Social Accounts Section */}
+        {/* Connect Twitter Banner (shows when no account connected) */}
+        {connectBanner}
+
+        {/* Social Accounts Section (shows when accounts exist) */}
         {socialAccountsSection}
 
         {/* Header */}
