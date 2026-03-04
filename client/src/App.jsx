@@ -1,7 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './contexts/AuthContext';
-import { AccountProvider } from './contexts/AccountContext';
+import { AuthProvider } from './contexts/AuthProvider';
+import { AccountProvider } from './contexts/AccountProvider';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import { PageLoader } from './components/Skeletons';
