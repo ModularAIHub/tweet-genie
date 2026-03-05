@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Send, Calendar, Clock } from 'lucide-react';
 import Modal from './Modal';
 import { strategy as strategyApi } from '../../utils/api';
@@ -9,6 +9,29 @@ const TIMEZONE_ALIAS_MAP = {
 };
 
 const normalizeTimezone = (timezone) => TIMEZONE_ALIAS_MAP[timezone] || timezone || 'UTC';
+const COMMON_TIMEZONES = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'Europe/London',
+  'Europe/Berlin',
+  'Asia/Kolkata',
+  'Asia/Singapore',
+  'Australia/Sydney',
+];
+
+const isValidTimezone = (timezone) => {
+  const normalizedTimezone = normalizeTimezone(timezone);
+  if (!normalizedTimezone) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: normalizedTimezone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const toLocalDateTimeInputMin = () => {
   const now = new Date();
@@ -79,11 +102,14 @@ const TweetActions = ({
   // Modal state
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduleDate, setScheduleDate] = useState('');
+  const detectedTimezone = normalizeTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const [scheduleTimezone, setScheduleTimezone] = useState(detectedTimezone);
   const [localError, setLocalError] = useState('');
   const [recommendedSlot, setRecommendedSlot] = useState(null);
   const [recommendedLabel, setRecommendedLabel] = useState('');
-  // Detect user's timezone
-  const userTimezone = normalizeTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const timezoneSuggestions = useMemo(() => {
+    return [...new Set([detectedTimezone, ...COMMON_TIMEZONES].filter(Boolean))];
+  }, [detectedTimezone]);
 
   // Fetch recommended posting time from active strategy analysis
   useEffect(() => {
@@ -152,7 +178,14 @@ const TweetActions = ({
       </button>
 
       {/* Schedule Modal */}
-      <Modal isOpen={showScheduleModal} onClose={() => { setShowScheduleModal(false); setLocalError(''); }}>
+      <Modal
+        isOpen={showScheduleModal}
+        onClose={() => {
+          setShowScheduleModal(false);
+          setLocalError('');
+          setScheduleTimezone(detectedTimezone);
+        }}
+      >
         <h2 className="text-lg font-semibold mb-4">Schedule Tweet</h2>
         <label className="block text-sm font-medium text-gray-700 mb-2">Date & Time</label>
         <input
@@ -162,6 +195,23 @@ const TweetActions = ({
           onChange={e => setScheduleDate(e.target.value)}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2"
         />
+        <label className="block text-sm font-medium text-gray-700 mb-2">Timezone</label>
+        <input
+          type="text"
+          list="tweet-timezone-options"
+          value={scheduleTimezone}
+          onChange={(e) => setScheduleTimezone(e.target.value)}
+          placeholder="e.g. America/New_York"
+          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mb-1"
+        />
+        <datalist id="tweet-timezone-options">
+          {timezoneSuggestions.map((tz) => (
+            <option key={tz} value={tz} />
+          ))}
+        </datalist>
+        <p className="text-xs text-gray-500 mb-3">
+          Auto-detected: {detectedTimezone}
+        </p>
         {recommendedSlot && (
           <button
             type="button"
@@ -177,7 +227,11 @@ const TweetActions = ({
         <div className="flex justify-end space-x-2 mt-4">
           <button
             className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
-            onClick={() => { setShowScheduleModal(false); setLocalError(''); }}
+            onClick={() => {
+              setShowScheduleModal(false);
+              setLocalError('');
+              setScheduleTimezone(detectedTimezone);
+            }}
             disabled={isScheduling}
           >
             Cancel
@@ -189,11 +243,17 @@ const TweetActions = ({
                 setLocalError('Please select a date and time');
                 return;
               }
+              const timezoneCandidate = (scheduleTimezone || '').trim() || detectedTimezone;
+              if (!isValidTimezone(timezoneCandidate)) {
+                setLocalError('Enter a valid timezone (example: America/New_York)');
+                return;
+              }
               setLocalError('');
               // Pass both date and timezone
-              await onSchedule(scheduleDate, userTimezone);
+              await onSchedule(scheduleDate, normalizeTimezone(timezoneCandidate));
               setShowScheduleModal(false);
               setScheduleDate('');
+              setScheduleTimezone(detectedTimezone);
             }}
             disabled={isScheduling}
           >

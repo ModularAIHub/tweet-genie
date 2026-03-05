@@ -1089,6 +1089,10 @@ export const useTweetComposer = () => {
       toast.error('Please select a date and time');
       return;
     }
+    const resolvedTimezone =
+      typeof timezone === 'string' && timezone.trim().length > 0
+        ? timezone.trim()
+        : (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
 
     setIsScheduling(true);
     try {
@@ -1174,7 +1178,7 @@ export const useTweetComposer = () => {
             }),
           }),
           scheduled_for: dateString,
-          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezone: resolvedTimezone,
         });
         const threadScheduleData = threadScheduleRes?.data || {};
         const threadNeedsApproval = threadScheduleData.approval_status === 'pending_approval';
@@ -1216,7 +1220,7 @@ export const useTweetComposer = () => {
             }),
           }),
           scheduled_for: dateString,
-          timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezone: resolvedTimezone,
         });
         const singleScheduleData = singleScheduleRes?.data || {};
         const singleNeedsApproval = singleScheduleData.approval_status === 'pending_approval';

@@ -229,6 +229,20 @@ function normalizeTimezoneInput(timezone) {
   return zone ? zone.name : null;
 }
 
+function resolveSchedulingTimezone(req, timezoneInput) {
+  if (timezoneInput !== undefined && timezoneInput !== null && String(timezoneInput).trim().length > 0) {
+    return normalizeTimezoneInput(timezoneInput);
+  }
+
+  const headerTimezone =
+    req?.headers?.['x-user-timezone'] ||
+    req?.headers?.['x-timezone'] ||
+    req?.headers?.['x-time-zone'] ||
+    null;
+
+  return normalizeTimezoneInput(headerTimezone) || 'UTC';
+}
+
 function toUtcIso(value) {
   if (!value) return null;
 
@@ -1247,10 +1261,10 @@ router.get('/scheduled', handleScheduledTweetsList);
 // Bulk schedule drafts
 router.post('/bulk', schedulingRateLimit, validateTwitterConnection, async (req, res) => {
   try {
-    const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone = 'UTC' } = req.body;
+    const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone } = req.body;
     const userId = req.user.id;
     const teamId = req.headers['x-team-id'] || req.body.teamId || req.body.team_id || null;
-    const normalizedTimezone = normalizeTimezoneInput(timezone);
+    const normalizedTimezone = resolveSchedulingTimezone(req, timezone);
     const maxSchedulingUtc = getMaxSchedulingUtcMoment();
     
     if (!Array.isArray(items) || items.length === 0) {
@@ -1484,7 +1498,7 @@ router.post('/', schedulingRateLimit, validateRequest(scheduleSchema), validateT
       thread,
       threadMedia = [],
       scheduled_for,
-      timezone = 'UTC',
+      timezone,
       postToLinkedin = false,
       crossPostTargets = null,
       crossPostTargetAccountIds = null,
@@ -1498,7 +1512,7 @@ router.post('/', schedulingRateLimit, validateRequest(scheduleSchema), validateT
     const accountIdColumnType = await getScheduledAccountIdColumnType();
     let accountId = null;
     let authorId = req.twitterAccount?.twitter_user_id || null;
-    const normalizedTimezone = normalizeTimezoneInput(timezone);
+    const normalizedTimezone = resolveSchedulingTimezone(req, timezone);
     
     // If frontend sends selectedAccount.team_id, use that
     if (!teamId && req.body.team_id) {
@@ -2119,10 +2133,10 @@ router.delete('/:scheduleId', schedulingRateLimit, async (req, res) => {
 router.put('/:scheduleId', schedulingRateLimit, validateRequest(rescheduleSchema), async (req, res) => {
   try {
     const { scheduleId } = req.params;
-    const { scheduled_for, timezone = 'UTC' } = req.body;
+    const { scheduled_for, timezone } = req.body;
     const userId = req.user.id;
     const teamId = req.headers['x-team-id'] || null;
-    const normalizedTimezone = normalizeTimezoneInput(timezone);
+    const normalizedTimezone = resolveSchedulingTimezone(req, timezone);
 
     // Validate timezone
     if (!normalizedTimezone) {

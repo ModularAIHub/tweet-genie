@@ -142,6 +142,15 @@ const resolveRequestScope = () => {
   };
 };
 
+const resolveBrowserTimezone = () => {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return timezone && String(timezone).trim().length > 0 ? timezone : 'UTC';
+  } catch {
+    return 'UTC';
+  }
+};
+
 // Request interceptor to attach JWT token and selected account scope.
 api.interceptors.request.use(
   (config) => {
@@ -153,6 +162,8 @@ api.interceptors.request.use(
 
     const skipAccountScope = Boolean(config._skipAccountScope);
     delete config._skipAccountScope;
+
+    config.headers['x-user-timezone'] = resolveBrowserTimezone();
 
     delete config.headers['X-Selected-Account-Id'];
     delete config.headers['x-team-id'];
