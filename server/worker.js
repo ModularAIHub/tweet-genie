@@ -13,8 +13,10 @@ const parseBooleanEnv = (value, fallback = false) => {
   return fallback;
 };
 
+const AUTOPILOT_FEATURE_ENABLED = parseBooleanEnv(process.env.AUTOPILOT_FEATURE_ENABLED, false);
 const START_DB_SCHEDULER_WORKER = parseBooleanEnv(process.env.START_DB_SCHEDULER_WORKER, true);
-const START_AUTOPILOT_WORKER = parseBooleanEnv(process.env.START_AUTOPILOT_WORKER, false);
+const START_AUTOPILOT_WORKER =
+  AUTOPILOT_FEATURE_ENABLED && parseBooleanEnv(process.env.START_AUTOPILOT_WORKER, false);
 
 // Minimal health server so Render free web service tier keeps this process alive.
 // Ping this endpoint every 5 minutes via UptimeRobot to prevent sleep.
@@ -59,6 +61,8 @@ if (START_AUTOPILOT_WORKER) {
       console.error('[Tweet Worker] Failed to start autopilot worker:', error);
       // Non-fatal: scheduled tweet processing can still continue.
     });
+} else if (!AUTOPILOT_FEATURE_ENABLED) {
+  console.log('[Tweet Worker] Autopilot feature disabled globally (AUTOPILOT_FEATURE_ENABLED=false)');
 } else {
   console.log('[Tweet Worker] Autopilot worker disabled by START_AUTOPILOT_WORKER=false');
 }

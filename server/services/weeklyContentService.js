@@ -8,6 +8,14 @@ const GENERATION_TEMPERATURE = 0.7;
 const GENERATION_MAX_TOKENS = 4096;
 const TRENDING_MAX_TOKENS = 2048;
 const TWEETS_PER_WEEK = 7;
+const parseBooleanEnv = (value, fallback = false) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+const AUTOPILOT_FEATURE_ENABLED = parseBooleanEnv(process.env.AUTOPILOT_FEATURE_ENABLED, false);
 
 class WeeklyContentService {
   constructor() {
@@ -173,6 +181,9 @@ Return ONLY valid JSON:
 
   // ─── Check if autopilot is enabled for a strategy ────────────────────
   async getAutopilotConfig(strategyId) {
+    if (!AUTOPILOT_FEATURE_ENABLED) {
+      return null;
+    }
     try {
       const { rows } = await pool.query(
         'SELECT * FROM autopilot_config WHERE strategy_id = $1 AND is_enabled = true',

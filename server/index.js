@@ -86,14 +86,19 @@ const parseBooleanEnv = (value, fallback = false) => {
 };
 
 const BACKGROUND_WORKERS_ENABLED = parseBooleanEnv(process.env.BACKGROUND_WORKERS_ENABLED, true);
+const AUTOPILOT_FEATURE_ENABLED = parseBooleanEnv(process.env.AUTOPILOT_FEATURE_ENABLED, false);
 const START_ANALYTICS_WORKER = BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_ANALYTICS_WORKER, true);
-const START_AUTOPILOT_WORKER = BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_AUTOPILOT_WORKER, false);
+const START_AUTOPILOT_WORKER =
+  AUTOPILOT_FEATURE_ENABLED &&
+  BACKGROUND_WORKERS_ENABLED &&
+  parseBooleanEnv(process.env.START_AUTOPILOT_WORKER, false);
 const START_DB_SCHEDULER_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DB_SCHEDULER_WORKER, true);
 const START_DELETED_TWEET_RETENTION_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DELETED_TWEET_RETENTION_WORKER, true);
 const ENABLE_SCHEDULER_CRON = parseBooleanEnv(process.env.ENABLE_SCHEDULER_CRON, true);
-const ENABLE_AUTOPILOT_CRON = parseBooleanEnv(process.env.ENABLE_AUTOPILOT_CRON, true);
+const ENABLE_AUTOPILOT_CRON =
+  AUTOPILOT_FEATURE_ENABLED && parseBooleanEnv(process.env.ENABLE_AUTOPILOT_CRON, true);
 const ENABLE_WEEKLY_CONTENT_CRON = parseBooleanEnv(process.env.ENABLE_WEEKLY_CONTENT_CRON, true);
 // Weekly content generation uses the cron endpoint POST /api/cron/weekly-content only.
 // No setInterval worker needed — Vercel kills intervals between requests.
@@ -619,6 +624,7 @@ app.listen(PORT, async () => {
   }
 
   if (!START_ANALYTICS_WORKER) logger.info('Analytics auto sync worker disabled.');
+  if (!AUTOPILOT_FEATURE_ENABLED) logger.info('Autopilot feature disabled globally.');
   if (!START_AUTOPILOT_WORKER) logger.info('Autopilot worker disabled.');
   if (!START_DB_SCHEDULER_WORKER) logger.info('DB scheduled tweet worker disabled.');
   if (!START_DELETED_TWEET_RETENTION_WORKER) logger.info('Deleted tweet retention worker disabled.');

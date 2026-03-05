@@ -8,6 +8,20 @@ const router = express.Router();
 
 // ─── Undo window constant (must match weeklyContentService) ──────────────
 const UNDO_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const parseBooleanEnv = (value, fallback = false) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+const AUTOPILOT_FEATURE_ENABLED = parseBooleanEnv(process.env.AUTOPILOT_FEATURE_ENABLED, false);
+
+const rejectWhenAutopilotDisabled = (res) =>
+  res.status(403).json({
+    error: 'Autopilot mode currently turned off. Contact admin for it.',
+    code: 'AUTOPILOT_DISABLED_BY_ADMIN',
+  });
 
 /**
  * GET /api/strategy/autopilot/activity-log
@@ -176,11 +190,8 @@ router.put('/:strategyId/config', async (req, res) => {
     const { strategyId } = req.params;
     const updates = req.body;
 
-    if (updates?.is_enabled === true) {
-      return res.status(403).json({
-        error: 'Autopilot mode currently turned off. Contact admin for it.',
-        code: 'AUTOPILOT_DISABLED_BY_ADMIN',
-      });
+    if (!AUTOPILOT_FEATURE_ENABLED && updates?.is_enabled === true) {
+      return rejectWhenAutopilotDisabled(res);
     }
     
     // Verify strategy belongs to user
@@ -318,6 +329,10 @@ router.get('/:strategyId/queue', async (req, res) => {
  */
 router.post('/:strategyId/generate', async (req, res) => {
   try {
+    if (!AUTOPILOT_FEATURE_ENABLED) {
+      return rejectWhenAutopilotDisabled(res);
+    }
+
     const { strategyId } = req.params;
     const { promptId, scheduledFor, count } = req.body;
     
@@ -364,6 +379,10 @@ router.post('/:strategyId/generate', async (req, res) => {
  */
 router.post('/:strategyId/fill-queue', async (req, res) => {
   try {
+    if (!AUTOPILOT_FEATURE_ENABLED) {
+      return rejectWhenAutopilotDisabled(res);
+    }
+
     const { strategyId } = req.params;
     
     // Verify strategy belongs to user
@@ -395,6 +414,10 @@ router.post('/:strategyId/fill-queue', async (req, res) => {
  */
 router.post('/queue/:queueId/approve', async (req, res) => {
   try {
+    if (!AUTOPILOT_FEATURE_ENABLED) {
+      return rejectWhenAutopilotDisabled(res);
+    }
+
     const { queueId } = req.params;
     
     // Verify queue item belongs to user's strategy

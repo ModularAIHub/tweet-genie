@@ -47,7 +47,16 @@ class CreditService {
         );
 
         if (balanceResult.rows.length === 0) {
-          throw new Error('User not found');
+          await client.query('ROLLBACK');
+          this.debugLog(`User not found for credit deduction: ${userId}`);
+          return {
+            success: false,
+            error: 'user_not_found',
+            available: 0,
+            creditsAvailable: 0,
+            required: amount,
+            creditsRequired: amount,
+          };
         }
 
         const currentBalance = parseFloat(balanceResult.rows[0].credits_remaining || 0);
