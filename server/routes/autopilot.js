@@ -210,48 +210,59 @@ router.put('/:strategyId/config', async (req, res) => {
     // If autopilot was disabled, cancel pending autopilot schedules so they cannot
     // continue posting in the background.
     if (updates.is_enabled === false) {
-      const { rows: cancelledRows } = await pool.query(
-        `UPDATE scheduled_tweets st
-         SET status = 'cancelled',
-             error_message = CASE
-               WHEN COALESCE(st.error_message, '') = '' THEN 'Cancelled automatically because autopilot was disabled.'
-               ELSE st.error_message || ' | Cancelled automatically because autopilot was disabled.'
-             END,
-             processing_started_at = NULL,
-             updated_at = NOW()
-         WHERE st.user_id = $1
-           AND st.autopilot_strategy_id = $2
-           AND st.source = 'autopilot'
-           AND st.status = 'pending'
-           AND st.scheduled_for > NOW()
-         RETURNING st.id`,
-        [req.user.id, strategyId]
-      );
-
-      const cancelledIds = cancelledRows.map((row) => String(row.id));
-      let restoredQueueItems = 0;
-
-      if (cancelledIds.length > 0) {
-        const restoreResult = await pool.query(
-          `UPDATE content_review_queue crq
-           SET status = 'pending',
-               scheduled_tweet_id = NULL,
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const { rows: cancelledRows } = await client.query(
+          `UPDATE scheduled_tweets st
+           SET status = 'cancelled',
+               error_message = CASE
+                 WHEN COALESCE(st.error_message, '') = '' THEN 'Cancelled automatically because autopilot was disabled.'
+                 ELSE st.error_message || ' | Cancelled automatically because autopilot was disabled.'
+               END,
+               processing_started_at = NULL,
                updated_at = NOW()
-           FROM (SELECT unnest($3::text[]) AS scheduled_id) cancelled
-           WHERE crq.user_id = $1
-             AND crq.strategy_id = $2
-             AND crq.source = 'autopilot'
-             AND crq.status = 'scheduled'
-             AND crq.scheduled_tweet_id::text = cancelled.scheduled_id`,
-          [req.user.id, strategyId, cancelledIds]
+           WHERE st.user_id = $1
+             AND st.autopilot_strategy_id = $2
+             AND st.source = 'autopilot'
+             AND st.status = 'pending'
+             AND st.scheduled_for > NOW()
+           RETURNING st.id`,
+          [req.user.id, strategyId]
         );
-        restoredQueueItems = restoreResult.rowCount || 0;
-      }
 
-      disableCleanup = {
-        cancelledScheduledTweets: cancelledIds.length,
-        restoredQueueItems,
-      };
+        const cancelledIds = cancelledRows.map((row) => String(row.id));
+        let restoredQueueItems = 0;
+
+        if (cancelledIds.length > 0) {
+          const restoreResult = await client.query(
+            `UPDATE content_review_queue crq
+             SET status = 'pending',
+                 scheduled_tweet_id = NULL,
+                 updated_at = NOW()
+             FROM (SELECT unnest($3::text[]) AS scheduled_id) cancelled
+             WHERE crq.user_id = $1
+               AND crq.strategy_id = $2
+               AND crq.source = 'autopilot'
+               AND crq.status = 'scheduled'
+               AND crq.scheduled_tweet_id::text = cancelled.scheduled_id`,
+            [req.user.id, strategyId, cancelledIds]
+          );
+          restoredQueueItems = restoreResult.rowCount || 0;
+        }
+
+        await client.query('COMMIT');
+        disableCleanup = {
+          cancelledScheduledTweets: cancelledIds.length,
+          restoredQueueItems,
+        };
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error during autopilot disable cleanup transaction:', err);
+        return res.status(500).json({ error: 'Failed to update configuration (transaction error)' });
+      } finally {
+        client.release();
+      }
     }
     
     res.json({

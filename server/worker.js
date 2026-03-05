@@ -50,13 +50,15 @@ if (START_DB_SCHEDULER_WORKER) {
 // Autopilot worker runs independently and fills queues for enabled strategies.
 // Uses DB pool directly, no HTTP auth required, so it works even when users are logged out.
 if (START_AUTOPILOT_WORKER) {
-  try {
-    startAutopilotWorker();
-    console.log('[Tweet Worker] Autopilot worker started');
-  } catch (error) {
-    console.error('[Tweet Worker] Failed to start autopilot worker:', error);
-    // Non-fatal: scheduled tweet processing can still continue.
-  }
+  Promise.resolve()
+    .then(() => startAutopilotWorker())
+    .then(() => {
+      console.log('[Tweet Worker] Autopilot worker started');
+    })
+    .catch((error) => {
+      console.error('[Tweet Worker] Failed to start autopilot worker:', error);
+      // Non-fatal: scheduled tweet processing can still continue.
+    });
 } else {
   console.log('[Tweet Worker] Autopilot worker disabled by START_AUTOPILOT_WORKER=false');
 }
