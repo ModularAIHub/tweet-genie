@@ -314,7 +314,7 @@ app.use((req, res, next) => {
     res.header('Vary', 'Origin');
     res.header(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id, X-Requested-With'
+      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id, X-Requested-With, X-User-Timezone, X-Timezone'
     );
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
     corsLog('[cors] headers set for:', origin);
@@ -563,7 +563,10 @@ app.use((err, req, res, next) => {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id');
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id, X-Requested-With, X-User-Timezone, X-Timezone'
+    );
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   }
   // Handle body too large error
