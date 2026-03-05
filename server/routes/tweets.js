@@ -84,6 +84,7 @@ const TWITTER_RATE_LIMIT_MAX_WAIT_MS = Number.parseInt(process.env.TWITTER_RATE_
 const LINKEDIN_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.LINKEDIN_CROSSPOST_TIMEOUT_MS || '10000', 10);
 const THREADS_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.THREADS_CROSSPOST_TIMEOUT_MS || '10000', 10);
 const TWITTER_CROSSPOST_TIMEOUT_MS = Number.parseInt(process.env.TWITTER_CROSSPOST_TIMEOUT_MS || '20000', 10);
+const CROSSPOST_MAX_MEDIA_ITEMS = Math.max(1, Number.parseInt(process.env.CROSSPOST_MAX_MEDIA_ITEMS || '9', 10));
 
 function getThreadPostDelayMs() {
   const baseDelay = Number.isFinite(THREAD_POST_DELAY_MS) ? Math.max(0, THREAD_POST_DELAY_MS) : 900;
@@ -228,10 +229,21 @@ const normalizeCrossPostTargetAccountIds = ({ crossPostTargetAccountIds = null }
 
 const normalizeCrossPostMediaPayload = (value) => {
   if (!Array.isArray(value)) return [];
+  const normalizeMediaItem = (item) => {
+    if (typeof item === 'string') return item.trim();
+    if (!item || typeof item !== 'object') return '';
+    const urlLikeFields = ['url', 'mediaUrl', 'media_url', 'secure_url', 'src', 'href'];
+    for (const field of urlLikeFields) {
+      const candidate = typeof item[field] === 'string' ? item[field].trim() : '';
+      if (candidate) return candidate;
+    }
+    return '';
+  };
+
   return value
-    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .map((item) => normalizeMediaItem(item))
     .filter(Boolean)
-    .slice(0, 4);
+    .slice(0, CROSSPOST_MAX_MEDIA_ITEMS);
 };
 
 const buildCrossPostResultShape = ({
