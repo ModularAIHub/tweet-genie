@@ -7,7 +7,6 @@ import { buildCrossPostPayloads, detectCrossPostMedia } from '../utils/crossPost
 import { fetchLatestPersonalTwitterAuth } from '../utils/personalTwitterAuth.js';
 import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache.js';
 import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
-import { fetchAndPersistMetricsInline } from '../workers/analyticsSyncWorker.js';
 import {
   createTwitterPostingClient,
   refreshTwitterOauth2IfNeeded,
@@ -1190,9 +1189,17 @@ class ScheduledTweetService {
       const hasMedia = (Array.isArray(scheduledTweet.media_urls) && scheduledTweet.media_urls.length > 0) ||
         (typeof scheduledTweet.media_urls === 'string' && scheduledTweet.media_urls.trim().length > 0);
       const hasThreadMedia = Array.isArray(scheduledTweet.thread_media) && scheduledTweet.thread_media.length > 0;
-      const shouldPreferOAuth1 = hasMedia || hasThreadMedia;
+      const hasOAuth1UserTokens = Boolean(
+        scheduledTweet.oauth1_access_token && scheduledTweet.oauth1_access_token_secret
+      );
+      const hasOAuth1AppCreds = Boolean(TWITTER_OAUTH1_APP_KEY && TWITTER_OAUTH1_APP_SECRET);
+      const shouldPreferOAuth1 = hasOAuth1UserTokens && hasOAuth1AppCreds;
       let usedAuthMethod = shouldPreferOAuth1 ? 'oauth1' : 'oauth2';
-      console.log(`[Scheduled Tweet] Auth strategy: preferOAuth1=${shouldPreferOAuth1} (hasMedia=${hasMedia}, hasThreadMedia=${hasThreadMedia})`);
+      console.log(
+        `[Scheduled Tweet] Auth strategy: preferOAuth1=${shouldPreferOAuth1} ` +
+        `(hasOAuth1UserTokens=${hasOAuth1UserTokens}, hasOAuth1AppCreds=${hasOAuth1AppCreds}, ` +
+        `hasMedia=${hasMedia}, hasThreadMedia=${hasThreadMedia})`
+      );
       let twitterClient = createTwitterPostingClient(scheduledTweet, { preferOAuth1: shouldPreferOAuth1 });
       if (!twitterClient) {
         try {
@@ -1551,42 +1558,10 @@ class ScheduledTweetService {
         console.warn('[Scheduled Tweet] Failed to invalidate analytics cache:', cacheError?.message || cacheError);
       }
 
-      // Inline initial metrics fetch for the just-posted scheduled tweet (serverless-safe)
-      try {
-        const allPostedIds = [tweetResponse.data.id, ...threadTweetIds.map(t => t.tweetId)].filter(Boolean);
-        if (allPostedIds.length > 0 && scheduledTweet.access_token) {
-          const metricsAccountType = scheduledTweet.isTeamAccount ? 'team' : 'personal';
-          await fetchAndPersistMetricsInline({
-            tweetIds: allPostedIds,
-            userId: scheduledTweet.user_id,
-            account: {
-              access_token: scheduledTweet.access_token,
-              refresh_token: scheduledTweet.refresh_token,
-              token_expires_at: scheduledTweet.token_expires_at,
-              id: scheduledTweet.account_id || null,
-            },
-            accountType: metricsAccountType,
-          });
-          console.log(`[Scheduled Tweet] Inline metrics fetch completed for ${allPostedIds.length} tweet(s)`);
-        }
-      } catch (metricErr) {
-        console.warn('[Scheduled Tweet] Inline metrics fetch failed (non-fatal):', metricErr?.message || metricErr);
-      }
+      // Inline metrics fetch disabled - analytics is manual-only to control Twitter API costs.
+      // When re-enabling, uncomment the fetchAndPersistMetricsInline call here.
 
-      // ─── Phase 5: Schedule deferred analytics sync (24h after posting) ───
-      try {
-        const { feedbackLoopService } = await import('./feedbackLoopService.js');
-        const allPostedIdsForSync = [tweetResponse.data.id, ...threadTweetIds.map(t => t.tweetId)].filter(Boolean);
-        for (const postedId of allPostedIdsForSync) {
-          await feedbackLoopService.scheduleDeferredSync(
-            scheduledTweet.user_id,
-            postedId,
-            scheduledTweet.account_id || null
-          );
-        }
-      } catch (deferErr) {
-        console.warn('[Scheduled Tweet] Deferred sync scheduling failed (non-fatal):', deferErr?.message || deferErr);
-      }
+      // Deferred analytics sync disabled - analytics is manual-only to control Twitter API costs.
 
       let crossPostResult = null;
       if (scheduledCrossPost.enabled) {

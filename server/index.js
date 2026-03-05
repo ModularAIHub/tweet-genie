@@ -92,6 +92,9 @@ const START_DB_SCHEDULER_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DB_SCHEDULER_WORKER, true);
 const START_DELETED_TWEET_RETENTION_WORKER =
   BACKGROUND_WORKERS_ENABLED && parseBooleanEnv(process.env.START_DELETED_TWEET_RETENTION_WORKER, true);
+const ENABLE_SCHEDULER_CRON = parseBooleanEnv(process.env.ENABLE_SCHEDULER_CRON, true);
+const ENABLE_AUTOPILOT_CRON = parseBooleanEnv(process.env.ENABLE_AUTOPILOT_CRON, true);
+const ENABLE_WEEKLY_CONTENT_CRON = parseBooleanEnv(process.env.ENABLE_WEEKLY_CONTENT_CRON, true);
 // Weekly content generation uses the cron endpoint POST /api/cron/weekly-content only.
 // No setInterval worker needed — Vercel kills intervals between requests.
 const READINESS_CHECK_INTERVAL_MS = Number.parseInt(process.env.READINESS_CHECK_INTERVAL_MS || '30000', 10);
@@ -493,6 +496,9 @@ app.post('/api/cron/scheduler', async (req, res) => {
   if (!cronSecret || providedToken !== cronSecret) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  if (!ENABLE_SCHEDULER_CRON) {
+    return res.json({ ok: true, skipped: true, reason: 'scheduler_cron_disabled' });
+  }
   try {
     await runSchedulerTick();
     return res.json({ ok: true });
@@ -510,6 +516,9 @@ app.post('/api/cron/autopilot', async (req, res) => {
   const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (authHeader || req.query.secret || '');
   if (!cronSecret || providedToken !== cronSecret) {
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!ENABLE_AUTOPILOT_CRON) {
+    return res.json({ ok: true, skipped: true, reason: 'autopilot_cron_disabled' });
   }
   try {
     const autopilotWorker = await import('./workers/autopilotWorker.js');
@@ -529,6 +538,9 @@ app.post('/api/cron/weekly-content', async (req, res) => {
   const providedToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (authHeader || req.query.secret || '');
   if (!cronSecret || providedToken !== cronSecret) {
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!ENABLE_WEEKLY_CONTENT_CRON) {
+    return res.json({ ok: true, skipped: true, reason: 'weekly_content_cron_disabled' });
   }
   try {
     const result = await handleWeeklyContentCron();
@@ -610,6 +622,9 @@ app.listen(PORT, async () => {
   if (!START_AUTOPILOT_WORKER) logger.info('Autopilot worker disabled.');
   if (!START_DB_SCHEDULER_WORKER) logger.info('DB scheduled tweet worker disabled.');
   if (!START_DELETED_TWEET_RETENTION_WORKER) logger.info('Deleted tweet retention worker disabled.');
+  if (!ENABLE_SCHEDULER_CRON) logger.info('Scheduler cron endpoint disabled.');
+  if (!ENABLE_AUTOPILOT_CRON) logger.info('Autopilot cron endpoint disabled.');
+  if (!ENABLE_WEEKLY_CONTENT_CRON) logger.info('Weekly content cron endpoint disabled.');
 
   await refreshTweetGenieDatabaseReadiness();
   await maybeStartBackgroundWorkers();

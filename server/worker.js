@@ -5,6 +5,17 @@ import { startAutopilotWorker, stopAutopilotWorker } from './workers/autopilotWo
 
 dotenv.config();
 
+const parseBooleanEnv = (value, fallback = false) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+
+const START_DB_SCHEDULER_WORKER = parseBooleanEnv(process.env.START_DB_SCHEDULER_WORKER, true);
+const START_AUTOPILOT_WORKER = parseBooleanEnv(process.env.START_AUTOPILOT_WORKER, false);
+
 // Minimal health server so Render free web service tier keeps this process alive.
 // Ping this endpoint every 5 minutes via UptimeRobot to prevent sleep.
 const PORT = process.env.PORT || 3099;
@@ -23,21 +34,29 @@ const shutdown = (signal) => {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-startDbScheduledTweetWorker()
-  .then(() => {
-    console.log('[Tweet Worker] Scheduled tweet worker started');
-  })
-  .catch((error) => {
-    console.error('[Tweet Worker] Failed to start scheduled tweet worker:', error);
-    process.exit(1);
-  });
+if (START_DB_SCHEDULER_WORKER) {
+  startDbScheduledTweetWorker()
+    .then(() => {
+      console.log('[Tweet Worker] Scheduled tweet worker started');
+    })
+    .catch((error) => {
+      console.error('[Tweet Worker] Failed to start scheduled tweet worker:', error);
+      process.exit(1);
+    });
+} else {
+  console.log('[Tweet Worker] Scheduled tweet worker disabled by START_DB_SCHEDULER_WORKER=false');
+}
 
-// Autopilot worker runs independently — fills content queues for enabled strategies.
+// Autopilot worker runs independently and fills queues for enabled strategies.
 // Uses DB pool directly, no HTTP auth required, so it works even when users are logged out.
-try {
-  startAutopilotWorker();
-  console.log('[Tweet Worker] Autopilot worker started');
-} catch (error) {
-  console.error('[Tweet Worker] Failed to start autopilot worker:', error);
-  // Non-fatal — scheduled tweet processing can still continue
+if (START_AUTOPILOT_WORKER) {
+  try {
+    startAutopilotWorker();
+    console.log('[Tweet Worker] Autopilot worker started');
+  } catch (error) {
+    console.error('[Tweet Worker] Failed to start autopilot worker:', error);
+    // Non-fatal: scheduled tweet processing can still continue.
+  }
+} else {
+  console.log('[Tweet Worker] Autopilot worker disabled by START_AUTOPILOT_WORKER=false');
 }

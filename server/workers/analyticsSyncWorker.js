@@ -988,9 +988,15 @@ const runAnalyticsAutoSyncTick = async () => {
 // Exported so that the Vercel Cron endpoint (and tests) can trigger a tick directly
 // without going through the setInterval timer (which doesn't survive Vercel serverless sleep).
 export async function triggerAnalyticsSyncTick() {
+  // AUTO-SYNC DISABLED - analytics is manual-only to control Twitter API costs.
+  // Re-enable by removing this guard and setting ANALYTICS_AUTO_SYNC_ENABLED=true.
+  if (process.env.ANALYTICS_AUTO_SYNC_ENABLED !== 'true') {
+    console.log('[AnalyticsAutoSync] Auto-sync disabled, skipping tick');
+    return { skipped: true, reason: 'auto_sync_disabled' };
+  }
+
   await runAnalyticsAutoSyncTick();
 
-  // Phase 5: Process any deferred analytics syncs whose time has arrived
   try {
     const { feedbackLoopService } = await import('../services/feedbackLoopService.js');
     await feedbackLoopService.processDeferredSyncs();

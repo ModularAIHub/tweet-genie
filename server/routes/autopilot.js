@@ -175,6 +175,13 @@ router.put('/:strategyId/config', async (req, res) => {
   try {
     const { strategyId } = req.params;
     const updates = req.body;
+
+    if (updates?.is_enabled === true) {
+      return res.status(403).json({
+        error: 'Autopilot mode currently turned off. Contact admin for it.',
+        code: 'AUTOPILOT_DISABLED_BY_ADMIN',
+      });
+    }
     
     // Verify strategy belongs to user
     const { rows } = await pool.query(
@@ -187,6 +194,7 @@ router.put('/:strategyId/config', async (req, res) => {
     }
     
     const config = await autopilotService.updateAutopilotConfig(strategyId, updates);
+    let disableCleanup = null;
     
     // If autopilot was just enabled, clear any paused reason and fill the queue
     if (updates.is_enabled === true) {
@@ -198,11 +206,59 @@ router.put('/:strategyId/config', async (req, res) => {
         console.error('Error filling queue after enabling autopilot:', err);
       });
     }
+
+    // If autopilot was disabled, cancel pending autopilot schedules so they cannot
+    // continue posting in the background.
+    if (updates.is_enabled === false) {
+      const { rows: cancelledRows } = await pool.query(
+        `UPDATE scheduled_tweets st
+         SET status = 'cancelled',
+             error_message = CASE
+               WHEN COALESCE(st.error_message, '') = '' THEN 'Cancelled automatically because autopilot was disabled.'
+               ELSE st.error_message || ' | Cancelled automatically because autopilot was disabled.'
+             END,
+             processing_started_at = NULL,
+             updated_at = NOW()
+         WHERE st.user_id = $1
+           AND st.autopilot_strategy_id = $2
+           AND st.source = 'autopilot'
+           AND st.status = 'pending'
+           AND st.scheduled_for > NOW()
+         RETURNING st.id`,
+        [req.user.id, strategyId]
+      );
+
+      const cancelledIds = cancelledRows.map((row) => String(row.id));
+      let restoredQueueItems = 0;
+
+      if (cancelledIds.length > 0) {
+        const restoreResult = await pool.query(
+          `UPDATE content_review_queue crq
+           SET status = 'pending',
+               scheduled_tweet_id = NULL,
+               updated_at = NOW()
+           FROM (SELECT unnest($3::text[]) AS scheduled_id) cancelled
+           WHERE crq.user_id = $1
+             AND crq.strategy_id = $2
+             AND crq.source = 'autopilot'
+             AND crq.status = 'scheduled'
+             AND crq.scheduled_tweet_id::text = cancelled.scheduled_id`,
+          [req.user.id, strategyId, cancelledIds]
+        );
+        restoredQueueItems = restoreResult.rowCount || 0;
+      }
+
+      disableCleanup = {
+        cancelledScheduledTweets: cancelledIds.length,
+        restoredQueueItems,
+      };
+    }
     
     res.json({
       success: true,
       message: 'Configuration updated successfully',
-      data: config
+      data: config,
+      ...(disableCleanup ? { disableCleanup } : {})
     });
   } catch (error) {
     console.error('Error updating autopilot config:', error);
