@@ -355,6 +355,32 @@ router.get('/:id/prompts', async (req, res) => {
   }
 });
 
+// Refresh prompt performance metrics from already-synced analytics data
+router.post('/:id/prompts/refresh-metrics', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const lookbackDays = req.body?.lookbackDays;
+
+    const strategy = await strategyService.getStrategy(id);
+    if (!strategy || strategy.user_id !== userId) {
+      return res.status(404).json({ error: 'Strategy not found' });
+    }
+
+    const refresh = await strategyService.refreshPromptMetrics(id, { lookbackDays });
+    const prompts = await strategyService.getPrompts(id);
+
+    res.json({
+      success: true,
+      refresh,
+      prompts,
+    });
+  } catch (error) {
+    console.error('Error refreshing prompt metrics:', error);
+    res.status(500).json({ error: 'Failed to refresh prompt metrics' });
+  }
+});
+
 // Toggle favorite prompt
 router.post('/prompts/:promptId/favorite', async (req, res) => {
   try {

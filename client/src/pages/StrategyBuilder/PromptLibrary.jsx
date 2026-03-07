@@ -16,6 +16,7 @@ import {
   X,
   Zap,
   FileText,
+  RefreshCw,
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -137,6 +138,7 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
   const [customIdeaText, setCustomIdeaText] = useState('');
   const [isAddingIdea, setIsAddingIdea] = useState(false);
   const [deletingPromptId, setDeletingPromptId] = useState(null);
+  const [isRefreshingMetrics, setIsRefreshingMetrics] = useState(false);
   
   // Detect if we're in generating mode
   const [isGenerating, setIsGenerating] = useState(fromAnalysis && prompts.length === 0);
@@ -238,6 +240,23 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
       setPrompts([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRefreshMetrics = async () => {
+    try {
+      setIsRefreshingMetrics(true);
+      const response = await strategyApi.refreshPromptMetrics(strategyId, { lookbackDays: 30 });
+      if (Array.isArray(response?.data?.prompts)) {
+        setPrompts(response.data.prompts);
+      } else {
+        await loadPrompts();
+      }
+      toast.success('Prompt performance refreshed from synced analytics.');
+    } catch (error) {
+      toast.error('Failed to refresh prompt performance');
+    } finally {
+      setIsRefreshingMetrics(false);
     }
   };
 
@@ -554,8 +573,24 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
             <p className="text-gray-600 mt-1">
               Browse, filter, and send ideas to Composer instantly.
             </p>
+            <p className="text-xs text-gray-500 mt-1">
+              Refresh uses analytics already synced in Tweet Genie (no extra X API fetches).
+            </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={handleRefreshMetrics}
+              disabled={isRefreshingMetrics}
+              className="inline-flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-blue-200 text-sm text-blue-700 hover:bg-blue-50 disabled:opacity-60"
+            >
+              {isRefreshingMetrics ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4" />
+              )}
+              Refresh performance
+            </button>
             <div className="px-3 py-1.5 bg-white rounded-lg border border-gray-200 text-sm text-gray-700">
               <span className="font-semibold text-gray-900">{promptStats.total}</span> total
             </div>
@@ -718,6 +753,8 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
           const categoryClass = CATEGORY_STYLE[prompt.category] || 'bg-gray-100 text-gray-700';
           const variables = parseVariables(prompt.variables);
           const cleanedPrompt = cleanPromptText(prompt.prompt_text);
+          const postedCount = Number(prompt.posted_count || 0);
+          const avgEngagementRate = Number(prompt.avg_engagement_rate || 0);
           const instructionRaw =
             typeof variables.instruction === 'string' ? cleanPromptText(variables.instruction) : '';
           const instruction =
@@ -785,7 +822,10 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
                 </div>
               )}
 
-              {(prompt.usage_count > 0 || Number(prompt.content_generated_count) > 0) && (
+              {(prompt.usage_count > 0 ||
+                Number(prompt.content_generated_count) > 0 ||
+                postedCount > 0 ||
+                avgEngagementRate > 0) && (
                 <div className="flex items-center gap-2 mb-4 flex-wrap">
                   {prompt.usage_count > 0 && (
                     <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 px-2 py-1 rounded-lg font-medium">
@@ -797,6 +837,16 @@ const PromptLibrary = ({ strategyId, strategyExtraContext = '', fromAnalysis = f
                     <div className="flex items-center gap-1.5 text-xs text-violet-600 bg-violet-50 px-2 py-1 rounded-lg font-medium">
                       <FileText className="w-3.5 h-3.5" />
                       {prompt.content_generated_count} {Number(prompt.content_generated_count) === 1 ? 'tweet' : 'tweets'} generated
+                    </div>
+                  )}
+                  {postedCount > 0 && (
+                    <div className="text-xs text-sky-700 font-medium bg-sky-50 px-2 py-1 rounded-lg">
+                      {postedCount} posted
+                    </div>
+                  )}
+                  {avgEngagementRate > 0 && (
+                    <div className="text-xs text-indigo-700 font-medium bg-indigo-50 px-2 py-1 rounded-lg">
+                      {avgEngagementRate.toFixed(2)}% avg engagement
                     </div>
                   )}
                   {prompt.performance_score > 0 && (

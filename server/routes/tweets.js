@@ -705,6 +705,8 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
       media,
       thread,
       threadMedia,
+      strategy_id,
+      prompt_id,
       postToLinkedin,
       crossPostTargets,
       crossPostTargetAccountIds = null,
@@ -716,6 +718,8 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
     const normalizedCrossPostTargets = normalizeCrossPostTargets({ postToLinkedin, crossPostTargets });
     const normalizedCrossPostTargetAccountIds = normalizeCrossPostTargetAccountIds({ crossPostTargetAccountIds });
     const normalizedCrossPostMedia = normalizeCrossPostMediaPayload(crossPostMedia);
+    const strategyId = typeof strategy_id === 'string' && strategy_id.trim() ? strategy_id.trim() : null;
+    const promptId = typeof prompt_id === 'string' && prompt_id.trim() ? prompt_id.trim() : null;
     const requestTeamId = String(req.headers['x-team-id'] || '').trim() || null;
 
     if (twitterAccount?.isTeamAccount && !requestTeamId) {
@@ -933,8 +937,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                 `INSERT INTO tweets (
                   user_id, account_id, author_id, tweet_id, content, 
                   media_urls, credits_used, is_thread, thread_count,
-                  impressions, likes, retweets, replies, status, source
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, 0, 0, 'posted', 'platform')`,
+                  impressions, likes, retweets, replies, status, source,
+                  strategy_id, prompt_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, 0, 0, 'posted', 'platform', $10, $11)`,
                 [
                   userId,
                   accountId,
@@ -944,7 +949,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
                   JSON.stringify(threadTweetMediaUrls),
                   0,
                   true,  // is_thread
-                  thread.length  // thread_count
+                  thread.length,  // thread_count
+                  strategyId,
+                  promptId,
                 ]
               );
             } catch (error) {
@@ -988,8 +995,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
         `INSERT INTO tweets (
           user_id, account_id, author_id, tweet_id, content, 
           media_urls, thread_tweets, credits_used, is_thread, thread_count,
-          impressions, likes, retweets, replies, status, source
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, 0, 0, 'posted', 'platform')
+          impressions, likes, retweets, replies, status, source,
+          strategy_id, prompt_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, 0, 0, 'posted', 'platform', $11, $12)
         RETURNING *`,
         [
           userId,
@@ -1001,7 +1009,9 @@ router.post('/', validateRequest(tweetSchema), validateTwitterConnection, async 
           JSON.stringify(threadTweets),
           0,
           thread && thread.length > 0,  // is_thread
-          thread && thread.length > 0 ? thread.length : 1  // thread_count
+          thread && thread.length > 0 ? thread.length : 1,  // thread_count
+          strategyId,
+          promptId,
         ]
       );
       await invalidateUserAnalyticsCache(userId);

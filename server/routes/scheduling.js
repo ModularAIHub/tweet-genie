@@ -218,6 +218,31 @@ function buildScheduledCrossPostMetadata({
   };
 }
 
+function buildScheduledStrategyPromptMetadata({ strategyId = null, promptId = null } = {}) {
+  const next = {};
+  const cleanStrategyId = typeof strategyId === 'string' ? strategyId.trim() : '';
+  const cleanPromptId = typeof promptId === 'string' ? promptId.trim() : '';
+
+  if (cleanStrategyId) {
+    next.strategy_id = cleanStrategyId;
+  }
+  if (cleanPromptId) {
+    next.prompt_id = cleanPromptId;
+  }
+
+  if (!next.strategy_id && !next.prompt_id) {
+    return null;
+  }
+
+  return {
+    strategy_prompt: {
+      ...next,
+      linked_at: new Date().toISOString(),
+      source: 'compose_schedule',
+    },
+  };
+}
+
 function normalizeTimezoneInput(timezone) {
   if (typeof timezone !== 'string' || timezone.trim().length === 0) {
     return null;
@@ -1499,6 +1524,8 @@ router.post('/', schedulingRateLimit, validateRequest(scheduleSchema), validateT
       threadMedia = [],
       scheduled_for,
       timezone,
+      strategy_id,
+      prompt_id,
       postToLinkedin = false,
       crossPostTargets = null,
       crossPostTargetAccountIds = null,
@@ -1732,7 +1759,18 @@ router.post('/', schedulingRateLimit, validateRequest(scheduleSchema), validateT
       sourceSnapshot,
       media: normalizedCrossPostMedia,
     });
-    const canStoreMetadata = scheduledMetadata ? await hasScheduledMetadataColumn() : false;
+    const strategyPromptMetadata = buildScheduledStrategyPromptMetadata({
+      strategyId: strategy_id,
+      promptId: prompt_id,
+    });
+    const combinedMetadata =
+      scheduledMetadata || strategyPromptMetadata
+        ? {
+            ...(scheduledMetadata || {}),
+            ...(strategyPromptMetadata || {}),
+          }
+        : null;
+    const canStoreMetadata = combinedMetadata ? await hasScheduledMetadataColumn() : false;
 
     // Save scheduled tweet
     const insertColumns = [
@@ -1772,13 +1810,14 @@ router.post('/', schedulingRateLimit, validateRequest(scheduleSchema), validateT
     ];
     if (canStoreMetadata) {
       insertColumns.splice(15, 0, 'metadata');
-      insertValues.push(JSON.stringify(scheduledMetadata));
-    } else if (scheduledMetadata) {
-      schedulingDebug('[Scheduling] scheduled_tweets.metadata column not available; cross-post schedule settings will not persist', {
+      insertValues.push(JSON.stringify(combinedMetadata));
+    } else if (combinedMetadata) {
+      schedulingDebug('[Scheduling] scheduled_tweets.metadata column not available; advanced schedule metadata will not persist', {
         userId,
         hasLinkedIn: normalizedCrossPostTargets.linkedin,
         hasThreads: normalizedCrossPostTargets.threads,
         hasTwitter: normalizedCrossPostTargets.twitter,
+        hasPromptTracking: Boolean(strategyPromptMetadata),
       });
     }
 

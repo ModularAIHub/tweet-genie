@@ -794,6 +794,37 @@ class ScheduledTweetService {
     }
     const timezone = options.timezone || 'UTC';
     const mediaUrls = options.mediaUrls || options.media_urls || [];
+    const metadataColumnAvailable = await hasScheduledMetadataColumn();
+    const baseMetadata = parseJsonObject(options.metadata, {});
+    const strategyId = typeof options.strategyId === 'string'
+      ? options.strategyId.trim()
+      : (typeof options.strategy_id === 'string' ? options.strategy_id.trim() : '');
+    const promptId = typeof options.promptId === 'string'
+      ? options.promptId.trim()
+      : (typeof options.prompt_id === 'string' ? options.prompt_id.trim() : '');
+    const strategyPromptMetadata =
+      strategyId || promptId
+        ? {
+            strategy_prompt: {
+              ...(strategyId ? { strategy_id: strategyId } : {}),
+              ...(promptId ? { prompt_id: promptId } : {}),
+              linked_at: new Date().toISOString(),
+              source: 'scheduled_tweet_service',
+            },
+          }
+        : null;
+    const mergedMetadata =
+      baseMetadata && typeof baseMetadata === 'object'
+        ? {
+            ...baseMetadata,
+            ...(strategyPromptMetadata || {}),
+          }
+        : (strategyPromptMetadata || null);
+    const shouldPersistMetadata =
+      metadataColumnAvailable &&
+      mergedMetadata &&
+      typeof mergedMetadata === 'object' &&
+      Object.keys(mergedMetadata).length > 0;
 
 
     // Main tweet is first, rest are thread
@@ -817,24 +848,45 @@ class ScheduledTweetService {
 
 
     // Insert into scheduled_tweets with team_id and account_id
-    const insertQuery = `
-      INSERT INTO scheduled_tweets
-        (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, team_id, account_id, author_id, created_at, updated_at)
-      VALUES
-        ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      RETURNING id, scheduled_for;
-    `;
-    const values = [
-      userId,
-      scheduledFor,
-      timezone,
-      mainContent,
-      JSON.stringify(mediaUrls),
-      JSON.stringify(threadTweets),
-      teamId,
-      normalizedAccountId,
-      authorId
-    ];
+    const insertQuery = shouldPersistMetadata
+      ? `
+          INSERT INTO scheduled_tweets
+            (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, team_id, account_id, author_id, metadata, created_at, updated_at)
+          VALUES
+            ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          RETURNING id, scheduled_for;
+        `
+      : `
+          INSERT INTO scheduled_tweets
+            (user_id, scheduled_for, timezone, status, content, media_urls, thread_tweets, team_id, account_id, author_id, created_at, updated_at)
+          VALUES
+            ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          RETURNING id, scheduled_for;
+        `;
+    const values = shouldPersistMetadata
+      ? [
+          userId,
+          scheduledFor,
+          timezone,
+          mainContent,
+          JSON.stringify(mediaUrls),
+          JSON.stringify(threadTweets),
+          teamId,
+          normalizedAccountId,
+          authorId,
+          JSON.stringify(mergedMetadata),
+        ]
+      : [
+          userId,
+          scheduledFor,
+          timezone,
+          mainContent,
+          JSON.stringify(mediaUrls),
+          JSON.stringify(threadTweets),
+          teamId,
+          normalizedAccountId,
+          authorId,
+        ];
 
 
     const { rows } = await pool.query(insertQuery, values);
@@ -1522,11 +1574,26 @@ class ScheduledTweetService {
 
 
       // Insert into tweets table for history tracking
+      const scheduledMetadata = parseJsonObject(scheduledTweet?.metadata, {});
+      const scheduledStrategyPrompt =
+        scheduledMetadata?.strategy_prompt &&
+        typeof scheduledMetadata.strategy_prompt === 'object' &&
+        !Array.isArray(scheduledMetadata.strategy_prompt)
+          ? scheduledMetadata.strategy_prompt
+          : {};
+      const scheduledStrategyId =
+        typeof scheduledStrategyPrompt.strategy_id === 'string' && scheduledStrategyPrompt.strategy_id.trim()
+          ? scheduledStrategyPrompt.strategy_id.trim()
+          : null;
+      const scheduledPromptId =
+        typeof scheduledStrategyPrompt.prompt_id === 'string' && scheduledStrategyPrompt.prompt_id.trim()
+          ? scheduledStrategyPrompt.prompt_id.trim()
+          : null;
       const tweetInsertQuery = `
         INSERT INTO tweets (
           user_id, content, tweet_id, status, posted_at, 
-          source, account_id, author_id, created_at, updated_at
-        ) VALUES ($1, $2, $3, 'posted', CURRENT_TIMESTAMP, 'platform', $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          source, account_id, author_id, strategy_id, prompt_id, created_at, updated_at
+        ) VALUES ($1, $2, $3, 'posted', CURRENT_TIMESTAMP, 'platform', $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         RETURNING id
       `;
       const accountId = scheduledTweet.account_id || null;
@@ -1536,7 +1603,9 @@ class ScheduledTweetService {
         cleanContent,
         tweetResponse.data.id,
         accountId,
-        authorId
+        authorId,
+        scheduledStrategyId,
+        scheduledPromptId,
       ]);
       console.log(`Inserted main tweet into history with ID: ${insertedTweet[0].id}`);
       if (threadTweetIds.length > 0) {
@@ -1546,7 +1615,9 @@ class ScheduledTweetService {
             threadTweet.content,
             threadTweet.tweetId,
             accountId,
-            authorId
+            authorId,
+            scheduledStrategyId,
+            scheduledPromptId,
           ]);
         }
         console.log(`Inserted ${threadTweetIds.length} additional thread tweets into history`);

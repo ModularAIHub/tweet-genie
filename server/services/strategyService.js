@@ -1661,13 +1661,23 @@ Format: Just list topics separated by commas, no bullets, no numbering, no extra
   // Get prompts for strategy
   async getPrompts(strategyId, filters = {}) {
     let query = `SELECT sp.*,
-                        COALESCE(cq.content_count, 0) AS content_generated_count
+                        GREATEST(COALESCE(cq.content_count, 0), COALESCE(tp.posted_count, 0)) AS content_generated_count,
+                        COALESCE(tp.posted_count, 0) AS posted_count,
+                        COALESCE(tp.avg_engagement_rate, 0) AS avg_engagement_rate,
+                        tp.last_posted_at
                  FROM strategy_prompts sp
                  LEFT JOIN LATERAL (
                    SELECT COUNT(*) AS content_count
                    FROM content_review_queue crq
                    WHERE crq.prompt_id = sp.id
                  ) cq ON true
+                 LEFT JOIN LATERAL (
+                   SELECT COUNT(*)::int AS posted_count,
+                          AVG(CASE WHEN t.engagement_rate > 0 THEN t.engagement_rate END) AS avg_engagement_rate,
+                          MAX(COALESCE(t.external_created_at, t.posted_at, t.created_at)) AS last_posted_at
+                   FROM tweets t
+                   WHERE t.prompt_id = sp.id
+                 ) tp ON true
                  WHERE sp.strategy_id = $1`;
     const params = [strategyId];
     
@@ -1689,6 +1699,109 @@ Format: Just list topics separated by commas, no bullets, no numbering, no extra
 
     const { rows } = await pool.query(query, params);
     return rows;
+  }
+
+  async recordPromptUsage({ promptId, strategyId = null } = {}) {
+    const cleanPromptId = typeof promptId === 'string' ? promptId.trim() : '';
+    const cleanStrategyId = typeof strategyId === 'string' ? strategyId.trim() : '';
+
+    if (!cleanPromptId) {
+      return { updated: false };
+    }
+
+    const { rowCount } = await pool.query(
+      `UPDATE strategy_prompts
+       SET usage_count = usage_count + 1,
+           last_used_at = NOW()
+       WHERE id = $1
+         AND ($2::text = '' OR strategy_id::text = $2::text)`,
+      [cleanPromptId, cleanStrategyId]
+    );
+
+    return { updated: rowCount > 0 };
+  }
+
+  async refreshPromptMetrics(strategyId, options = {}) {
+    const lookbackDaysRaw = Number.parseInt(options?.lookbackDays, 10);
+    const lookbackDays = Number.isFinite(lookbackDaysRaw)
+      ? Math.min(Math.max(lookbackDaysRaw, 7), 180)
+      : 30;
+
+    const { rows: strategyRows } = await pool.query(
+      `SELECT AVG(t.engagement_rate) AS strategy_avg_engagement
+       FROM tweets t
+       WHERE t.strategy_id = $1
+         AND t.prompt_id IS NOT NULL
+         AND t.engagement_rate > 0
+         AND COALESCE(t.external_created_at, t.posted_at, t.created_at) >= NOW() - make_interval(days => $2::int)`,
+      [strategyId, lookbackDays]
+    );
+
+    const strategyAvgEngagement = Number(strategyRows[0]?.strategy_avg_engagement || 0);
+
+    const { rows: promptRows } = await pool.query(
+      `SELECT t.prompt_id,
+              COUNT(*)::int AS posted_count,
+              AVG(CASE WHEN t.engagement_rate > 0 THEN t.engagement_rate END) AS avg_engagement_rate,
+              MAX(COALESCE(t.external_created_at, t.posted_at, t.created_at)) AS last_posted_at
+       FROM tweets t
+       WHERE t.strategy_id = $1
+         AND t.prompt_id IS NOT NULL
+         AND COALESCE(t.external_created_at, t.posted_at, t.created_at) >= NOW() - make_interval(days => $2::int)
+       GROUP BY t.prompt_id`,
+      [strategyId, lookbackDays]
+    );
+
+    const toScore = (avgEngagementRate, postedCount) => {
+      const numericAvg = Number(avgEngagementRate || 0);
+      if (numericAvg <= 0 || postedCount <= 0) return 0;
+      if (strategyAvgEngagement > 0) {
+        return Number(Math.min(200, Math.max(0, (numericAvg / strategyAvgEngagement) * 100)).toFixed(1));
+      }
+      return 100;
+    };
+
+    const promptIdsWithMetrics = [];
+    for (const row of promptRows) {
+      const promptId = typeof row.prompt_id === 'string' ? row.prompt_id.trim() : '';
+      if (!promptId) continue;
+      promptIdsWithMetrics.push(promptId);
+      const score = toScore(row.avg_engagement_rate, Number(row.posted_count || 0));
+      await pool.query(
+        `UPDATE strategy_prompts
+         SET performance_score = $1
+         WHERE id = $2
+           AND strategy_id = $3`,
+        [score, promptId, strategyId]
+      );
+    }
+
+    if (promptIdsWithMetrics.length > 0) {
+      await pool.query(
+        `UPDATE strategy_prompts
+         SET performance_score = 0
+         WHERE strategy_id = $1
+           AND id <> ALL($2::uuid[])`,
+        [strategyId, promptIdsWithMetrics]
+      );
+    } else {
+      await pool.query(
+        `UPDATE strategy_prompts
+         SET performance_score = 0
+         WHERE strategy_id = $1`,
+        [strategyId]
+      );
+    }
+
+    const safeStrategyAvgEngagement = Number.isFinite(strategyAvgEngagement)
+      ? Number(strategyAvgEngagement.toFixed(4))
+      : 0;
+
+    return {
+      lookbackDays,
+      strategyAvgEngagement: safeStrategyAvgEngagement,
+      promptsEvaluated: promptRows.length,
+    };
   }
 
   // Update strategy

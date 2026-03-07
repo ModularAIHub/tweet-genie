@@ -26,6 +26,8 @@ export const tweetSchema = Joi.object({
     then: Joi.optional(),
     otherwise: Joi.required()
   }),
+  strategy_id: Joi.string().trim().guid({ version: ['uuidv4', 'uuidv5'] }).optional(),
+  prompt_id: Joi.string().trim().guid({ version: ['uuidv4', 'uuidv5'] }).optional(),
   // Allow frontend to pass a postToLinkedin boolean flag
   postToLinkedin: Joi.boolean().optional(),
   crossPostTargets: Joi.object({
@@ -75,6 +77,8 @@ export const aiGenerateSchema = Joi.object({
 // Schedule validation (accepts content/media for single, or thread/threadMedia for thread)
 export const scheduleSchema = Joi.object({
   content: Joi.string().allow('').max(280).optional(),
+  strategy_id: Joi.string().trim().guid({ version: ['uuidv4', 'uuidv5'] }).optional(),
+  prompt_id: Joi.string().trim().guid({ version: ['uuidv4', 'uuidv5'] }).optional(),
   // Allow scheduling requests to include postToLinkedin
   postToLinkedin: Joi.boolean().optional(),
   crossPostTargets: Joi.object({

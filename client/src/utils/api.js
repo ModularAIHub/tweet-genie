@@ -518,6 +518,8 @@ export const strategy = {
   addOn: (strategyId, data) => api.post(`/api/strategy/${strategyId}/add-on`, data),
   generatePrompts: (strategyId) => api.post(`/api/strategy/${strategyId}/generate-prompts`),
   getPrompts: (strategyId, params) => api.get(`/api/strategy/${strategyId}/prompts`, { params }),
+  refreshPromptMetrics: (strategyId, data = {}) =>
+    api.post(`/api/strategy/${strategyId}/prompts/refresh-metrics`, data),
   createPrompt: (strategyId, data) => api.post(`/api/strategy/${strategyId}/prompts`, data),
   deletePrompt: (promptId) => api.delete(`/api/strategy/prompts/${promptId}`),
   toggleFavorite: (promptId) => api.post(`/api/strategy/prompts/${promptId}/favorite`),

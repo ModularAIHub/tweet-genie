@@ -6,6 +6,7 @@ import { creditService } from '../services/creditService.js';
 import { TeamCreditService } from '../services/teamCreditService.js';
 import { sanitizeInput, sanitizeAIPrompt, checkRateLimit } from '../utils/sanitization.js';
 import { getTwitterPostingPreferences } from '../utils/twitterPostingPreferences.js';
+import pool from '../config/database.js';
 import {
   normalizeStrategyPromptPayload,
   buildStrategyGenerationPrompt,
@@ -499,6 +500,16 @@ router.post('/generate', authenticateToken, async (req, res) => {
             req.headers['x-team-id'] ||
             null,
           accountId: scheduleOptions.accountId || scheduleOptions.account_id || null,
+          strategyId:
+            scheduleOptions.strategyId ||
+            scheduleOptions.strategy_id ||
+            strategyPrompt?.strategyId ||
+            null,
+          promptId:
+            scheduleOptions.promptId ||
+            scheduleOptions.prompt_id ||
+            strategyPrompt?.promptId ||
+            null,
         },
       });
       if (
@@ -510,6 +521,21 @@ router.post('/generate', authenticateToken, async (req, res) => {
         scheduledResult.posted = true;
       } else {
         scheduledResult.posted = false;
+      }
+    }
+
+    if (normalizedGenerationMode === 'strategy_prompt' && strategyPrompt?.promptId) {
+      try {
+        await pool.query(
+          `UPDATE strategy_prompts
+           SET usage_count = usage_count + 1,
+               last_used_at = NOW()
+           WHERE id = $1
+             AND ($2::text IS NULL OR strategy_id::text = $2::text)`,
+          [strategyPrompt.promptId, strategyPrompt?.strategyId || null]
+        );
+      } catch (usageError) {
+        console.warn('[AI generation][strategy] Failed to mark prompt usage:', usageError?.message || usageError);
       }
     }
 

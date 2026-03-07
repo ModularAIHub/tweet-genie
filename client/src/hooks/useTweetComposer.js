@@ -250,6 +250,7 @@ export const useTweetComposer = () => {
   const [aiPrompt, setAiPromptState] = useState('');
   const [strategyPromptContext, setStrategyPromptContextState] = useState(null);
   const [strategyPromptSeedText, setStrategyPromptSeedTextState] = useState('');
+  const [activePromptTracking, setActivePromptTracking] = useState(null);
   const [aiStyle, setAiStyle] = useState('casual');
   const [isGenerating, setIsGenerating] = useState(false);
   const [showImagePrompt, setShowImagePrompt] = useState(false);
@@ -832,6 +833,12 @@ export const useTweetComposer = () => {
       const crossPostMediaPayload = hasAnyCrossPostTarget
         ? await buildCrossPostMediaPayload(isThread ? (threadImages[0] || []) : selectedImages)
         : [];
+      const promptTrackingFields = activePromptTracking
+        ? {
+            ...(activePromptTracking.strategyId && { strategy_id: activePromptTracking.strategyId }),
+            ...(activePromptTracking.promptId && { prompt_id: activePromptTracking.promptId }),
+          }
+        : {};
       const crossPostRequestFields = {
         ...(normalizedCrossPost.linkedin && { postToLinkedin: true }),
         ...(hasAnyCrossPostTarget && {
@@ -849,6 +856,7 @@ export const useTweetComposer = () => {
           optimizeCrossPost: normalizedCrossPost.optimizeCrossPost,
         }),
         ...(crossPostMediaPayload.length > 0 && { crossPostMedia: crossPostMediaPayload }),
+        ...promptTrackingFields,
       };
 
       const showPostResultToast = ({ response, isThreadPost, validTweetsCount = 1 }) => {
@@ -1018,6 +1026,7 @@ export const useTweetComposer = () => {
         showPostResultToast({ response, isThreadPost: false });
         setContent('');
       }
+      setActivePromptTracking(null);
 
       selectedImages.forEach((img) => {
         if (img.preview && img.preview.startsWith('blob:')) {
@@ -1099,6 +1108,12 @@ export const useTweetComposer = () => {
       const crossPostMediaPayload = hasAnyCrossPostTarget
         ? await buildCrossPostMediaPayload(isThread ? (threadImages[0] || []) : selectedImages)
         : [];
+      const promptTrackingFields = activePromptTracking
+        ? {
+            ...(activePromptTracking.strategyId && { strategy_id: activePromptTracking.strategyId }),
+            ...(activePromptTracking.promptId && { prompt_id: activePromptTracking.promptId }),
+          }
+        : {};
       let mediaIds = [];
       let threadMedia = [];
 
@@ -1179,6 +1194,7 @@ export const useTweetComposer = () => {
           }),
           scheduled_for: dateString,
           timezone: resolvedTimezone,
+          ...promptTrackingFields,
         });
         const threadScheduleData = threadScheduleRes?.data || {};
         const threadNeedsApproval = threadScheduleData.approval_status === 'pending_approval';
@@ -1221,6 +1237,7 @@ export const useTweetComposer = () => {
           }),
           scheduled_for: dateString,
           timezone: resolvedTimezone,
+          ...promptTrackingFields,
         });
         const singleScheduleData = singleScheduleRes?.data || {};
         const singleNeedsApproval = singleScheduleData.approval_status === 'pending_approval';
@@ -1248,6 +1265,7 @@ export const useTweetComposer = () => {
         }
       });
       setSelectedImages([]);
+      setActivePromptTracking(null);
       clearDraft(COMPOSE_DRAFT_STORAGE_KEY);
       fetchScheduledTweets();
     } catch (error) {
@@ -1334,6 +1352,14 @@ export const useTweetComposer = () => {
 
         setShowAIPrompt(false);
         setAiPrompt('');
+        if (canUseStrategyMode && strategyPromptContext?.promptId) {
+          setActivePromptTracking({
+            strategyId: strategyPromptContext.strategyId || null,
+            promptId: strategyPromptContext.promptId,
+          });
+        } else {
+          setActivePromptTracking(null);
+        }
         clearStrategyPromptContext();
 
         if (response.data.creditsUsed && response.data.threadCount) {
