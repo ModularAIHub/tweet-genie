@@ -44,7 +44,7 @@ const Dashboard = () => {
   const [creditBalance, setCreditBalance] = useState(null);
   const [hasAttemptedFetch, setHasAttemptedFetch] = useState(false);
   const bootstrapInFlightRef = useRef(false);
-  
+
   // Get fresh accountAPI on every render to capture current selectedAccount
   const accountAPI = useAccountAwareAPI();
 
@@ -93,7 +93,7 @@ const Dashboard = () => {
     try {
       setLoading(true);
       setHasAttemptedFetch(true);
-      
+
       try {
         const bootstrapResponse = await accountAPI.fetchForCurrentAccount('/api/dashboard/bootstrap?days=50', {
           cacheTtlMs: 20000,
@@ -178,7 +178,7 @@ const Dashboard = () => {
   const needsTwitterConnect = accounts.length === 0 && hasAttemptedFetch;
   if (needsTwitterConnect) {
     connectBanner = (
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-6 mb-6">
+      <div className="bg-gradient-to-r from-blue-50/50 via-white to-purple-50/50 backdrop-blur-sm border border-blue-100 rounded-2xl p-6 mb-6 shadow-sm">
         <div className="flex flex-col sm:flex-row items-center gap-4">
           <div className="flex-shrink-0 p-3 bg-blue-100 rounded-full">
             <Twitter className="h-8 w-8 text-blue-600" />
@@ -191,7 +191,7 @@ const Dashboard = () => {
           </div>
           <a
             href="/settings"
-            className="inline-flex items-center px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm whitespace-nowrap"
+            className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl hover:from-blue-700 hover:to-indigo-700 transition-all font-medium text-sm whitespace-nowrap shadow-md hover:shadow-lg hover:-translate-y-0.5"
           >
             <Twitter className="h-4 w-4 mr-2" />
             Connect Twitter
@@ -205,7 +205,7 @@ const Dashboard = () => {
   let socialAccountsSection = null;
   if (accounts.length > 0) {
     socialAccountsSection = (
-      <div className="card p-6 mb-8">
+      <div className="bg-white/70 backdrop-blur-md rounded-2xl border border-gray-200/50 p-6 mb-8 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Social Accounts</h3>
           <span className="text-sm text-gray-600">
@@ -248,28 +248,28 @@ const Dashboard = () => {
       value: analyticsData?.overview?.total_tweets || 0,
       icon: MessageCircle,
       color: 'text-blue-600',
-      bgColor: 'bg-blue-50',
+      bgColor: 'bg-gradient-to-br from-blue-50 to-blue-100/50',
     },
     {
       name: 'Total Impressions',
       value: analyticsData?.overview?.total_impressions || 0,
       icon: TrendingUp,
       color: 'text-green-600',
-      bgColor: 'bg-green-50',
+      bgColor: 'bg-gradient-to-br from-emerald-50 to-emerald-100/50',
     },
     {
       name: 'Total Likes',
       value: analyticsData?.overview?.total_likes || 0,
       icon: Heart,
       color: 'text-red-600',
-      bgColor: 'bg-red-50',
+      bgColor: 'bg-gradient-to-br from-rose-50 to-rose-100/50',
     },
     {
       name: 'Total Retweets',
       value: analyticsData?.overview?.total_retweets || 0,
       icon: Repeat2,
       color: 'text-purple-600',
-      bgColor: 'bg-purple-50',
+      bgColor: 'bg-gradient-to-br from-indigo-50 to-indigo-100/50',
     },
   ];
 
@@ -279,21 +279,21 @@ const Dashboard = () => {
       description: 'Create and post a new tweet',
       href: '/compose',
       icon: Edit3,
-      color: 'bg-primary-600 hover:bg-primary-700',
+      color: 'bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700',
     },
     {
       name: 'Schedule Tweet',
       description: 'Plan your content ahead',
       href: '/scheduling',
       icon: Calendar,
-      color: 'bg-green-600 hover:bg-green-700',
+      color: 'bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700',
     },
     {
       name: 'View Analytics',
       description: 'Check your performance',
       href: '/analytics',
       icon: BarChart3,
-      color: 'bg-purple-600 hover:bg-purple-700',
+      color: 'bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700',
     },
   ];
 
@@ -340,7 +340,7 @@ const Dashboard = () => {
           {/* Removed round icon and email from header */}
           <Link
             to="/compose"
-            className="btn btn-primary btn-lg"
+            className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium rounded-xl shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all"
           >
             <Plus className="h-5 w-5 mr-2" />
             New Tweet
@@ -352,7 +352,7 @@ const Dashboard = () => {
           {stats.map((stat) => {
             const Icon = stat.icon;
             return (
-              <div key={stat.name} className="card">
+              <div key={stat.name} className="bg-white/80 backdrop-blur-md rounded-2xl p-6 border border-gray-100 shadow-sm hover:shadow-md transition-all hover:-translate-y-1">
                 <div className="flex items-center">
                   <div className={`p-3 rounded-lg ${stat.bgColor}`}>
                     <Icon className={`h-6 w-6 ${stat.color}`} />
@@ -371,7 +371,7 @@ const Dashboard = () => {
 
         {/* Credits Balance */}
         {creditBalance && (
-          <div className="card">
+          <div className="bg-white/80 backdrop-blur-md rounded-2xl p-6 border border-gray-100 shadow-sm">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Credit Balance</h3>
@@ -404,10 +404,10 @@ const Dashboard = () => {
               <Link
                 key={action.name}
                 to={action.href}
-                className="card hover:shadow-lg transition-shadow cursor-pointer group"
+                className="bg-white/80 backdrop-blur-md rounded-2xl p-6 border border-gray-100 shadow-sm hover:shadow-xl hover:border-blue-100 transition-all cursor-pointer group hover:-translate-y-1"
               >
                 <div className="text-center">
-                  <div className={`inline-flex p-4 rounded-lg ${action.color} group-hover:scale-110 transition-transform`}>
+                  <div className={`inline-flex p-4 rounded-2xl ${action.color} shadow-lg shadow-${action.color.split('-')[2]}/20 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300`}>
                     <Icon className="h-8 w-8 text-white" />
                   </div>
                   <h3 className="mt-4 text-lg font-semibold text-gray-900">
@@ -424,67 +424,66 @@ const Dashboard = () => {
 
         {/* Power Features */}
         {visiblePowerFeatures.length > 0 && (
-        <div>
-          <div className="flex items-center mb-6">
-            <Zap className="h-6 w-6 text-yellow-500 mr-2" />
-            <h2 className="text-2xl font-bold text-gray-900">Power Features</h2>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {visiblePowerFeatures.map((feature) => {
-              const Icon = feature.icon;
-              return (
-                <Link
-                  key={feature.name}
-                  to={feature.href}
-                  className="card hover:shadow-xl transition-all duration-300 cursor-pointer group overflow-hidden relative"
-                >
-                  <div className={`absolute inset-0 bg-gradient-to-br ${feature.color} opacity-0 group-hover:opacity-5 transition-opacity`}></div>
+          <div>
+            <div className="flex items-center mb-6">
+              <Zap className="h-6 w-6 text-yellow-500 mr-2" />
+              <h2 className="text-2xl font-bold text-gray-900">Power Features</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {visiblePowerFeatures.map((feature) => {
+                const Icon = feature.icon;
+                return (
+                  <Link
+                    key={feature.name}
+                    to={feature.href}
+                    className="card hover:shadow-xl transition-all duration-300 cursor-pointer group overflow-hidden relative"
+                  >
+                    <div className={`absolute inset-0 bg-gradient-to-br ${feature.color} opacity-0 group-hover:opacity-5 transition-opacity`}></div>
                     <div className="relative">
                       <div className="flex items-start space-x-4">
-                        <div className={`p-3 rounded-xl bg-gradient-to-br ${feature.color} group-hover:scale-110 transition-transform shadow-lg`}>
+                        <div className={`p-4 rounded-2xl bg-gradient-to-br ${feature.color} group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 shadow-xl shadow-${feature.color.split('-')[2]}/20`}>
                           <Icon className="h-7 w-7 text-white" />
                         </div>
                         <div className="flex-1">
-                        <h3 className="text-xl font-bold text-gray-900 mb-2 flex items-center gap-2">
-                          {feature.name}
-                          {feature.proOnly && (
-                            <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full border ${
-                                hasProAccess
-                                  ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                                  : 'bg-amber-100 text-amber-800 border-amber-200'
-                              }`}
-                            >
-                              {!hasProAccess && <Lock className="h-3 w-3" />}
-                              Pro
-                            </span>
-                          )}
-                        </h3>
-                        <p className="text-sm text-gray-600 mb-4">
-                          {feature.description}
-                        </p>
-                        <div className="space-y-2">
-                          {feature.benefits.map((benefit, idx) => (
-                            <div key={idx} className="flex items-start text-sm">
-                              <span className="text-green-500 mr-2 mt-0.5">✓</span>
-                              <span className="text-gray-700">{benefit}</span>
-                            </div>
-                          ))}
+                          <h3 className="text-xl font-bold text-gray-900 mb-2 flex items-center gap-2">
+                            {feature.name}
+                            {feature.proOnly && (
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full border ${hasProAccess
+                                    ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+                                    : 'bg-amber-100 text-amber-800 border-amber-200'
+                                  }`}
+                              >
+                                {!hasProAccess && <Lock className="h-3 w-3" />}
+                                Pro
+                              </span>
+                            )}
+                          </h3>
+                          <p className="text-sm text-gray-600 mb-4">
+                            {feature.description}
+                          </p>
+                          <div className="space-y-2">
+                            {feature.benefits.map((benefit, idx) => (
+                              <div key={idx} className="flex items-start text-sm">
+                                <span className="text-green-500 mr-2 mt-0.5">✓</span>
+                                <span className="text-gray-700">{benefit}</span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       </div>
+                      <div className="mt-4 flex items-center text-sm font-medium text-primary-600 group-hover:text-primary-700">
+                        <span>{feature.proOnly && !hasProAccess ? 'View and Upgrade' : 'Get Started'}</span>
+                        <svg className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </div>
                     </div>
-                    <div className="mt-4 flex items-center text-sm font-medium text-primary-600 group-hover:text-primary-700">
-                      <span>{feature.proOnly && !hasProAccess ? 'View and Upgrade' : 'Get Started'}</span>
-                      <svg className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </div>
-                  </div>
-                </Link>
-              );
-            })}
+                  </Link>
+                );
+              })}
+            </div>
           </div>
-        </div>
         )}
       </div>
     </>

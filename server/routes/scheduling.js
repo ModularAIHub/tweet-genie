@@ -1288,7 +1288,9 @@ router.post('/bulk', schedulingRateLimit, validateTwitterConnection, async (req,
   try {
     const { items, frequency, startDate, timeOfDay, postsPerDay = 1, dailyTimes = [timeOfDay || '09:00'], daysOfWeek, images, timezone } = req.body;
     const userId = req.user.id;
-    const teamId = req.headers['x-team-id'] || req.body.teamId || req.body.team_id || null;
+    // Scope is resolved from request headers (set by API interceptor + account selector).
+    // Avoid trusting body scope fields here because stale client state can mis-route bulk schedules.
+    const teamId = req.headers['x-team-id'] || null;
     const normalizedTimezone = resolveSchedulingTimezone(req, timezone);
     const maxSchedulingUtc = getMaxSchedulingUtcMoment();
     
@@ -1304,11 +1306,7 @@ router.post('/bulk', schedulingRateLimit, validateTwitterConnection, async (req,
       return res.status(400).json({ error: 'Invalid timezone' });
     }
     
-    const selectedAccountId =
-      req.headers['x-selected-account-id'] ||
-      req.body.accountId ||
-      req.body.account_id ||
-      null;
+    const selectedAccountId = req.headers['x-selected-account-id'] || null;
     const accountIdColumnType = await getScheduledAccountIdColumnType();
 
     let teamAccount = null;

@@ -12,13 +12,13 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { hasProPlanAccess } from '../utils/planAccess';
 import { getSuiteGenieProUpgradeUrl } from '../utils/upgradeUrl';
-import QuickBulkGenerate from '../components/QuickBulkGenerate';
 
 const BULK_GENERATION_SEED_KEY = 'bulkGenerationSeed';
 const BULK_GENERATION_DRAFT_KEY = 'bulkGenerationDraft';
 const BULK_GENERATION_DRAFT_VERSION = 1;
 const BULK_GENERATION_DRAFT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const MAX_BULK_PROMPTS = 30;
+const MAX_PARALLEL_BULK_GENERATIONS = 4;
 const MAX_SCHEDULING_WINDOW_DAYS = 15;
 const RECOMMENDED_SCHEDULING_WINDOW_DAYS = 14;
 const PROMPT_LIMIT_WARNING = `Only the first ${MAX_BULK_PROMPTS} prompts will be used.`;
@@ -351,6 +351,18 @@ const BulkGeneration = () => {
   const [showCreditInfo, setShowCreditInfo] = useState(true);
   const [seedMessage, setSeedMessage] = useState('');
   const outputCount = Object.keys(outputs).length;
+  const generatedCount = useMemo(
+    () => Object.values(outputs).filter((output) => output?.loading === false).length,
+    [outputs]
+  );
+  const schedulableOutputIndices = useMemo(
+    () =>
+      Object.keys(outputs)
+        .sort((a, b) => Number(a) - Number(b))
+        .filter((idx) => !discarded.includes(Number(idx))),
+    [outputs, discarded]
+  );
+  const schedulableCount = schedulableOutputIndices.length;
   const combinedPromptItems = useMemo(
     () => [...seededPromptItems, ...promptList].slice(0, MAX_BULK_PROMPTS),
     [seededPromptItems, promptList]
@@ -593,6 +605,7 @@ const BulkGeneration = () => {
 
   // Schedule all non-discarded outputs
   const handleScheduleAll = () => {
+    setSchedulingStatus('idle');
     setShowScheduleModal(true);
   };
 
@@ -608,11 +621,9 @@ const BulkGeneration = () => {
 
   // Schedule each output using the same logic as Compose
   const handleSchedule = async () => {
-    setSchedulingStatus('scheduling');
+      setSchedulingStatus('scheduling');
     try {
-      const toSchedule = Object.keys(outputs)
-        .filter(idx => !discarded.includes(Number(idx)))
-        .map(idx => outputs[idx]);
+      const toSchedule = schedulableOutputIndices.map((idx) => outputs[idx]);
       if (toSchedule.length === 0) {
         setSchedulingStatus('error');
         alert('No tweets/threads to schedule.');
@@ -665,6 +676,12 @@ const BulkGeneration = () => {
         for (let i = 0; i < toSchedule.length; i++) {
           scheduledTimes.push(current.add(i, 'day').hour(hour).minute(minute).second(0).format());
         }
+      }
+
+      if (frequency === 'custom' && (!Array.isArray(daysOfWeek) || daysOfWeek.length === 0)) {
+        setSchedulingStatus('error');
+        alert('Select at least one day of week for custom scheduling.');
+        return;
       }
 
       const maxSchedulingTime = dayjs().add(MAX_SCHEDULING_WINDOW_DAYS, 'day');
@@ -738,25 +755,7 @@ const BulkGeneration = () => {
         }
       }
 
-      // Use bulk scheduling API
-      // Get selected account info from localStorage
-      let teamId = null;
-      let accountId = null;
-      const selectedAccountRaw = localStorage.getItem('selectedTwitterAccount');
-      if (selectedAccountRaw) {
-        try {
-          const selectedAccount = JSON.parse(selectedAccountRaw);
-          accountId = selectedAccount.id || selectedAccount.account_id || null;
-          // Try to get teamId from account or from session storage
-          teamId = selectedAccount.team_id || sessionStorage.getItem('currentTeamId') || null;
-        } catch (e) {
-          accountId = null;
-          teamId = null;
-        }
-      } else {
-        // fallback: try sessionStorage
-        teamId = sessionStorage.getItem('currentTeamId') || null;
-      }
+      // Use bulk scheduling API (scope/account comes from API interceptor headers).
       const bulkPayload = {
         items,
         frequency,
@@ -766,8 +765,6 @@ const BulkGeneration = () => {
         daysOfWeek,
         images: mediaMap,
         timezone,
-        teamId,
-        accountId
       };
 
       try {
@@ -964,11 +961,17 @@ const handleGenerate = async () => {
         setError(`Bulk generation is limited to ${MAX_BULK_PROMPTS} prompts.`);
         return;
       }
-      const newOutputs = {};
-      for (let idx = 0; idx < combinedPromptItems.length; idx++) {
+
+      const loadingOutputs = combinedPromptItems.reduce((acc, promptItem, idx) => {
+        acc[idx] = { loading: true, prompt: promptItem?.idea || promptItem?.prompt || '' };
+        return acc;
+      }, {});
+      setOutputs(loadingOutputs);
+
+      const generateOne = async (idx) => {
         const promptItem = combinedPromptItems[idx];
         const { prompt, isThread } = promptItem;
-        setOutputs(prev => ({ ...prev, [idx]: { loading: true, prompt } }));
+
         try {
           const isSeededStrategyPrompt = Boolean(
             typeof promptItem?.sourceType === 'string' &&
@@ -995,29 +998,36 @@ const handleGenerate = async () => {
 
           const res = await ai.generate(requestPayload);
           const data = res.data;
+
           if (isThread) {
             let threadParts = splitGeneratedThreadParts(data.content, data.threadParts);
             if (threadParts.length === 0) {
               threadParts = [data.content.trim()];
             }
+            setOutputs((prev) => ({
+              ...prev,
+              [idx]: {
+                prompt: promptItem.idea || prompt,
+                text: (Array.isArray(data.threadParts) && data.threadParts.length > 0)
+                  ? data.threadParts.join('---')
+                  : data.content,
+                isThread: true,
+                threadParts,
+                images: Array(threadParts.length).fill(null),
+                id: idx,
+                loading: false,
+                error: null,
+                appeared: true,
+              },
+            }));
+            return;
+          }
 
-            newOutputs[idx] = {
-              prompt: promptItem.idea || prompt,
-              text: (Array.isArray(data.threadParts) && data.threadParts.length > 0)
-                ? data.threadParts.join('---')
-                : data.content,
-              isThread: true,
-              threadParts: threadParts,
-              images: Array(threadParts.length).fill(null),
-              id: idx,
-              loading: false,
-              error: null,
-              appeared: true,
-            };
-          } else {
-            let tweetText = data.content.split('---')[0].trim();
-            if (tweetText.length > 280) tweetText = tweetText.slice(0, 280);
-            newOutputs[idx] = {
+          let tweetText = data.content.split('---')[0].trim();
+          if (tweetText.length > 280) tweetText = tweetText.slice(0, 280);
+          setOutputs((prev) => ({
+            ...prev,
+            [idx]: {
               prompt: promptItem.idea || prompt,
               text: tweetText,
               isThread: false,
@@ -1027,18 +1037,33 @@ const handleGenerate = async () => {
               loading: false,
               error: null,
               appeared: true,
-            };
-          }
-          setOutputs(prev => ({ ...prev, [idx]: newOutputs[idx] }));
+            },
+          }));
         } catch (err) {
-          newOutputs[idx] = {
-            prompt: promptItem.idea || prompt,
-            loading: false,
-            error: err?.response?.data?.error || 'Failed to generate.',
-          };
-          setOutputs(prev => ({ ...prev, [idx]: newOutputs[idx] }));
+          setOutputs((prev) => ({
+            ...prev,
+            [idx]: {
+              prompt: promptItem.idea || prompt,
+              loading: false,
+              error: err?.response?.data?.error || 'Failed to generate.',
+            },
+          }));
         }
-      }
+      };
+
+      let nextIdx = 0;
+      const runnerCount = Math.min(MAX_PARALLEL_BULK_GENERATIONS, combinedPromptItems.length);
+      const runners = Array.from({ length: runnerCount }, async () => {
+        while (true) {
+          const currentIdx = nextIdx;
+          nextIdx += 1;
+          if (currentIdx >= combinedPromptItems.length) break;
+          // eslint-disable-next-line no-await-in-loop
+          await generateOne(currentIdx);
+        }
+      });
+      await Promise.all(runners);
+
       setPrompts('');
       setPromptList([]);
     } catch (err) {
@@ -1082,8 +1107,6 @@ const handleGenerate = async () => {
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 min-h-[80vh] space-y-8">
-      {/* Quick Generate — up to 6 posts */}
-      <QuickBulkGenerate disabled={loading} />
 
       {/* Gradient header for Advanced Bulk Generation */}
       <div className="rounded-xl bg-gradient-to-r from-blue-700 via-blue-500 to-blue-300 p-1 shadow-lg">
@@ -1241,75 +1264,137 @@ const handleGenerate = async () => {
         <>
           {/* Scheduling Modal UI */}
           {showScheduleModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60">
-              <div className="bg-white rounded-lg shadow-lg p-8 max-w-2xl w-full relative">
-                <button className="absolute top-2 right-2 text-gray-500 hover:text-gray-800 text-2xl" onClick={() => setShowScheduleModal(false)}>&times;</button>
-                <h2 className="text-2xl font-bold mb-4">Schedule Your Generated Content</h2>
-                <div className="mb-4">
-                  <label className="block font-semibold mb-1">Frequency:</label>
-                  <select className="border rounded px-3 py-2 w-full" value={frequency} onChange={e => setFrequency(e.target.value)}>
-                    {frequencyOptions.map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="mb-4">
-                  <label className="block font-semibold mb-1">Start Date:</label>
-                  <input
-                    type="date"
-                    className="border rounded px-3 py-2 w-full"
-                    value={startDate}
-                    min={dayjs().format('YYYY-MM-DD')}
-                    max={dayjs().add(MAX_SCHEDULING_WINDOW_DAYS, 'day').format('YYYY-MM-DD')}
-                    onChange={e => setStartDate(e.target.value)}
-                  />
-                  <p className="mt-1 text-xs text-amber-700">
-                    Hard limit: {MAX_SCHEDULING_WINDOW_DAYS} days ahead. Best practice: schedule up to {RECOMMENDED_SCHEDULING_WINDOW_DAYS} days, review strategy, then generate next batch.
-                  </p>
-                </div>
-                <div className="mb-4">
-                  <label className="block font-semibold mb-1">Posts per Day:</label>
-                  <select className="border rounded px-3 py-2 w-full" value={postsPerDay} onChange={e => handlePostsPerDayChange(Number(e.target.value))}>
-                    {[1, 2, 3, 4, 5].map(num => (
-                      <option key={num} value={num}>{num} post{num > 1 ? 's' : ''} per day</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="mb-4">
-                  <label className="block font-semibold mb-1">Posting Times:</label>
-                  <div className="space-y-2">
-                    {dailyTimes.map((time, index) => (
-                      <div key={index} className="flex items-center gap-2">
-                        <span className="text-sm text-gray-600 min-w-[60px]">Time {index + 1}:</span>
-                        <input 
-                          type="time" 
-                          className="border rounded px-3 py-2 flex-1" 
-                          value={time} 
-                          onChange={e => handleTimeChange(index, e.target.value)} 
+            <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 backdrop-blur-sm px-4 py-6 md:py-10">
+              <div className="mx-auto w-full max-w-3xl">
+                <div className="relative overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-2xl">
+                  <div className="relative bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-600 px-6 py-5 text-white">
+                    <button
+                      type="button"
+                      className="absolute right-4 top-4 h-9 w-9 rounded-full border border-white/30 bg-white/10 text-xl leading-none text-white hover:bg-white/20"
+                      onClick={() => setShowScheduleModal(false)}
+                      aria-label="Close scheduler"
+                    >
+                      &times;
+                    </button>
+                    <h2 className="pr-12 text-2xl font-bold">Schedule Generated Content</h2>
+                    <p className="mt-2 text-sm text-blue-100">
+                      {schedulableCount} item{schedulableCount === 1 ? '' : 's'} ready. Configure timing and publish in one batch.
+                    </p>
+                  </div>
+
+                  <div className="max-h-[75vh] space-y-5 overflow-y-auto px-6 py-5">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">Frequency</label>
+                        <select
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                          value={frequency}
+                          onChange={(e) => setFrequency(e.target.value)}
+                        >
+                          {frequencyOptions.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">Posts per day</label>
+                        <select
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                          value={postsPerDay}
+                          onChange={(e) => handlePostsPerDayChange(Number(e.target.value))}
+                        >
+                          {[1, 2, 3, 4, 5].map((num) => (
+                            <option key={num} value={num}>{num} post{num > 1 ? 's' : ''} per day</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-sm font-semibold text-gray-700">Start date</label>
+                        <input
+                          type="date"
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                          value={startDate}
+                          min={dayjs().format('YYYY-MM-DD')}
+                          max={dayjs().add(MAX_SCHEDULING_WINDOW_DAYS, 'day').format('YYYY-MM-DD')}
+                          onChange={(e) => setStartDate(e.target.value)}
                         />
                       </div>
-                    ))}
-                  </div>
-                </div>
-                {frequency === 'custom' && (
-                  <div className="mb-4">
-                    <label className="block font-semibold mb-1">Days of Week:</label>
-                    <div className="flex gap-2">
-                      {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d, i) => (
-                        <label key={i} className="flex items-center gap-1">
-                          <input type="checkbox" checked={daysOfWeek.includes(i)} onChange={e => {
-                            setDaysOfWeek(prev => e.target.checked ? [...prev, i] : prev.filter(x => x !== i));
-                          }} />
-                          <span>{d}</span>
-                        </label>
-                      ))}
+                    </div>
+
+                    <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
+                      <label className="mb-2 block text-sm font-semibold text-blue-900">Posting times</label>
+                      <div className="space-y-2">
+                        {dailyTimes.map((time, index) => (
+                          <div key={index} className="flex items-center gap-3">
+                            <span className="min-w-[68px] text-xs font-medium uppercase tracking-wide text-blue-700">Time {index + 1}</span>
+                            <input
+                              type="time"
+                              className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                              value={time}
+                              onChange={(e) => handleTimeChange(index, e.target.value)}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {frequency === 'custom' && (
+                      <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
+                        <label className="mb-2 block text-sm font-semibold text-indigo-900">Custom days</label>
+                        <div className="flex flex-wrap gap-2">
+                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => (
+                            <label
+                              key={i}
+                              className={`cursor-pointer rounded-full border px-3 py-1 text-sm transition ${
+                                daysOfWeek.includes(i)
+                                  ? 'border-indigo-600 bg-indigo-600 text-white'
+                                  : 'border-indigo-200 bg-white text-indigo-700 hover:border-indigo-400'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="sr-only"
+                                checked={daysOfWeek.includes(i)}
+                                onChange={(e) => {
+                                  setDaysOfWeek((prev) =>
+                                    e.target.checked ? [...prev, i] : prev.filter((x) => x !== i)
+                                  );
+                                }}
+                              />
+                              {d}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      Hard limit: {MAX_SCHEDULING_WINDOW_DAYS} days ahead. Best practice: schedule up to {RECOMMENDED_SCHEDULING_WINDOW_DAYS} days, then refresh strategy and generate your next batch.
                     </div>
                   </div>
-                )}
-                {/* Optionally, allow image upload for each output if needed */}
-                <button className="btn btn-primary px-6 py-2 mt-4" onClick={handleSchedule} disabled={schedulingStatus === 'scheduling'}>
-                  {schedulingStatus === 'scheduling' ? 'Scheduling...' : 'Schedule'}
-                </button>
+
+                  <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-gray-100 bg-white/95 px-6 py-4 backdrop-blur">
+                    <button
+                      type="button"
+                      className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                      onClick={() => setShowScheduleModal(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow hover:from-blue-700 hover:to-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={handleSchedule}
+                      disabled={schedulingStatus === 'scheduling' || schedulableCount === 0}
+                    >
+                      {schedulingStatus === 'scheduling'
+                        ? `Scheduling ${schedulableCount}...`
+                        : `Schedule ${schedulableCount} item${schedulableCount === 1 ? '' : 's'}`}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -1319,11 +1404,11 @@ const handleGenerate = async () => {
               <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden mr-4">
                 <div
                   className="h-2 bg-blue-500 transition-all duration-500"
-                  style={{ width: `${(Object.values(outputs).filter(o => o.loading === false).length / (outputCount || 1)) * 100}%` }}
+                  style={{ width: `${(generatedCount / (outputCount || 1)) * 100}%` }}
                 ></div>
               </div>
               <span className="text-sm text-gray-600 font-medium">
-                {Object.values(outputs).filter(o => o.loading === false).length} of {outputCount} generated
+                {generatedCount} of {outputCount} generated
               </span>
               {loading && <span className="ml-3 animate-spin h-5 w-5 border-2 border-blue-400 border-t-transparent rounded-full"></span>}
             </div>
@@ -1332,7 +1417,7 @@ const handleGenerate = async () => {
                 <button
                   className="btn btn-success px-5 py-2 rounded font-semibold shadow"
                   onClick={handleScheduleAll}
-                  disabled={outputCount === 0 || Object.keys(outputs).filter(idx => !discarded.includes(Number(idx))).length === 0}
+                  disabled={outputCount === 0 || schedulableCount === 0}
                 >
                   Schedule All
                 </button>
@@ -1342,10 +1427,7 @@ const handleGenerate = async () => {
               className="flex w-full gap-4 min-h-[60vh]"
               columnClassName="masonry-column"
             >
-              {Object.keys(outputs)
-                .sort((a, b) => Number(a) - Number(b))
-                .filter(idx => !discarded.includes(Number(idx)))
-                .map((idx) => {
+              {schedulableOutputIndices.map((idx) => {
                   const output = outputs[idx];
                   return (
                     <div key={idx} className={`mb-4 transition-all duration-500 ${output.appeared ? 'animate-fadein' : ''}`}>

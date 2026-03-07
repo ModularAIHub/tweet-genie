@@ -1,76 +1,154 @@
-# Scheduling Timezone Fix (2026-03-05)
 
-## Problem reported
-- User-selected schedule date/time was not posting at the intended local time.
-- Requirement: timezone should be auto-detected, with an option for manual user selection.
+      company_id: '8',
+      account_id: null,
+      linkedin_user_id: 'NcKbsXDLrm',
+      created_at: 2026-02-07T08:21:55.782Z
+    }
+  ]
+}
+[StrategyAnalysis] Organization follower endpoint failed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  accountId: 'org:108765279',
+  organizationId: '108765279',
+  endpoint: 'https://api.linkedin.com/rest/networkSizes/urn%3Ali%3Aorganization%3A108765279?edgeType=CompanyFollowedByMember',
+  status: 426,
+  error: {
+    status: 426,
+    code: 'NONEXISTENT_VERSION',
+    message: 'Requested version 20240501 is not active'
+  }
+}
+[StrategyAnalysis] Organization follower endpoint failed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  accountId: 'org:108765279',
+  organizationId: '108765279',
+  endpoint: 'https://api.linkedin.com/v2/networkSizes/urn:li:organization:108765279?edgeType=CompanyFollowedByMember',
+  status: 400,
+  error: {
+    status: 400,
+    code: 'ILLEGAL_ARGUMENT',
+    message: 'Syntax exception in path variables'
+  }
+}
+[StrategyAnalysis] Using personal/org account snapshot for strategy analysis {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  accountId: 'org:108765279',
+  accountType: 'organization',
+  displayName: 'SuiteGenie',
+  username: 'org-108765279',
+  followers: 0
+}
+[StrategyAnalysis] LinkedIn API fallback endpoint failed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  authorUrn: 'urn:li:organization:108765279',
+  endpoint: 'https://api.linkedin.com/rest/posts?q=author&author=urn%3Ali%3Aorganization%3A108765279&count=60&sortBy=LAST_MODIFIED',      
+  status: 426,
+  error: {
+    status: 426,
+    code: 'NONEXISTENT_VERSION',
+    message: 'Requested version 20240501 is not active'
+  }
+}
+[StrategyAnalysis] LinkedIn API fallback succeeded {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  authorUrn: 'urn:li:organization:108765279',
+  endpoint: 'https://api.linkedin.com/v2/ugcPosts?q=authors&authors=List(urn%3Ali%3Aorganization%3A108765279)&count=60&sortBy=LAST_MODIFIED',
+  count: 12
+}
+[StrategyAnalysis] Post summary and account snapshot ready {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  postCount: 12,
+  sourceScope: 'organization(108765279):linkedin_api_fallback',      
+  themeCount: 2,
+  accountDisplayName: 'SuiteGenie',
+  followers: 0
+}
+[Strategy] init-analysis completed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  strategyId: '27336e7a-6ae8-4652-aaea-db8e769da120',
+  analysisId: 'dae3ef1f-4f41-4705-ae99-494b15fefe7a',
+  accountId: 'org:108765279',
+  accountType: 'organization',
+  tweetsAnalysed: 12,
+  confidence: 'medium',
+  topTopics: [ 'published', 'edited', 'growth' ],
+  queueItems: 7,
+  sourceScope: 'organization(108765279):linkedin_api_fallback'       
+}
 
-## Root cause
-- `Joi` validation was coercing `scheduled_for` into a `Date` too early, which can shift local `datetime-local` input before route-level timezone parsing.
-  - `server/middleware/validation.js:111`
-  - `server/middleware/validation.js:126`
-- Some requests could arrive without explicit body timezone; backend needed a reliable fallback from client/browser timezone.
-  - `server/routes/scheduling.js:232`
-  - `server/routes/scheduling.js:238`
-
-## Fix implemented
-
-### 1) Stop timezone-unsafe validation coercion
-- Changed scheduling schemas to validate `scheduled_for` as string (not `Joi.date()`), so parsing is handled once in route logic with explicit timezone.
-  - `server/middleware/validation.js:111`
-  - `server/middleware/validation.js:126`
-
-### 2) Add backend timezone resolver with auto-fallback
-- Added `resolveSchedulingTimezone(req, timezoneInput)`:
-  - Uses body `timezone` if provided.
-  - Else uses headers `x-user-timezone`, `x-timezone`, `x-time-zone`.
-  - Else falls back to `UTC`.
-  - `server/routes/scheduling.js:232`
-  - `server/routes/scheduling.js:238`
-- Applied resolver in all scheduling write paths:
-  - Bulk schedule: `server/routes/scheduling.js:1262`, `server/routes/scheduling.js:1267`
-  - Single schedule: `server/routes/scheduling.js:1493`, `server/routes/scheduling.js:1515`
-  - Reschedule: `server/routes/scheduling.js:2133`, `server/routes/scheduling.js:2136`, `server/routes/scheduling.js:2139`
-
-### 3) Keep single authoritative UTC conversion
-- Existing timezone-aware parser remains the canonical conversion point:
-  - `server/routes/scheduling.js:798`
-- Confirmed both schedule and reschedule paths use it:
-  - `server/routes/scheduling.js:1567`
-  - `server/routes/scheduling.js:2147`
-
-### 4) Auto-send browser timezone from client
-- Added client request interceptor timezone header:
-  - `client/src/utils/api.js:145`
-  - `client/src/utils/api.js:166`
-
-### 5) Add manual timezone input in schedule modal
-- Added timezone input + suggestions + validation + detected default:
-  - `client/src/components/TweetComposer/TweetActions.jsx:12`
-  - `client/src/components/TweetComposer/TweetActions.jsx:25`
-  - `client/src/components/TweetComposer/TweetActions.jsx:105`
-  - `client/src/components/TweetComposer/TweetActions.jsx:201`
-  - `client/src/components/TweetComposer/TweetActions.jsx:213`
-  - `client/src/components/TweetComposer/TweetActions.jsx:246`
-  - `client/src/components/TweetComposer/TweetActions.jsx:253`
-
-### 6) Ensure payload always includes resolved timezone
-- Scheduling submit now uses normalized `resolvedTimezone` fallback.
-  - `client/src/hooks/useTweetComposer.js:1071`
-  - `client/src/hooks/useTweetComposer.js:1092`
-  - `client/src/hooks/useTweetComposer.js:1181`
-  - `client/src/hooks/useTweetComposer.js:1223`
-
-## Verification run
-- Syntax checks:
-  - `node --check server/routes/scheduling.js`
-  - `node --check server/middleware/validation.js`
-  - `node --check client/src/utils/api.js`
-  - `node --check client/src/hooks/useTweetComposer.js`
-- Frontend build:
-  - `npm --prefix "tweet-genie/client" run build`
-  - Result: success.
-
-## Outcome
-- Scheduling now auto-detects timezone from browser and sends it automatically.
-- User can also manually choose/override timezone in the schedule modal.
-- Backend normalizes timezone and converts schedule time to UTC in a single controlled path, preventing double-shift and local-time drift.
+      company_id: '8',
+      account_id: null,
+      linkedin_user_id: 'NcKbsXDLrm',
+      created_at: 2026-02-07T08:21:55.782Z
+    }
+  ]
+}
+[StrategyAnalysis] Organization follower endpoint failed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  accountId: 'org:108765279',
+  organizationId: '108765279',
+  endpoint: 'https://api.linkedin.com/rest/networkSizes/urn%3Ali%3Aorganization%3A108765279?edgeType=CompanyFollowedByMember',
+  status: 426,
+  error: {
+    status: 426,
+    code: 'NONEXISTENT_VERSION',
+    message: 'Requested version 20240501 is not active'
+  }
+}
+[StrategyAnalysis] Organization follower endpoint failed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  accountId: 'org:108765279',
+  organizationId: '108765279',
+  endpoint: 'https://api.linkedin.com/v2/networkSizes/urn:li:organization:108765279?edgeType=CompanyFollowedByMember',
+  status: 400,
+  error: {
+    status: 400,
+    code: 'ILLEGAL_ARGUMENT',
+    message: 'Syntax exception in path variables'
+  }
+}
+[StrategyAnalysis] Using personal/org account snapshot for strategy analysis {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  accountId: 'org:108765279',
+  accountType: 'organization',
+  displayName: 'SuiteGenie',
+  username: 'org-108765279',
+  followers: 0
+}
+[StrategyAnalysis] LinkedIn API fallback endpoint failed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  authorUrn: 'urn:li:organization:108765279',
+  endpoint: 'https://api.linkedin.com/rest/posts?q=author&author=urn%3Ali%3Aorganization%3A108765279&count=60&sortBy=LAST_MODIFIED',      
+  status: 426,
+  error: {
+    status: 426,
+    code: 'NONEXISTENT_VERSION',
+    message: 'Requested version 20240501 is not active'
+  }
+}
+[StrategyAnalysis] LinkedIn API fallback succeeded {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  authorUrn: 'urn:li:organization:108765279',
+  endpoint: 'https://api.linkedin.com/v2/ugcPosts?q=authors&authors=List(urn%3Ali%3Aorganization%3A108765279)&count=60&sortBy=LAST_MODIFIED',
+  count: 12
+}
+[StrategyAnalysis] Post summary and account snapshot ready {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  postCount: 12,
+  sourceScope: 'organization(108765279):linkedin_api_fallback',      
+  themeCount: 2,
+  accountDisplayName: 'SuiteGenie',
+  followers: 0
+}
+[Strategy] init-analysis completed {
+  userId: '1abaa530-0e5c-48a5-90eb-7b0a06c2b5ce',
+  strategyId: '27336e7a-6ae8-4652-aaea-db8e769da120',
+  analysisId: 'dae3ef1f-4f41-4705-ae99-494b15fefe7a',
+  accountId: 'org:108765279',
+  accountType: 'organization',
+  tweetsAnalysed: 12,
+  confidence: 'medium',
+  topTopics: [ 'published', 'edited', 'growth' ],
+  queueItems: 7,
+  sourceScope: 'organization(108765279):linkedin_api_fallback'       
+}

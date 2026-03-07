@@ -130,11 +130,11 @@ const resolveRequestScope = () => {
   const selectedAccountId = selectedAccount?.id || selectedAccount?.account_id || null;
   const selectedAccountTeamId = selectedAccount?.team_id || selectedAccount?.teamId || null;
   const teamContextId = storedTeamContext?.team_id || storedTeamContext?.teamId || null;
-  const teamId = selectedAccountTeamId || teamContextId || null;
-  const scopedSelectedAccountId =
-    teamId && !selectedAccountTeamId
-      ? null
-      : selectedAccountId;
+  const hasSelectedAccountId = Boolean(selectedAccountId);
+  // Team scope should come from an explicitly selected team account.
+  // If a personal account is selected, do not let stale team context hijack write requests.
+  const teamId = selectedAccountTeamId || (!hasSelectedAccountId ? teamContextId : null) || null;
+  const scopedSelectedAccountId = selectedAccountId;
 
   return {
     teamId,

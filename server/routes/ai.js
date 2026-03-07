@@ -121,8 +121,9 @@ router.post('/generate', authenticateToken, async (req, res) => {
     const effectiveClientSource =
       typeof clientSource === 'string' ? clientSource.trim().toLowerCase().slice(0, 32) : '';
 
-    // Rate limiting
-    if (!checkRateLimit(req.user.id, 'ai_generation', 10, 60000)) {
+    // Rate limiting (bulk generation client can run multiple concurrent requests).
+    const generationLimitPerMinute = effectiveClientSource === 'bulk' ? 60 : 10;
+    if (!checkRateLimit(req.user.id, 'ai_generation', generationLimitPerMinute, 60000)) {
       return res.status(429).json({
         success: false,
         error: 'Rate limit exceeded. Please wait before making more requests.'
