@@ -44,6 +44,12 @@ const ensureInternalRequest = (req, res, next) => {
 
 const resolvePlatformUserId = (req) => String(req.headers['x-platform-user-id'] || '').trim();
 const resolvePlatformTeamId = (req) => String(req.headers['x-platform-team-id'] || '').trim();
+const normalizeWorkspaceTargetIds = (value) => {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))];
+};
+const isMissingRelation = (error) =>
+  error?.code === '42P01' || String(error?.message || '').toLowerCase().includes('does not exist');
 
 const getPersonalTwitterAccount = async (platformUserId) => {
   return fetchLatestPersonalTwitterAuth(pool, platformUserId, {
@@ -490,6 +496,150 @@ router.get('/targets', ensureInternalRequest, async (req, res) => {
     return res.status(500).json({
       error: 'Failed to fetch Twitter targets',
       code: 'TWITTER_TARGETS_FAILED',
+    });
+  }
+});
+
+router.post('/workspace/snapshot', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req) || null;
+  const targetAccountIds = normalizeWorkspaceTargetIds(req.body?.targetAccountIds);
+  const limit = Math.max(1, Math.min(100, Number(req.body?.limit || 50) || 50));
+  const queueLimit = Math.max(1, Math.min(100, Number(req.body?.queueLimit || 50) || 50));
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  try {
+    const calendarParams = [];
+    const calendarFilters = [];
+
+    if (platformTeamId) {
+      calendarParams.push(platformTeamId);
+      calendarFilters.push(`st.team_id::text = $${calendarParams.length}::text`);
+    } else {
+      calendarParams.push(platformUserId);
+      calendarFilters.push(`st.user_id = $${calendarParams.length}`);
+      calendarFilters.push(`(st.team_id IS NULL OR st.team_id::text = '')`);
+    }
+
+    if (targetAccountIds.length > 0) {
+      calendarParams.push(targetAccountIds);
+      const idx = calendarParams.length;
+      calendarFilters.push(
+        `COALESCE(st.account_id::text, '') = ANY($${idx}::text[])`
+      );
+    }
+
+    calendarParams.push(limit);
+    let calendarRows = [];
+    try {
+      const calendarResult = await pool.query(
+        `SELECT
+           st.id,
+           st.content,
+           st.thread_tweets,
+           st.scheduled_for,
+           st.timezone,
+           st.status,
+           st.error_message,
+           st.account_id,
+           st.team_id,
+           st.created_at,
+           st.updated_at
+         FROM scheduled_tweets st
+         WHERE ${calendarFilters.join(' AND ')}
+         ORDER BY COALESCE(st.scheduled_for, st.created_at) ASC
+         LIMIT $${calendarParams.length}`,
+        calendarParams
+      );
+      calendarRows = calendarResult.rows || [];
+    } catch (error) {
+      if (!isMissingRelation(error)) throw error;
+    }
+
+    let queueRows = [];
+    try {
+      const queueParams = [platformUserId, queueLimit];
+      const queueResult = await pool.query(
+        `SELECT
+           q.id,
+           q.content,
+           q.status,
+           q.suggested_time,
+           q.timezone,
+           q.source,
+           q.strategy_id,
+           q.created_at,
+           q.updated_at
+         FROM content_review_queue q
+         WHERE q.user_id = $1
+         ORDER BY q.created_at DESC
+         LIMIT $2`,
+        queueParams
+      );
+      queueRows = queueResult.rows || [];
+    } catch (error) {
+      if (!isMissingRelation(error)) throw error;
+    }
+
+    const queue = queueRows.map((row) => ({
+      id: `twq-${row.id}`,
+      sourceId: String(row.id),
+      platform: 'twitter',
+      kind: 'queue',
+      status: String(row.status || '').toLowerCase() || 'pending',
+      content: String(row.content || ''),
+      scheduledFor: row.suggested_time || null,
+      timezone: row.timezone || null,
+      source: row.source || null,
+      strategyId: row.strategy_id || null,
+      createdAt: row.created_at || null,
+      updatedAt: row.updated_at || null,
+      teamId: platformTeamId,
+      accountId: null,
+    }));
+
+    const calendar = calendarRows.map((row) => ({
+      id: `twc-${row.id}`,
+      sourceId: String(row.id),
+      platform: 'twitter',
+      kind: 'calendar',
+      status: String(row.status || '').toLowerCase() || 'pending',
+      content: String(row.content || ''),
+      threadTweets: row.thread_tweets || null,
+      scheduledFor: row.scheduled_for || null,
+      timezone: row.timezone || null,
+      errorMessage: row.error_message || null,
+      createdAt: row.created_at || null,
+      updatedAt: row.updated_at || null,
+      teamId: row.team_id ? String(row.team_id) : platformTeamId,
+      accountId: row.account_id ? String(row.account_id) : null,
+    }));
+
+    return res.json({
+      success: true,
+      platform: 'twitter',
+      queue,
+      calendar,
+      summary: {
+        queueCount: queue.length,
+        calendarCount: calendar.length,
+      },
+    });
+  } catch (error) {
+    logger.error('[internal/twitter/workspace/snapshot] Failed to build workspace snapshot', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to fetch Twitter workspace snapshot',
+      code: 'TWITTER_WORKSPACE_SNAPSHOT_FAILED',
     });
   }
 });
