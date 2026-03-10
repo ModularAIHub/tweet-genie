@@ -2,8 +2,10 @@
 import express from 'express';
 import * as analyticsService from '../services/analyticsService.js';
 import pool from '../config/database.js';
+import { requireProPlan } from '../middleware/planAccess.js';
 
 const router = express.Router();
+router.use(requireProPlan('Strategy Analytics'));
 
 /**
  * GET /api/strategy-analytics/:strategyId/dashboard

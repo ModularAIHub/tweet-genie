@@ -8,6 +8,7 @@ const GENERATION_TEMPERATURE = 0.7;
 const GENERATION_MAX_TOKENS = 4096;
 const TRENDING_MAX_TOKENS = 2048;
 const TWEETS_PER_WEEK = 7;
+const PRO_PLAN_TYPES_SQL = ['pro', 'enterprise', 'premium', 'business'];
 const parseBooleanEnv = (value, fallback = false) => {
   if (value === undefined || value === null || value === '') return fallback;
   const normalized = String(value).trim().toLowerCase();
@@ -371,9 +372,18 @@ Return ONLY valid JSON:
     const { rows: activeStrategies } = await pool.query(
       `SELECT s.id AS strategy_id, s.user_id, s.niche, s.metadata
        FROM user_strategies s
+       LEFT JOIN users u
+         ON u.id = s.user_id
+       LEFT JOIN teams t
+         ON t.id = s.team_id
        WHERE s.status = 'active'
          AND COALESCE(s.metadata->>'product', 'tweet-genie') = 'tweet-genie'
-       ORDER BY s.updated_at DESC`
+         AND (
+           LOWER(COALESCE(u.plan_type, '')) = ANY($1::text[])
+           OR LOWER(COALESCE(t.plan_type, '')) = ANY($1::text[])
+         )
+       ORDER BY s.updated_at DESC`,
+      [PRO_PLAN_TYPES_SQL]
     );
 
     console.log(`[WeeklyContent] Found ${activeStrategies.length} active strategies`);

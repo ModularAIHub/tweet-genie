@@ -3,8 +3,10 @@ import express from 'express';
 import pool from '../config/database.js';
 import * as autopilotService from '../services/autopilotService.js';
 import { getNotificationPrefsForUser, updateNotificationPrefs } from '../services/emailNotificationService.js';
+import { requireProPlan } from '../middleware/planAccess.js';
 
 const router = express.Router();
+router.use(requireProPlan('Autopilot'));
 
 // ─── Undo window constant (must match weeklyContentService) ──────────────
 const UNDO_WINDOW_MS = 60 * 60 * 1000; // 1 hour

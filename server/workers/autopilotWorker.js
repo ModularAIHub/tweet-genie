@@ -6,6 +6,7 @@ import { sendAllWeeklyDigests } from '../services/emailNotificationService.js';
 
 const AUTOPILOT_WORKER_INTERVAL_MS = Number(process.env.AUTOPILOT_WORKER_INTERVAL_MS || 60 * 60 * 1000); // 1 hour
 const AUTOPILOT_DEBUG = process.env.AUTOPILOT_DEBUG === 'true';
+const PRO_PLAN_TYPES_SQL = ['pro', 'enterprise', 'premium', 'business'];
 
 const autopilotLog = (...args) => {
   if (AUTOPILOT_DEBUG) {
@@ -35,10 +36,16 @@ async function processAutopilotStrategies() {
       SELECT ac.*, us.id as strategy_id, us.user_id, us.niche
       FROM autopilot_config ac
       JOIN user_strategies us ON ac.strategy_id = us.id
+      LEFT JOIN users u ON u.id = us.user_id
+      LEFT JOIN teams t ON t.id = us.team_id
       WHERE ac.is_enabled = true
         AND ac.paused_reason IS NULL
         AND us.status = 'active'
-    `);
+        AND (
+          LOWER(COALESCE(u.plan_type, '')) = ANY($1::text[])
+          OR LOWER(COALESCE(t.plan_type, '')) = ANY($1::text[])
+        )
+    `, [PRO_PLAN_TYPES_SQL]);
     
     if (result.rows.length === 0) {
       autopilotLog('No enabled autopilot strategies found');

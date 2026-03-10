@@ -43,6 +43,7 @@ import {
   resetAuthPerfStats,
   validateTwitterConnection,
 } from './middleware/auth.js';
+import { requireProPlan } from './middleware/planAccess.js';
 // import { errorHandler } from './middleware/errorHandler.js';
 
 // Service imports
@@ -443,7 +444,7 @@ app.use(
 );
 // Twitter posting preferences (per-user or per-account)
 app.use('/api/twitter/posting-preferences', authenticateToken, postingPrefsRoutes);
-app.use('/api/pro-team', proTeamRoutes); // <-- Register proTeam routes here
+app.use('/api/pro-team', authenticateToken, requireProPlan('Pro Team Accounts'), proTeamRoutes); // <-- Register proTeam routes here
 app.use('/api/tweets', authenticateToken, tweetsRoutes);
 app.use('/api/scheduling', authenticateToken, schedulingRoutes);
 app.use('/api/linkedin', authenticateToken, linkedinStatusRoutes);
@@ -462,12 +463,13 @@ app.use('/api/strategy', authenticateToken, strategyBuilderRoutes);
 app.use(
   '/api/strategy-analytics',
   authenticateToken,
+  requireProPlan('Strategy Analytics'),
   validateTwitterConnection,
   strategyAnalyticsRoutes
 );
 // Autopilot config routes don't need Twitter connection validation — only the
 // background worker (which reads tokens from DB) needs valid Twitter credentials.
-app.use('/api/autopilot', authenticateToken, autopilotRoutes);
+app.use('/api/autopilot', authenticateToken, requireProPlan('Autopilot'), autopilotRoutes);
 app.use('/api/content-review', contentReviewRoutes);
 app.use('/api/cleanup', cleanupRoutes); // Cleanup routes (unprotected for internal service calls)
 
