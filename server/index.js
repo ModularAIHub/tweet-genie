@@ -43,6 +43,7 @@ import {
   resetAuthPerfStats,
   validateTwitterConnection,
 } from './middleware/auth.js';
+import { applyAgencyWorkspaceContext } from './middleware/agencyWorkspace.js';
 import { requireProPlan } from './middleware/planAccess.js';
 // import { errorHandler } from './middleware/errorHandler.js';
 
@@ -315,7 +316,7 @@ app.use((req, res, next) => {
     res.header('Vary', 'Origin');
     res.header(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id, X-Requested-With, X-User-Timezone, X-Timezone'
+      'Content-Type, Authorization, Cookie, X-CSRF-Token, X-Selected-Account-Id, X-Team-Id, X-Requested-With, X-User-Timezone, X-Timezone, X-Agency-Token, X-Agency-Workspace-Id, X-Agency-Tool, X-Agency-Target'
     );
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
     corsLog('[cors] headers set for:', origin);
@@ -409,6 +410,7 @@ app.get('/internal/debug/env', (req, res) => {
 app.use('/api/internal/twitter', internalTwitterRoutes);
 
 // Routes
+app.use('/api', applyAgencyWorkspaceContext);
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', secureAuthRoutes);
 app.use('/', ssoRoutes); // SSO routes at root level

@@ -6,7 +6,7 @@ import { sendAllWeeklyDigests } from '../services/emailNotificationService.js';
 
 const AUTOPILOT_WORKER_INTERVAL_MS = Number(process.env.AUTOPILOT_WORKER_INTERVAL_MS || 60 * 60 * 1000); // 1 hour
 const AUTOPILOT_DEBUG = process.env.AUTOPILOT_DEBUG === 'true';
-const PRO_PLAN_TYPES_SQL = ['pro', 'enterprise', 'premium', 'business'];
+const PRO_PLAN_TYPES_SQL = ['pro', 'enterprise', 'agency', 'premium', 'business'];
 
 const autopilotLog = (...args) => {
   if (AUTOPILOT_DEBUG) {

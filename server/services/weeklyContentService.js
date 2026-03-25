@@ -8,7 +8,7 @@ const GENERATION_TEMPERATURE = 0.7;
 const GENERATION_MAX_TOKENS = 4096;
 const TRENDING_MAX_TOKENS = 2048;
 const TWEETS_PER_WEEK = 7;
-const PRO_PLAN_TYPES_SQL = ['pro', 'enterprise', 'premium', 'business'];
+const PRO_PLAN_TYPES_SQL = ['pro', 'enterprise', 'agency', 'premium', 'business'];
 const parseBooleanEnv = (value, fallback = false) => {
   if (value === undefined || value === null || value === '') return fallback;
   const normalized = String(value).trim().toLowerCase();

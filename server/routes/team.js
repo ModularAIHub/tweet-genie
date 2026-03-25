@@ -139,7 +139,20 @@ router.get('/accounts', async (req, res) => {
       }));
     }
 
-    const accountsWithNicknames = accounts.map((account) => ({
+    const allowedAccountIds = Array.isArray(req.agencyWorkspace?.allowedAccountIds)
+      ? req.agencyWorkspace.allowedAccountIds.map((value) => String(value || '').trim()).filter(Boolean)
+      : [];
+    const filteredAccounts = allowedAccountIds.length === 0
+      ? accounts
+      : accounts.filter((account) => {
+          const candidates = [
+            String(account.id || '').trim(),
+            String(account.account_id || '').trim(),
+          ].filter(Boolean);
+          return candidates.some((candidate) => allowedAccountIds.includes(candidate));
+        });
+
+    const accountsWithNicknames = filteredAccounts.map((account) => ({
       ...account,
       nickname: account.account_display_name || account.account_username,
       isTeamAccount: isTeamContext,

@@ -2,6 +2,7 @@ import express from 'express';
 import { TwitterApi } from 'twitter-api-v2';
 import { pool } from '../config/database.js';
 import { validateTwitterConnection } from '../middleware/auth.js';
+import { aiService } from '../services/aiService.js';
 import { mediaService } from '../services/mediaService.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -13,6 +14,7 @@ import { listTwitterConnectedAccounts } from '../utils/twitterConnectedAccountRe
 import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache.js';
 import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
 import { refreshTwitterOauth2IfNeeded } from '../utils/twitterRuntimeAuth.js';
+import { scheduledTweetService } from '../services/scheduledTweetService.js';
 
 const router = express.Router();
 const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
@@ -644,6 +646,261 @@ router.post('/workspace/snapshot', ensureInternalRequest, async (req, res) => {
   }
 });
 
+router.post('/analytics-summary', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req) || null;
+  const targetAccountIds = normalizeWorkspaceTargetIds(req.body?.targetAccountIds);
+  const days = Math.max(1, Math.min(365, Number(req.body?.days || 30) || 30));
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  try {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const tweetsParams = [platformUserId, startDate];
+    const tweetsFilters = [
+      't.user_id = $1',
+      'COALESCE(t.external_created_at, t.created_at) >= $2',
+      "t.status = 'posted'",
+    ];
+
+    if (targetAccountIds.length > 0) {
+      tweetsParams.push(targetAccountIds);
+      tweetsFilters.push(`COALESCE(t.account_id::text, '') = ANY($${tweetsParams.length}::text[])`);
+    }
+
+    const tweetsSummary = await pool.query(
+      `SELECT
+         COUNT(*)::int AS total_posts,
+         COALESCE(SUM(t.impressions), 0)::bigint AS total_impressions,
+         COALESCE(SUM(t.likes), 0)::bigint AS total_likes,
+         COALESCE(SUM(t.retweets), 0)::bigint AS total_retweets,
+         COALESCE(SUM(t.replies), 0)::bigint AS total_replies,
+         COALESCE(SUM(t.likes + t.retweets + t.replies + COALESCE(t.quote_count, 0) + COALESCE(t.bookmark_count, 0)), 0)::bigint AS total_engagement
+       FROM tweets t
+       WHERE ${tweetsFilters.join(' AND ')}`,
+      tweetsParams
+    );
+
+    const approvalParams = [];
+    const approvalFilters = [];
+
+    if (platformTeamId) {
+      approvalParams.push(platformTeamId);
+      approvalFilters.push(`st.team_id::text = $${approvalParams.length}::text`);
+    } else {
+      approvalParams.push(platformUserId);
+      approvalFilters.push(`st.user_id = $${approvalParams.length}`);
+      approvalFilters.push(`(st.team_id IS NULL OR st.team_id::text = '')`);
+    }
+
+    if (targetAccountIds.length > 0) {
+      approvalParams.push(targetAccountIds);
+      approvalFilters.push(`COALESCE(st.account_id::text, '') = ANY($${approvalParams.length}::text[])`);
+    }
+
+    const approvalResult = await pool.query(
+      `SELECT COUNT(*)::int AS pending_approvals
+       FROM scheduled_tweets st
+       WHERE ${approvalFilters.join(' AND ')}
+         AND st.approval_status = 'pending_approval'`,
+      approvalParams
+    ).catch((error) => (isMissingRelation(error) ? { rows: [{ pending_approvals: 0 }] } : Promise.reject(error)));
+
+    const queueResult = await pool.query(
+      `SELECT COUNT(*)::int AS pending_queue
+       FROM content_review_queue
+       WHERE user_id = $1
+         AND status = 'pending'`,
+      [platformUserId]
+    ).catch((error) => (isMissingRelation(error) ? { rows: [{ pending_queue: 0 }] } : Promise.reject(error)));
+
+    return res.json({
+      success: true,
+      platform: 'twitter',
+      totalPosts: Number(tweetsSummary.rows[0]?.total_posts || 0),
+      totalImpressions: Number(tweetsSummary.rows[0]?.total_impressions || 0),
+      totalLikes: Number(tweetsSummary.rows[0]?.total_likes || 0),
+      totalRetweets: Number(tweetsSummary.rows[0]?.total_retweets || 0),
+      totalReplies: Number(tweetsSummary.rows[0]?.total_replies || 0),
+      totalEngagement: Number(tweetsSummary.rows[0]?.total_engagement || 0),
+      pendingApprovals: Number(approvalResult.rows[0]?.pending_approvals || 0),
+      pendingQueue: Number(queueResult.rows[0]?.pending_queue || 0),
+    });
+  } catch (error) {
+    logger.error('[internal/twitter/analytics-summary] Failed to build analytics summary', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to fetch Twitter analytics summary',
+      code: 'TWITTER_ANALYTICS_SUMMARY_FAILED',
+    });
+  }
+});
+
+router.post('/generate', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const { prompt, style = 'professional', workspaceName = '', brandName = '' } = req.body || {};
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'Platform user ID is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  const normalizedPrompt = trimText(prompt, 4000);
+  if (!normalizedPrompt || normalizedPrompt.length < 5) {
+    return res.status(400).json({
+      error: 'Prompt must be at least 5 characters long',
+      code: 'TWITTER_GENERATE_PROMPT_REQUIRED',
+    });
+  }
+
+  try {
+    const fullPrompt = [
+      brandName ? `Brand: ${brandName}` : null,
+      workspaceName ? `Workspace: ${workspaceName}` : null,
+      normalizedPrompt,
+    ].filter(Boolean).join('\n');
+
+    const result = await aiService.generateContent(
+      fullPrompt,
+      String(style || 'professional').trim() || 'professional',
+      2,
+      null,
+      platformUserId,
+      'agency'
+    );
+
+    return res.json({
+      success: true,
+      content: result?.content || '',
+      provider: result?.provider || null,
+      keyType: result?.keyType || null,
+      mode: 'single',
+    });
+  } catch (error) {
+    logger.error('[internal/twitter/generate] Failed to generate workspace draft', {
+      userId: platformUserId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to generate Twitter draft',
+      code: 'TWITTER_GENERATE_FAILED',
+    });
+  }
+});
+
+router.post('/schedule', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req) || null;
+  const {
+    content = '',
+    postMode = 'single',
+    threadParts = [],
+    media = [],
+    mediaUrls = [],
+    scheduledFor = null,
+    timezone = 'UTC',
+    targetAccountId = null,
+    metadata = {},
+  } = req.body || {};
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  const normalizedMode = String(postMode || 'single').toLowerCase() === 'thread' ? 'thread' : 'single';
+  const normalizedThreadParts = Array.isArray(threadParts)
+    ? threadParts.map((part) => trimText(part, 280)).filter(Boolean)
+    : [];
+  const normalizedContent = trimText(content, normalizedMode === 'thread' ? 280 : 1000);
+  const normalizedMedia = normalizeCrossPostMediaInputs(
+    Array.isArray(media) && media.length > 0 ? media : mediaUrls
+  );
+  const resolvedScheduledFor = scheduledFor ? new Date(scheduledFor) : null;
+
+  if (!resolvedScheduledFor || Number.isNaN(resolvedScheduledFor.getTime())) {
+    return res.status(400).json({
+      error: 'scheduledFor is required',
+      code: 'TWITTER_SCHEDULE_TIME_REQUIRED',
+    });
+  }
+
+  if (resolvedScheduledFor.getTime() <= Date.now()) {
+    return res.status(400).json({
+      error: 'scheduledFor must be in the future',
+      code: 'TWITTER_SCHEDULE_TIME_INVALID',
+    });
+  }
+
+  if (normalizedMode === 'thread' && normalizedThreadParts.length === 0) {
+    return res.status(400).json({
+      error: 'threadParts is required for thread mode',
+      code: 'TWITTER_THREAD_PARTS_REQUIRED',
+    });
+  }
+
+  if (normalizedMode !== 'thread' && !normalizedContent) {
+    return res.status(400).json({
+      error: 'content is required',
+      code: 'TWITTER_CONTENT_REQUIRED',
+    });
+  }
+
+  const tweets = normalizedMode === 'thread' ? normalizedThreadParts : [normalizedContent];
+
+  try {
+    const scheduledResult = await scheduledTweetService.scheduleTweets({
+      userId: platformUserId,
+      tweets,
+      options: {
+        scheduledFor: resolvedScheduledFor.toISOString(),
+        timezone: String(timezone || 'UTC').trim() || 'UTC',
+        mediaUrls: normalizedMedia,
+        teamId: platformTeamId,
+        accountId: targetAccountId ? String(targetAccountId).trim() : null,
+        metadata: {
+          ...(metadata && typeof metadata === 'object' ? metadata : {}),
+          agency_workspace: {
+            source: 'agency_workspace',
+            scheduledAt: new Date().toISOString(),
+          },
+        },
+      },
+    });
+
+    return res.json({
+      success: true,
+      status: 'scheduled',
+      scheduledId: scheduledResult?.scheduledId || null,
+      scheduledTime: scheduledResult?.scheduledTime || resolvedScheduledFor.toISOString(),
+    });
+  } catch (error) {
+    logger.error('[internal/twitter/schedule] Failed to schedule workspace post', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: error?.message || 'Failed to schedule Twitter post',
+      code: 'TWITTER_SCHEDULE_FAILED',
+    });
+  }
+});
+
 router.post('/cross-post', ensureInternalRequest, async (req, res) => {
   const platformUserId = resolvePlatformUserId(req);
   const platformTeamId = resolvePlatformTeamId(req);
@@ -827,6 +1084,24 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
         mediaCount,
       });
 
+      await saveTwitterHistoryRow({
+        dbPool: pool,
+        userId: platformUserId,
+        teamId: platformTeamId || null,
+        targetAccountId: account?.id ? String(account.id) : targetAccountId ? String(targetAccountId) : null,
+        content: normalizedThreadParts[0] || normalizedContent,
+        tweetId: firstTweetId,
+        sourcePlatform: 'platform',
+        media: incomingMedia,
+        postMode: 'thread',
+        threadParts: normalizedThreadParts,
+      }).catch((historyError) => {
+        logger.warn('[internal/twitter/cross-post] Failed to save thread history row', {
+          userId: platformUserId,
+          error: historyError?.message || String(historyError),
+        });
+      });
+
       return res.json({
         success: true,
         status: 'posted',
@@ -859,6 +1134,24 @@ router.post('/cross-post', ensureInternalRequest, async (req, res) => {
         mediaStatus,
         mediaCount,
         length: normalizedContent.length,
+      });
+
+      await saveTwitterHistoryRow({
+        dbPool: pool,
+        userId: platformUserId,
+        teamId: platformTeamId || null,
+        targetAccountId: account?.id ? String(account.id) : targetAccountId ? String(targetAccountId) : null,
+        content: normalizedContent,
+        tweetId,
+        sourcePlatform: 'platform',
+        media: incomingMedia,
+        postMode: 'single',
+        threadParts: [],
+      }).catch((historyError) => {
+        logger.warn('[internal/twitter/cross-post] Failed to save tweet history row', {
+          userId: platformUserId,
+          error: historyError?.message || String(historyError),
+        });
       });
 
       return res.json({

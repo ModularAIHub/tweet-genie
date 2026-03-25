@@ -36,6 +36,12 @@ const PLAN_TYPE_ALIASES = new Map([
   ['premium', 'pro'],
   ['business', 'pro'],
 ]);
+const PAID_PLAN_PRIORITY = new Map([
+  ['agency', 4],
+  ['enterprise', 3],
+  ['pro', 2],
+  ['free', 1],
+]);
 const PLAN_CACHE_TTL_MS = Number(process.env.AI_PLAN_CACHE_TTL_MS || 30 * 1000);
 const planTypeCache = new Map();
 
@@ -50,7 +56,7 @@ const getProviderPriority = ({ preference, planType }) => {
     }
 
   const normalizedPlan = normalizePlanType(planType);
-    if (normalizedPlan === 'pro' || normalizedPlan === 'enterprise') {
+    if (normalizedPlan === 'pro' || normalizedPlan === 'enterprise' || normalizedPlan === 'agency') {
       return ['google', 'perplexity', 'openai'];
     }
 
@@ -82,9 +88,10 @@ async function resolvePlanType(userId, explicitPlanType = null) {
            WHERE tm.user_id = $1
              AND tm.status = 'active'
            ORDER BY CASE
-             WHEN t.plan_type = 'enterprise' THEN 3
-             WHEN t.plan_type = 'pro' THEN 2
-             WHEN t.plan_type = 'free' THEN 1
+             WHEN LOWER(COALESCE(t.plan_type, 'free')) = 'agency' THEN 4
+             WHEN LOWER(COALESCE(t.plan_type, 'free')) = 'enterprise' THEN 3
+             WHEN LOWER(COALESCE(t.plan_type, 'free')) = 'pro' THEN 2
+             WHEN LOWER(COALESCE(t.plan_type, 'free')) = 'free' THEN 1
              ELSE 0
            END DESC
            LIMIT 1
@@ -98,12 +105,13 @@ async function resolvePlanType(userId, explicitPlanType = null) {
       [userId]
     );
 
-    const resolved = normalizePlanType(rows[0]?.plan_type || 'free');
+    const directResolved = normalizePlanType(rows[0]?.plan_type || 'free');
+    const prioritizedResolved = PAID_PLAN_PRIORITY.has(directResolved) ? directResolved : 'free';
     planTypeCache.set(userId, {
-      planType: resolved,
+      planType: prioritizedResolved,
       expiresAt: now + PLAN_CACHE_TTL_MS,
     });
-    return resolved;
+    return prioritizedResolved;
   } catch (error) {
     console.warn(`[AI Routing] Failed to resolve plan for user ${userId}, defaulting to free:`, error.message);
     return 'free';

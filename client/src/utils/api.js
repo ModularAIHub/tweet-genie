@@ -8,6 +8,7 @@ import {
 export const CREDIT_BALANCE_UPDATED_EVENT = 'suitegenie:credits-balance-updated';
 const SELECTED_ACCOUNT_STORAGE_KEY = 'selectedTwitterAccount';
 const TEAM_CONTEXT_STORAGE_KEY = 'activeTeamContext';
+const AGENCY_WORKSPACE_STORAGE_KEY = 'suitegenie:agency-workspace-context';
 const ACCOUNT_SCOPE_CHANGED_EVENT = 'suitegenie:account-scope-changed';
 
 const API_BASE_URL = String(import.meta.env.VITE_API_URL || '').trim();
@@ -142,6 +143,33 @@ const resolveRequestScope = () => {
   };
 };
 
+const readAgencyWorkspaceContext = () => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const token = String(params.get('agency_token') || '').trim();
+    const workspaceId = String(params.get('workspace_id') || '').trim();
+    const tool = String(params.get('tool') || '').trim();
+    const target = String(params.get('target') || '').trim();
+
+    if (token && workspaceId) {
+      const context = { token, workspaceId, tool: tool || null, target: target || null };
+      window.sessionStorage?.setItem(AGENCY_WORKSPACE_STORAGE_KEY, JSON.stringify(context));
+      return context;
+    }
+  } catch {
+    // Ignore URL parsing failures and fall back to session storage.
+  }
+
+  try {
+    const stored = window.sessionStorage?.getItem(AGENCY_WORKSPACE_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+};
+
 const resolveBrowserTimezone = () => {
   try {
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -167,6 +195,10 @@ api.interceptors.request.use(
 
     delete config.headers['X-Selected-Account-Id'];
     delete config.headers['x-team-id'];
+    delete config.headers['x-agency-token'];
+    delete config.headers['x-agency-workspace-id'];
+    delete config.headers['x-agency-tool'];
+    delete config.headers['x-agency-target'];
 
     if (!skipAccountScope) {
       const { teamId, selectedAccountId } = resolveRequestScope();
@@ -177,6 +209,18 @@ api.interceptors.request.use(
 
       if (teamId) {
         config.headers['x-team-id'] = teamId;
+      }
+    }
+
+    const agencyWorkspace = readAgencyWorkspaceContext();
+    if (agencyWorkspace?.token && agencyWorkspace?.workspaceId) {
+      config.headers['x-agency-token'] = agencyWorkspace.token;
+      config.headers['x-agency-workspace-id'] = agencyWorkspace.workspaceId;
+      if (agencyWorkspace.tool) {
+        config.headers['x-agency-tool'] = agencyWorkspace.tool;
+      }
+      if (agencyWorkspace.target) {
+        config.headers['x-agency-target'] = agencyWorkspace.target;
       }
     }
 

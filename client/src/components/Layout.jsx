@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useAccount } from '../contexts/AccountContext';
 import { credits, CREDIT_BALANCE_UPDATED_EVENT } from '../utils/api';
-import { hasProPlanAccess } from '../utils/planAccess';
+import { getUserPlanType, hasProPlanAccess } from '../utils/planAccess';
 import AccountSwitcher from './AccountSwitcher';
 import TwitterTokenStatus from './TwitterTokenStatusV2';
 import AnimatedPage from './AnimatedPage';
@@ -36,6 +36,7 @@ const Layout = ({ children }) => {
   const [loadingCredits, setLoadingCredits] = useState(true);
   const hasLoadedCreditsRef = useRef(false);
   const hasProAccess = hasProPlanAccess(user);
+  const userPlanType = getUserPlanType(user);
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -176,11 +177,13 @@ const Layout = ({ children }) => {
                         <span
                           className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${isProLocked
                               ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                              : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                              : userPlanType === 'agency'
+                                ? 'bg-sky-100 text-sky-700 border border-sky-200'
+                                : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
                             }`}
                         >
                           {isProLocked && <Lock className="h-3 w-3" />}
-                          Pro
+                          {isProLocked ? 'Pro' : userPlanType === 'agency' ? 'Agency' : 'Pro'}
                         </span>
                       )}
                     </div>
