@@ -15,6 +15,7 @@ import { clearAnalyticsPrecomputeCache } from '../utils/analyticsPrecomputeCache
 import { saveTwitterHistoryRow } from '../utils/twitterHistoryWriter.js';
 import { refreshTwitterOauth2IfNeeded } from '../utils/twitterRuntimeAuth.js';
 import { scheduledTweetService } from '../services/scheduledTweetService.js';
+import { profileAnalysisService } from '../services/profileAnalysisService.js';
 
 const router = express.Router();
 const TWITTER_OAUTH1_APP_KEY = process.env.TWITTER_API_KEY || process.env.TWITTER_CONSUMER_KEY || null;
@@ -52,6 +53,11 @@ const normalizeWorkspaceTargetIds = (value) => {
 };
 const isMissingRelation = (error) =>
   error?.code === '42P01' || String(error?.message || '').toLowerCase().includes('does not exist');
+const INTERNAL_ANALYSIS_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'your', 'from', 'into', 'about', 'have', 'just',
+  'they', 'them', 'their', 'there', 'what', 'when', 'where', 'which', 'would', 'could', 'should',
+  'twitter', 'tweet', 'tweets', 'thread', 'threads', 'build', 'building', 'content', 'post', 'posts',
+]);
 
 const getPersonalTwitterAccount = async (platformUserId) => {
   return fetchLatestPersonalTwitterAuth(pool, platformUserId, {
@@ -112,6 +118,132 @@ const getTeamTwitterAccountForMemberById = async (platformUserId, platformTeamId
   );
 
   return rows[0] || null;
+};
+
+const getTeamTwitterAnalysisAccount = async (platformUserId, platformTeamId, targetAccountId = null) => {
+  if (!platformUserId || !platformTeamId) return null;
+
+  const params = [platformUserId, platformTeamId];
+  let accountFilter = '';
+  if (targetAccountId) {
+    params.push(String(targetAccountId));
+    accountFilter = `AND ta.id::text = $${params.length}::text`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT ta.id, ta.team_id, ta.user_id, ta.twitter_user_id, ta.twitter_username,
+            ta.twitter_display_name, ta.access_token, ta.refresh_token, ta.token_expires_at,
+            ta.oauth1_access_token, ta.oauth1_access_token_secret, ta.followers_count,
+            ta.following_count, ta.tweet_count, ta.bio, ta.website_url
+     FROM team_accounts ta
+     INNER JOIN team_members tm
+       ON tm.team_id = ta.team_id
+      AND tm.user_id = $1
+      AND tm.status = 'active'
+     WHERE ta.team_id::text = $2::text
+       ${accountFilter}
+       AND ta.active = true
+     ORDER BY
+       CASE WHEN ta.user_id = $1 THEN 0 ELSE 1 END,
+       ta.updated_at DESC NULLS LAST,
+       ta.id DESC
+     LIMIT 1`,
+    params
+  );
+
+  return rows[0] || null;
+};
+
+const getPersonalTwitterAnalysisAccount = async (platformUserId, targetAccountId = null) => {
+  if (!platformUserId) return null;
+
+  return targetAccountId
+    ? fetchPersonalTwitterAuthById(pool, platformUserId, targetAccountId, {
+        columns: `id, user_id, twitter_user_id, twitter_username, twitter_display_name,
+                  access_token, refresh_token, token_expires_at, oauth1_access_token, oauth1_access_token_secret,
+                  followers_count, following_count, tweet_count, bio, website_url`,
+      })
+    : fetchLatestPersonalTwitterAuth(pool, platformUserId, {
+        columns: `id, user_id, twitter_user_id, twitter_username, twitter_display_name,
+                  access_token, refresh_token, token_expires_at, oauth1_access_token, oauth1_access_token_secret,
+                  followers_count, following_count, tweet_count, bio, website_url`,
+      });
+};
+
+const normalizeAnalysisToken = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9+#@-]/g, '')
+    .trim();
+
+const extractTopTweetTopics = (tweets = [], limit = 8) => {
+  const scores = new Map();
+  const addToken = (rawToken, weight = 1) => {
+    const token = normalizeAnalysisToken(rawToken).replace(/^#/, '');
+    if (!token) return;
+    if (INTERNAL_ANALYSIS_STOP_WORDS.has(token)) return;
+    if (token.length < 4 && !['ai', 'ux', 'ui', 'api', 'seo', 'saas', 'b2b', 'b2c'].includes(token)) return;
+    scores.set(token, (scores.get(token) || 0) + weight);
+  };
+
+  for (const tweet of Array.isArray(tweets) ? tweets : []) {
+    const text = String(tweet?.text || '').trim();
+    if (!text) continue;
+    for (const match of text.matchAll(/#[a-z0-9_]+/gi)) {
+      addToken(match[0], 3);
+    }
+    text
+      .replace(/https?:\/\/\S+/gi, ' ')
+      .split(/[^a-zA-Z0-9+#@-]+/)
+      .forEach((token) => addToken(token, 1));
+  }
+
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([token]) => token);
+};
+
+const extractMentionedHandles = (tweets = [], ownHandle = '') => {
+  const normalizedOwn = String(ownHandle || '').trim().toLowerCase().replace(/^@/, '');
+  const counts = new Map();
+
+  for (const tweet of Array.isArray(tweets) ? tweets : []) {
+    const text = String(tweet?.text || '');
+    for (const match of text.matchAll(/(^|[\s(])@([a-z0-9_]{2,15})\b/gi)) {
+      const handle = String(match[2] || '').toLowerCase();
+      if (!handle || handle === normalizedOwn) continue;
+      counts.set(handle, (counts.get(handle) || 0) + 1);
+    }
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([handle]) => `@${handle}`);
+};
+
+const buildFallbackTwitterAnalysis = ({ profile = {}, tweets = [], confidence = 'low', confidenceReason = '' } = {}) => {
+  const topTopics = extractTopTweetTopics(tweets, 6);
+  const niche = topTopics[0] || String(profile?.bio || profile?.displayName || 'general').trim().slice(0, 80) || 'general';
+  const audience = topTopics.length > 1
+    ? `People interested in ${topTopics.slice(0, 2).join(' and ')}`
+    : 'Followers and peers in this niche';
+
+  return {
+    niche,
+    audience,
+    tone: 'Clear and informative',
+    top_topics: topTopics,
+    best_format: tweets.length >= 3 ? 'mixed' : 'single tweets',
+    best_days: ['Tuesday', 'Thursday'],
+    best_hours: '9am-11am',
+    content_mistakes: [],
+    content_gaps: topTopics.length > 0 ? [`Create more authority-building posts around ${topTopics[0]}.`] : [],
+    posting_frequency: tweets.length >= 10 ? '4-5 times per week' : '2-3 times per week',
+    confidence,
+    confidence_reason: confidenceReason || `Based on ${tweets.length} recent tweets`,
+  };
 };
 
 const isTokenExpired = (tokenExpiresAt) => {
@@ -742,6 +874,134 @@ router.post('/analytics-summary', ensureInternalRequest, async (req, res) => {
     return res.status(500).json({
       error: 'Failed to fetch Twitter analytics summary',
       code: 'TWITTER_ANALYTICS_SUMMARY_FAILED',
+    });
+  }
+});
+
+router.post('/analysis-context', ensureInternalRequest, async (req, res) => {
+  const platformUserId = resolvePlatformUserId(req);
+  const platformTeamId = resolvePlatformTeamId(req) || null;
+  const targetAccountId = String(req.body?.targetAccountId || '').trim() || null;
+
+  if (!platformUserId) {
+    return res.status(400).json({
+      error: 'x-platform-user-id is required',
+      code: 'PLATFORM_USER_ID_REQUIRED',
+    });
+  }
+
+  try {
+    let account = null;
+    let scope = 'personal';
+
+    if (platformTeamId) {
+      account = await getTeamTwitterAnalysisAccount(platformUserId, platformTeamId, targetAccountId);
+      scope = 'team';
+    } else {
+      account = await getPersonalTwitterAnalysisAccount(platformUserId, targetAccountId);
+    }
+
+    if (!account) {
+      return res.status(404).json({
+        error: 'Twitter account not found for analysis',
+        code: 'TWITTER_ANALYSIS_ACCOUNT_NOT_FOUND',
+      });
+    }
+
+    let usableAccount = account;
+    const canRefresh = Boolean(usableAccount?.refresh_token || (usableAccount?.oauth1_access_token && usableAccount?.oauth1_access_token_secret));
+    if (canRefresh && (usableAccount?.refresh_token || usableAccount?.token_expires_at)) {
+      try {
+        const refreshResult = await refreshTwitterOauth2IfNeeded({
+          dbPool: pool,
+          account: usableAccount,
+          accountType: scope,
+          reason: 'internal_analysis_context',
+        });
+        usableAccount = refreshResult?.account || usableAccount;
+      } catch (error) {
+        logger.warn('[internal/twitter/analysis-context] Token refresh skipped', {
+          userId: platformUserId,
+          teamId: platformTeamId,
+          targetAccountId,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    const profile = {
+      twitterUserId: usableAccount.twitter_user_id,
+      username: usableAccount.twitter_username,
+      displayName: usableAccount.twitter_display_name,
+      followersCount: Number(usableAccount.followers_count || 0) || 0,
+      followingCount: Number(usableAccount.following_count || 0) || 0,
+      tweetCount: Number(usableAccount.tweet_count || 0) || 0,
+      bio: usableAccount.bio || null,
+      websiteUrl: usableAccount.website_url || null,
+    };
+
+    const tweetResult = await profileAnalysisService.fetchTwitterHistory(
+      platformUserId,
+      usableAccount.twitter_user_id,
+      usableAccount.access_token
+    );
+    const quality = profileAnalysisService.assessDataQuality(tweetResult.tweets);
+
+    let analysis = null;
+    let warnings = [];
+    try {
+      analysis = await profileAnalysisService.analyseProfile(profile, tweetResult.tweets, quality.confidence);
+    } catch (error) {
+      warnings = [error?.message || 'AI analysis unavailable, returned heuristic fallback'];
+      analysis = buildFallbackTwitterAnalysis({
+        profile,
+        tweets: tweetResult.tweets,
+        confidence: quality.confidence,
+        confidenceReason: quality.reason,
+      });
+    }
+
+    const topPosts = quality.confidence === 'high'
+      ? profileAnalysisService.getTopPerformingTweets(tweetResult.tweets, 3).map((tweet) => ({
+          text: String(tweet?.text || '').slice(0, 280),
+          impressions: Number(tweet?.impressions || 0) || 0,
+          likes: Number(tweet?.likes || 0) || 0,
+          retweets: Number(tweet?.retweets || 0) || 0,
+          replies: Number(tweet?.replies || 0) || 0,
+        }))
+      : [];
+
+    return res.json({
+      success: true,
+      platform: 'twitter',
+      scope,
+      profile,
+      tweetsAnalysed: tweetResult.tweets.length,
+      tweetSource: tweetResult.source,
+      analysis: {
+        ...analysis,
+        confidence: analysis?.confidence || quality.confidence,
+        confidence_reason: analysis?.confidence_reason || quality.reason,
+      },
+      discoveries: {
+        topTopics: Array.isArray(analysis?.top_topics) && analysis.top_topics.length > 0
+          ? analysis.top_topics.slice(0, 8)
+          : extractTopTweetTopics(tweetResult.tweets, 8),
+        topPosts,
+        competitorCandidates: extractMentionedHandles(tweetResult.tweets, usableAccount.twitter_username),
+      },
+      warnings,
+    });
+  } catch (error) {
+    logger.error('[internal/twitter/analysis-context] Failed to build analysis context', {
+      userId: platformUserId,
+      teamId: platformTeamId,
+      targetAccountId,
+      error: error?.message || String(error),
+    });
+    return res.status(500).json({
+      error: 'Failed to build Twitter analysis context',
+      code: 'TWITTER_ANALYSIS_CONTEXT_FAILED',
     });
   }
 });
