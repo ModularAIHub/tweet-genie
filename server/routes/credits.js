@@ -16,8 +16,9 @@ router.get('/balance', async (req, res) => {
       balance,
       creditsRemaining: balance,
       source,
-      scope: source === 'team' ? 'team' : 'personal',
+      scope: source === 'team' ? 'team' : source === 'agency' ? 'agency' : 'personal',
       teamId: source === 'team' ? requestTeamId : null,
+      agencyWorkspaceId: source === 'agency' ? (req.agencyWorkspace?.workspaceId || null) : null,
     });
 
   } catch (error) {

@@ -72,7 +72,13 @@ const Layout = ({ children }) => {
           : await credits.getBalanceCached({ ttlMs: 20000, bypass });
         if (!cancelled) {
           setCreditBalance(response.data.balance);
-          setCreditSource(response.data?.source === 'team' ? 'team' : 'personal');
+          setCreditSource(
+            response.data?.source === 'agency'
+              ? 'agency'
+              : response.data?.source === 'team'
+                ? 'team'
+                : 'personal'
+          );
           hasLoadedCreditsRef.current = true;
         }
       } catch (error) {
@@ -153,7 +159,14 @@ const Layout = ({ children }) => {
             {visibleNavigation.map((item) => {
               const Icon = item.icon;
               const isProLocked = Boolean(item.proOnly && !hasProAccess);
-              return (
+  const creditScopeLabel =
+    creditSource === 'agency'
+      ? 'Available agency credits'
+      : creditSource === 'team'
+        ? 'Available team credits'
+        : 'Available credits';
+
+  return (
                 <li key={item.name}>
                   <Link
                     to={item.href}
@@ -208,9 +221,7 @@ const Layout = ({ children }) => {
                 creditBalance !== null ? creditBalance.toFixed(1) : '--'
               )}
             </div>
-            <p className="text-xs text-gray-500">
-              {creditSource === 'team' ? 'Available team credits' : 'Available credits'}
-            </p>
+            <p className="text-xs text-gray-500">{creditScopeLabel}</p>
           </div>
         </div>
       </div>

@@ -1,6 +1,10 @@
+import axios from 'axios';
+import { getRequestContext } from '../utils/requestContext.js';
+
 class CreditService {
   constructor() {
     this.platformUrl = process.env.PLATFORM_URL || 'http://localhost:3000';
+    this.platformApiUrl = process.env.NEW_PLATFORM_API_URL || `${this.platformUrl}/api`;
     this.debug = process.env.CREDIT_DEBUG === 'true';
   }
 
@@ -10,9 +14,56 @@ class CreditService {
     }
   }
 
+  getAgencyCreditContext() {
+    const context = getRequestContext();
+    const agencyToken = String(context?.agencyToken || '').trim();
+    const agencyWorkspaceId = String(context?.agencyWorkspaceId || '').trim();
+    const authorization = String(context?.authorization || '').trim();
+
+    if (!agencyToken || !agencyWorkspaceId || !authorization) {
+      return null;
+    }
+
+    return {
+      agencyToken,
+      agencyWorkspaceId,
+      authorization,
+    };
+  }
+
+  getContextScope() {
+    return this.getAgencyCreditContext() ? 'agency' : 'personal';
+  }
+
+  buildPlatformHeaders() {
+    const context = this.getAgencyCreditContext();
+    if (!context) return null;
+
+    return {
+      Authorization: context.authorization,
+      'x-agency-token': context.agencyToken,
+      'x-agency-workspace-id': context.agencyWorkspaceId,
+    };
+  }
+
   async getBalance(userId) {
     try {
       this.debugLog(`Getting credit balance for user: ${userId}`);
+
+      const platformHeaders = this.buildPlatformHeaders();
+      if (platformHeaders) {
+        const response = await axios.get(`${this.platformApiUrl}/credits/balance`, {
+          headers: platformHeaders,
+          timeout: 10000,
+        });
+        const balance = parseFloat(
+          response.data?.balance ??
+          response.data?.creditsRemaining ??
+          response.data?.credits_remaining ??
+          0
+        );
+        return Number.isFinite(balance) ? balance : 0;
+      }
 
       const { pool } = await import('../config/database.js');
       const result = await pool.query('SELECT credits_remaining FROM users WHERE id = $1', [userId]);
@@ -34,6 +85,48 @@ class CreditService {
   async checkAndDeductCredits(userId, operation, amount, userToken = null) {
     try {
       this.debugLog(`Credit deduction request: ${operation} - ${amount} credits for user ${userId}`);
+
+      const platformHeaders = this.buildPlatformHeaders();
+      if (platformHeaders) {
+        try {
+          const response = await axios.post(
+            `${this.platformApiUrl}/credits/deduct`,
+            {
+              operation,
+              cost: amount,
+              description: `${operation} - ${amount} credits deducted`,
+            },
+            {
+              headers: platformHeaders,
+              timeout: 12000,
+            }
+          );
+
+          return {
+            success: true,
+            transaction_id: response.data?.transactionId || null,
+            remaining_balance: response.data?.creditsRemaining ?? 0,
+            remainingCredits: response.data?.creditsRemaining ?? 0,
+            creditsRemaining: response.data?.creditsRemaining ?? 0,
+            creditsDeducted: response.data?.creditsDeducted ?? amount,
+            source: response.data?.source || 'agency',
+          };
+        } catch (error) {
+          const status = error?.response?.status;
+          if (status === 400) {
+            return {
+              success: false,
+              error: 'insufficient_credits',
+              available: error.response?.data?.creditsAvailable ?? 0,
+              creditsAvailable: error.response?.data?.creditsAvailable ?? 0,
+              required: error.response?.data?.creditsRequired ?? amount,
+              creditsRequired: error.response?.data?.creditsRequired ?? amount,
+              source: 'agency',
+            };
+          }
+          throw error;
+        }
+      }
 
       const { pool } = await import('../config/database.js');
       const client = await pool.connect();
@@ -115,6 +208,29 @@ class CreditService {
     try {
       this.debugLog(`Credit refund request: ${operation} - ${amount} credits for user ${userId}`);
 
+      const platformHeaders = this.buildPlatformHeaders();
+      if (platformHeaders) {
+        const response = await axios.post(
+          `${this.platformApiUrl}/credits/add`,
+          {
+            amount,
+            description: `${operation} - ${amount} credits refunded`,
+          },
+          {
+            headers: platformHeaders,
+            timeout: 12000,
+          }
+        );
+
+        return {
+          success: true,
+          transaction_id: response.data?.transactionId || null,
+          refunded_amount: response.data?.creditsAdded ?? amount,
+          new_balance: response.data?.creditsRemaining ?? 0,
+          source: response.data?.source || 'agency',
+        };
+      }
+
       const { pool } = await import('../config/database.js');
       const client = await pool.connect();
 
@@ -171,6 +287,17 @@ class CreditService {
 
   async getUsageHistory(userId, options = {}) {
     try {
+      const platformHeaders = this.buildPlatformHeaders();
+      if (platformHeaders) {
+        const { page = 1, limit = 20, type } = options;
+        const response = await axios.get(`${this.platformApiUrl}/credits/history`, {
+          headers: platformHeaders,
+          params: { page, limit, ...(type ? { type } : {}) },
+          timeout: 10000,
+        });
+        return response.data;
+      }
+
       const { pool } = await import('../config/database.js');
       const { page = 1, limit = 20, type } = options;
 

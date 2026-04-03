@@ -44,6 +44,7 @@ import {
   validateTwitterConnection,
 } from './middleware/auth.js';
 import { applyAgencyWorkspaceContext } from './middleware/agencyWorkspace.js';
+import { captureRequestContext } from './utils/requestContext.js';
 import { requireProPlan } from './middleware/planAccess.js';
 // import { errorHandler } from './middleware/errorHandler.js';
 
@@ -411,6 +412,7 @@ app.use('/api/internal/twitter', internalTwitterRoutes);
 
 // Routes
 app.use('/api', applyAgencyWorkspaceContext);
+app.use('/api', captureRequestContext);
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', secureAuthRoutes);
 app.use('/', ssoRoutes); // SSO routes at root level

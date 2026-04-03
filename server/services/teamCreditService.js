@@ -16,6 +16,14 @@ export const TeamCreditService = {
    */
   async getCredits(userId, teamId = null) {
     try {
+      if (creditService.getContextScope?.() === 'agency') {
+        const credits = await creditService.getBalance(userId);
+        return {
+          credits,
+          source: 'agency'
+        };
+      }
+
       if (shouldUseTeamCredits(teamId)) {
         // Team context - get team credits
         const result = await pool.query(
@@ -64,7 +72,7 @@ export const TeamCreditService = {
       };
     } catch (error) {
       console.error('[TEAM CREDIT] Check credits error:', error);
-      return { success: false, available: 0, source: shouldUseTeamCredits(teamId) ? 'team' : 'user' };
+      return { success: false, available: 0, source: creditService.getContextScope?.() === 'agency' ? 'agency' : (shouldUseTeamCredits(teamId) ? 'team' : 'user') };
     }
   },
 
@@ -80,6 +88,26 @@ export const TeamCreditService = {
   async deductCredits(userId, teamId, amount, operation, token = null) {
     try {
       const roundedAmount = Math.round(amount * 100) / 100;
+
+      if (creditService.getContextScope?.() === 'agency') {
+        const result = await creditService.checkAndDeductCredits(
+          userId,
+          operation,
+          roundedAmount,
+          token
+        );
+
+        return {
+          success: result.success,
+          remainingCredits: result.remainingCredits ?? result.remaining_balance ?? 0,
+          source: result.source || 'agency',
+          error: result.error,
+          available: result.available ?? result.creditsAvailable ?? 0,
+          creditsAvailable: result.creditsAvailable ?? result.available ?? 0,
+          required: result.required ?? result.creditsRequired ?? roundedAmount,
+          creditsRequired: result.creditsRequired ?? result.required ?? roundedAmount,
+        };
+      }
       
       if (shouldUseTeamCredits(teamId)) {
         // Team context - deduct from team credits
@@ -154,7 +182,7 @@ export const TeamCreditService = {
       }
     } catch (error) {
       console.error('[TEAM CREDIT] Deduct error:', error);
-      return { success: false, error: error.message, remainingCredits: 0, source: shouldUseTeamCredits(teamId) ? 'team' : 'user' };
+      return { success: false, error: error.message, remainingCredits: 0, source: creditService.getContextScope?.() === 'agency' ? 'agency' : (shouldUseTeamCredits(teamId) ? 'team' : 'user') };
     }
   },
 
@@ -168,6 +196,12 @@ export const TeamCreditService = {
   async refundCredits(userId, teamId, amount, reason) {
     try {
       const roundedAmount = Math.round(amount * 100) / 100;
+
+      if (creditService.getContextScope?.() === 'agency') {
+        await creditService.refundCredits(userId, reason, roundedAmount);
+        console.log(`[AGENCY CREDIT] Refunded ${roundedAmount} to agency pool for user ${userId}`);
+        return;
+      }
       
       if (shouldUseTeamCredits(teamId)) {
         // Refund to team
